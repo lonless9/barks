@@ -2,21 +2,21 @@
 members = [
     "common/*",
     "core",
-    "sql/api",
-    "sql/catalyst",
-    "sql/core",
-    "sql/hive",
-    "sql/connect/*",
-    "streaming",
-    "mllib/*",
-    "graphx",
-    "connector/*",
-    "resource-managers/*",
-    "launcher",
-    "repl",
+    # "sql/api",
+    # "sql/catalyst",
+    # "sql/core",
+    # "sql/hive",
+    # "sql/connect/*",
+    # "streaming",
+    # "mllib/*",
+    # "graphx",
+    # "connector/*",
+    # "resource-managers/*",
+    # "launcher",
+    # "repl",
     "examples",
-    "assembly",
-    "tools"
+    # "assembly",
+    # "tools"
 ]
 
 [workspace.package]
@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["full"] }
 # RPC
 tonic = "0.13.1"
 prost = "0.13.5"
+tonic-build = "0.13.1"
 
 # serialization
 serde = { version = "1.0", features = ["derive"] }

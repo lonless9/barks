@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use thiserror::Error;
 
 /// Error types for RDD operations
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RddError {
     #[error("Computation failed: {0}")]
     ComputationError(String),

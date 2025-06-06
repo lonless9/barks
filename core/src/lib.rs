@@ -4,6 +4,7 @@
 //! RDDs and context management for Phase 0 implementation.
 
 pub mod context;
+pub mod distributed;
 pub mod rdd;
 pub mod scheduler;
 pub mod traits;
