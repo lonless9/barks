@@ -5,7 +5,9 @@
 
 use anyhow::Result;
 use barks_core::distributed::context::{DistributedConfig, DistributedContext};
-use barks_core::operations::{AddConstantOperation, DoubleOperation, EvenPredicate};
+use barks_core::operations::{
+    AddConstantOperation, DoubleOperation, EvenPredicate, GreaterThanPredicate,
+};
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -121,18 +123,21 @@ async fn run_rdd_computations() -> Result<()> {
     }
 
     // Test 2: RDD with map operation (using serializable operations)
-    info!("Test 2: RDD with map operation (double each element)");
+    info!("Test 2: RDD with map operation (double each element) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5];
     let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
     let mapped_rdd = rdd.map(Box::new(DoubleOperation));
 
-    // For now, this will fall back to local execution since distributed
-    // execution of transformed RDDs is not yet fully implemented
-    match mapped_rdd.collect() {
+    // Use the new run_i32 method for true distributed execution
+    match context.run_i32(mapped_rdd).await {
         Ok(result) => {
-            info!("Mapped result (local): {:?}", result);
+            info!("Mapped result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().map(|x| x * 2).collect();
-            assert_eq!(result, expected);
+            // Note: Order might be different due to distributed execution
+            assert_eq!(result.len(), expected.len());
+            for item in &expected {
+                assert!(result.contains(item));
+            }
         }
         Err(e) => {
             error!("Failed to collect mapped RDD: {}", e);
@@ -140,42 +145,78 @@ async fn run_rdd_computations() -> Result<()> {
     }
 
     // Test 3: RDD with filter operation
-    info!("Test 3: RDD with filter operation (even numbers only)");
+    info!("Test 3: RDD with filter operation (even numbers only) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
     let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
 
-    match filtered_rdd.collect() {
+    match context.run_i32(filtered_rdd).await {
         Ok(result) => {
-            info!("Filtered result (local): {:?}", result);
+            info!("Filtered result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().filter(|&x| x % 2 == 0).cloned().collect();
-            assert_eq!(result, expected);
+            // Note: Order might be different due to distributed execution
+            assert_eq!(result.len(), expected.len());
+            for item in &expected {
+                assert!(result.contains(item));
+            }
         }
         Err(e) => {
             error!("Failed to collect filtered RDD: {}", e);
         }
     }
 
-    // Test 4: Chained operations
-    info!("Test 4: Chained operations (add 10, then filter even)");
+    // Test 4: Chained operations - This demonstrates the power of the new system!
+    info!("Test 4: Chained operations (add 10, then filter even) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5];
     let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
     let chained_rdd = rdd
         .map(Box::new(AddConstantOperation { constant: 10 }))
         .filter(Box::new(EvenPredicate));
 
-    match chained_rdd.collect() {
+    // This will analyze the lineage, create ChainedI32Tasks with the full operation chain,
+    // and send them to executors for distributed execution!
+    match context.run_i32(chained_rdd).await {
         Ok(result) => {
-            info!("Chained result (local): {:?}", result);
+            info!("Chained result (distributed): {:?}", result);
             let expected: Vec<i32> = data
                 .iter()
                 .map(|x| x + 10)
                 .filter(|&x| x % 2 == 0)
                 .collect();
-            assert_eq!(result, expected);
+            // Note: Order might be different due to distributed execution
+            assert_eq!(result.len(), expected.len());
+            for item in &expected {
+                assert!(result.contains(item));
+            }
         }
         Err(e) => {
             error!("Failed to collect chained RDD: {}", e);
+        }
+    }
+
+    // Test 5: Complex chained operations (from TODO example)
+    info!("Test 5: Complex chain (double, then filter > 20) - DISTRIBUTED");
+    let data: Vec<i32> = (1..=20).collect();
+    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
+    let complex_rdd = rdd
+        .map(Box::new(DoubleOperation)) // Double each number
+        .filter(Box::new(GreaterThanPredicate { threshold: 20 })); // Keep results > 20
+
+    // This demonstrates the full end-to-end distributed computation flow
+    // as described in the TODO document
+    match context.run_i32(complex_rdd).await {
+        Ok(result) => {
+            info!("Complex chained result (distributed): {:?}", result);
+            let expected: Vec<i32> = data.iter().map(|x| x * 2).filter(|&x| x > 20).collect();
+            info!("Expected result: {:?}", expected);
+            // Note: Order might be different due to distributed execution
+            assert_eq!(result.len(), expected.len());
+            for item in &expected {
+                assert!(result.contains(item));
+            }
+        }
+        Err(e) => {
+            error!("Failed to collect complex chained RDD: {}", e);
         }
     }
 

@@ -317,3 +317,66 @@ impl Default for TaskScheduler {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::{DoubleOperation, GreaterThanPredicate, SerializableI32Operation};
+
+    #[tokio::test]
+    async fn test_chained_i32_task_execution() {
+        // Test the ChainedI32Task with a chain of operations
+        let data = vec![1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15];
+        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
+
+        let operations = vec![
+            SerializableI32Operation::Map(Box::new(DoubleOperation)),
+            SerializableI32Operation::Filter(Box::new(GreaterThanPredicate { threshold: 20 })),
+        ];
+
+        let task = ChainedI32Task {
+            partition_data: serialized_data,
+            operations,
+        };
+
+        let result_bytes = task.execute(0).await.unwrap();
+        let (result, _): (Vec<i32>, _) =
+            bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
+
+        // Expected: [1,2,3,4,5,10,11,12,13,14,15] -> double -> [2,4,6,8,10,20,22,24,26,28,30] -> filter > 20 -> [22,24,26,28,30]
+        let expected: Vec<i32> = data.iter().map(|x| x * 2).filter(|&x| x > 20).collect();
+
+        assert_eq!(result.len(), expected.len());
+        for item in &expected {
+            assert!(result.contains(item));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chained_i32_task_serialization() {
+        // Test that ChainedI32Task can be serialized and deserialized
+        let data = vec![1, 2, 3];
+        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
+
+        let operations = vec![SerializableI32Operation::Map(Box::new(DoubleOperation))];
+
+        let task = ChainedI32Task {
+            partition_data: serialized_data,
+            operations,
+        };
+
+        // Serialize the task as a trait object
+        let task_box: Box<dyn Task> = Box::new(task);
+        let serialized_task = serde_json::to_vec(&task_box).unwrap();
+
+        // Deserialize the task
+        let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
+
+        // Execute the deserialized task
+        let result_bytes = deserialized_task.execute(0).await.unwrap();
+        let (result, _): (Vec<i32>, _) =
+            bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
+
+        assert_eq!(result, vec![2, 4, 6]);
+    }
+}

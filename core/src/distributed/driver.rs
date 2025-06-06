@@ -232,11 +232,9 @@ impl DriverServiceImpl {
             task_id: task_id.clone(),
             stage_id: pending_task.stage_id,
             partition_index: pending_task.partition_index as u32,
-            // The entire task, including data and operation, is serialized into this field.
             serialized_task: pending_task.serialized_task,
             properties: HashMap::new(),
             max_result_size_bytes: 1024 * 1024 * 128, // 128MB default limit
-            ..Default::default()
         };
 
         client

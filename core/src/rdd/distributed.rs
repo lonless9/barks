@@ -353,3 +353,73 @@ impl DistributedStringRdd {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::{DoubleOperation, GreaterThanPredicate, SerializableI32Operation};
+
+    #[test]
+    fn test_analyze_lineage() {
+        // Test the analyze_lineage method with a chain of operations
+        let data = vec![1, 2, 3, 4, 5];
+        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 2);
+
+        let chained_rdd = rdd
+            .map(Box::new(DoubleOperation))
+            .filter(Box::new(GreaterThanPredicate { threshold: 5 }));
+
+        let (base_data, num_partitions, operations) = chained_rdd.analyze_lineage();
+
+        // Check that we got the original data back
+        assert_eq!(*base_data, data);
+        assert_eq!(num_partitions, 2);
+
+        // Check that we have the correct operations in the right order
+        assert_eq!(operations.len(), 2);
+
+        // First operation should be Map (DoubleOperation)
+        match &operations[0] {
+            SerializableI32Operation::Map(_) => {}
+            _ => panic!("Expected Map operation"),
+        }
+
+        // Second operation should be Filter (GreaterThanPredicate)
+        match &operations[1] {
+            SerializableI32Operation::Filter(_) => {}
+            _ => panic!("Expected Filter operation"),
+        }
+    }
+
+    #[test]
+    fn test_analyze_lineage_single_operation() {
+        // Test with a single operation
+        let data = vec![10, 20, 30];
+        let rdd = DistributedI32Rdd::from_vec(data.clone());
+        let mapped_rdd = rdd.map(Box::new(DoubleOperation));
+
+        let (base_data, num_partitions, operations) = mapped_rdd.analyze_lineage();
+
+        assert_eq!(*base_data, data);
+        assert_eq!(num_partitions, 1);
+        assert_eq!(operations.len(), 1);
+
+        match &operations[0] {
+            SerializableI32Operation::Map(_) => {}
+            _ => panic!("Expected Map operation"),
+        }
+    }
+
+    #[test]
+    fn test_analyze_lineage_no_operations() {
+        // Test with no operations (just base RDD)
+        let data = vec![1, 2, 3];
+        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 3);
+
+        let (base_data, num_partitions, operations) = rdd.analyze_lineage();
+
+        assert_eq!(*base_data, data);
+        assert_eq!(num_partitions, 3);
+        assert_eq!(operations.len(), 0);
+    }
+}
