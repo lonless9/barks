@@ -1,0 +1,16 @@
+[package]
+name = "barks-sql-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-core = { path = "../../core" }
+barks-utils = { path = "../../common/utils" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true

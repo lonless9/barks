@@ -1,0 +1,23 @@
+[package]
+name = "barks-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-utils = { path = "../common/utils" }
+barks-network-common = { path = "../common/network-common" }
+barks-network-shuffle = { path = "../common/network-shuffle" }
+barks-unsafe = { path = "../common/unsafe" }
+barks-kvstore = { path = "../common/kvstore" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+rayon.workspace = true
+moka.workspace = true
+tracing.workspace = true

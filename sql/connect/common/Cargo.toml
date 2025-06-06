@@ -1,0 +1,18 @@
+[package]
+name = "barks-connect-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-sql-api = { path = "../../api" }
+barks-core = { path = "../../../core" }
+barks-utils = { path = "../../../common/utils" }
+tonic.workspace = true
+prost.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "barks-network-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tonic.workspace = true
+prost.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "barks-streaming"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-core = { path = "../core" }
+barks-sql-core = { path = "../sql/core" }
+barks-utils = { path = "../common/utils" }
+tokio.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "barks-sketch"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true

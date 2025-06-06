@@ -1,0 +1,16 @@
+[package]
+name = "barks-network-shuffle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-network-common = { path = "../network-common" }
+tokio.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true

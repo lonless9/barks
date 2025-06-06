@@ -1,0 +1,19 @@
+[package]
+name = "barks-examples"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-core = { path = "../core" }
+barks-sql-core = { path = "../sql/core" }
+barks-streaming = { path = "../streaming" }
+barks-mllib-local = { path = "../mllib/local" }
+barks-graphx = { path = "../graphx" }
+barks-utils = { path = "../common/utils" }
+tokio.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+clap.workspace = true

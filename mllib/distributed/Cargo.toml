@@ -1,0 +1,17 @@
+[package]
+name = "barks-mllib-distributed"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+barks-mllib-local = { path = "../local" }
+barks-core = { path = "../../core" }
+barks-utils = { path = "../../common/utils" }
+tokio.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
