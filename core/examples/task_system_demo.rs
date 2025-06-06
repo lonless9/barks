@@ -3,14 +3,13 @@
 //! This example shows how the new Task trait object system with typetag
 //! solves the hardcoding problem and enables extensible distributed computing.
 
-use async_trait::async_trait;
 use barks_core::distributed::task::{DataMapTask, Task, TaskRunner};
 use serde::{Deserialize, Serialize};
 
 /// A custom task that demonstrates the extensibility of the new system
 #[derive(Serialize, Deserialize)]
 pub struct CustomSquareTask {
-    pub partition_data: Vec<u8>,
+    pub partition_data: Vec<u8>, // bincode-serialized Vec<i32>
 }
 
 #[typetag::serde]
@@ -18,7 +17,7 @@ pub struct CustomSquareTask {
 impl Task for CustomSquareTask {
     async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
         // Deserialize the data as Vec<i32>
-        let (data, _): (Vec<i32>, _) =
+        let (data, _): (Vec<i32>, usize) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
 
         // Square each element
@@ -51,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = task_runner.submit_task(0, serialized_task).await;
 
     if let Some(result_bytes) = result.result {
-        let (result_data, _): (Vec<i32>, _) =
+        let (result_data, _): (Vec<i32>, usize) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard())?;
         println!("Input: {:?}", test_data);
         println!("Output (doubled): {:?}", result_data);
@@ -71,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = task_runner.submit_task(0, serialized_task).await;
 
     if let Some(result_bytes) = result.result {
-        let (result_data, _): (Vec<i32>, _) =
+        let (result_data, _): (Vec<i32>, usize) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard())?;
         println!("Input: {:?}", test_data);
         println!("Output (even numbers): {:?}", result_data);
@@ -90,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = task_runner.submit_task(0, serialized_task).await;
 
     if let Some(result_bytes) = result.result {
-        let (result_data, _): (Vec<i32>, _) =
+        let (result_data, _): (Vec<i32>, usize) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard())?;
         println!("Input: {:?}", test_data);
         println!("Output (squared): {:?}", result_data);

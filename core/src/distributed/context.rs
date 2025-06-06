@@ -317,10 +317,9 @@ impl DistributedContext {
             // This is a critical simplification. In a real system, the RDD's computation
             // graph (lineage) would be serialized and sent to executors. Here, we only
             // support distributing the data from a base RDD created with `parallelize`.
-            // Executing transformed RDDs (map, filter, etc.) is not supported in distributed
-            // mode yet because it requires serializing closures, which is a complex problem.
-            // The original implementation (`rdd.collect()?`) was incorrect as it centralized
-            // all data on the driver, defeating the purpose of distributed computing.
+            // Executing transformed `SimpleRdd`s (with closures) is not supported in distributed
+            // mode because closures cannot be easily serialized. Use `DistributedI32Rdd`
+            // and `run_i32` for true distributed computation of transformed RDDs.
 
             // A full implementation would require serializing the RDD and its closures.
             // We will collect the data on the driver and distribute it.
@@ -336,11 +335,11 @@ impl DistributedContext {
                 (data, num_partitions)
             } else {
                 // This is a key limitation of the current implementation.
-                // We return an error to make it clear that distributed execution of
-                // complex RDDs (with map/filter) is not yet supported.
-                return Err(crate::traits::RddError::ContextError(
-                    "Distributed execution of transformed RDDs is not yet supported. Only base RDDs from `parallelize` can be run.".to_string(),
-                ));
+                // We fall back to local execution for transformed SimpleRdds.
+                warn!(
+                    "Running transformed SimpleRdd in distributed mode is not supported, falling back to local execution."
+                );
+                return self.run_local(rdd).await;
             };
 
             let chunks = barks_utils::vec_utils::partition_evenly(

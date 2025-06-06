@@ -1,11 +1,14 @@
 //! Basic Distributed Computing Example
 //!
 //! This example demonstrates a full, local run of the Driver-Executor architecture.
-//! It starts a Driver and an Executor in the same process using tokio tasks,
-//! has them communicate over TCP, and runs a simple distributed RDD computation.
+//! It starts a Driver and an Executor in the same process using tokio tasks, has
+//! them communicate over TCP, and runs a true distributed RDD computation using
+//! serializable operations.
 
-use barks_core::distributed::context::{DistributedConfig, DistributedContext, ExecutionMode};
+use barks_core::distributed::context::{DistributedConfig, DistributedContext};
+use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{Level, info};
@@ -18,53 +21,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== Barks Distributed Computing Basic Example ---");
 
     // --- 1. Define network addresses ---
-    let driver_addr: SocketAddr = "127.0.0.1:50071".parse()?;
-    let executor_addr: SocketAddr = "127.0.0.1:50072".parse()?;
+    let driver_addr: SocketAddr = "127.0.0.1:50081".parse()?;
+    let executor_addr: SocketAddr = "127.0.0.1:50082".parse()?;
 
     // --- 2. Configure and start the Driver ---
-    info!("Starting Driver on {}", driver_addr);
-    let driver_config = DistributedConfig {
-        driver_addr: Some(driver_addr),
-        ..Default::default()
-    };
-
-    // Create a single driver context and use Arc to share it
-    use std::sync::Arc;
-    let driver_context = Arc::new(DistributedContext::new_driver(
+    let driver_context_for_server = Arc::new(DistributedContext::new_driver(
         "barks-driver-demo".to_string(),
-        driver_config.clone(),
+        DistributedConfig::default(),
     ));
-
-    // Start driver in a background task
-    let driver_context_for_spawn = Arc::clone(&driver_context);
     let driver_handle = tokio::spawn({
+        let context = Arc::clone(&driver_context_for_server);
         async move {
-            if let Err(e) = driver_context_for_spawn.start(driver_addr).await {
+            info!("Starting Driver on {}", driver_addr);
+            if let Err(e) = context.start(driver_addr).await {
                 eprintln!("Driver failed to start: {}", e);
             }
         }
     });
-    // Give the driver a moment to start up
     sleep(Duration::from_millis(100)).await;
 
     // --- 3. Configure and start the Executor ---
-    info!("Starting Executor on {}", executor_addr);
-    let executor_config = DistributedConfig {
-        driver_addr: Some(driver_addr),
-        ..Default::default()
-    };
-    let executor_context = Arc::new(DistributedContext::new_executor(
+    let executor_context_for_server = Arc::new(DistributedContext::new_executor(
         "barks-app".to_string(),
         "executor-1".to_string(),
         executor_addr.ip().to_string(),
         executor_addr.port(),
-        executor_config.clone(),
+        DistributedConfig::default(),
     ));
-
-    // Start executor in a background task
-    let executor_context_for_spawn = Arc::clone(&executor_context);
     let executor_handle = tokio::spawn({
+        let executor_context_for_spawn = Arc::clone(&executor_context_for_server);
         async move {
+            info!("Starting Executor on {}", executor_addr);
+            // Register with driver
+            if let Err(e) = executor_context_for_spawn
+                .register_with_driver(format!("http://{}", driver_addr))
+                .await
+            {
+                eprintln!("Executor failed to register: {}", e);
+                return;
+            }
             if let Err(e) = executor_context_for_spawn.start(executor_addr).await {
                 eprintln!("Executor failed to start its server: {}", e);
             }
@@ -73,42 +68,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Give the executor a moment to start up its server
     sleep(Duration::from_millis(100)).await;
 
-    // --- 4. Register Executor with Driver ---
-    info!("Registering Executor with Driver");
-    executor_context
-        .register_with_driver(format!("http://{}", driver_addr))
-        .await?;
+    // --- 4. Run a Distributed RDD computation from the client side ---
+    info!("--- Starting distributed RDD computation ---");
 
-    // Wait to ensure registration is complete and driver is aware
+    // Let's check if the driver sees the executor
     sleep(Duration::from_millis(500)).await;
     info!(
         "Driver stats: {:?}",
-        driver_context.get_driver_stats().await
+        driver_context_for_server.get_driver_stats().await
     );
-
-    // --- 5. Run a Distributed RDD computation ---
-    info!("--- Starting distributed RDD computation ---");
-    assert_eq!(driver_context.mode(), &ExecutionMode::Driver);
 
     let data: Vec<i32> = (1..=20).collect();
     info!("Original data (1..20)");
 
-    // Create RDD with 4 partitions
-    let rdd = driver_context.parallelize_with_partitions(data, 4);
+    // Create a DistributedI32Rdd with 4 partitions using the server driver context
+    let rdd = driver_context_for_server.parallelize_i32_with_partitions(data, 4);
     info!("Created RDD with {} partitions", rdd.num_partitions());
 
-    // For this simple example, we'll run a 'collect' task
-    // The `run` method will distribute this data to the executor
-    let result = driver_context.run(rdd).await?;
+    // Chain serializable operations
+    let transformed_rdd = rdd
+        .map(Box::new(DoubleOperation)) // Double each number
+        .filter(Box::new(GreaterThanPredicate { threshold: 20 })); // Keep results > 20
+
+    // The `run_i32` method will analyze the RDD's lineage, serialize the operations,
+    // and send them to the driver for distributed execution.
+    let result = driver_context_for_server.run_i32(transformed_rdd).await?;
 
     info!("--- Computation finished ---");
-    info!("Final collected result (should be 1..20): {:?}", result);
+    let expected_result = vec![22, 24, 26, 28, 30, 32, 34, 36, 38, 40];
+    info!("Final collected result: {:?}", result);
+    info!("Expected result:      {:?}", expected_result);
 
-    assert_eq!(result.len(), 20);
-    assert_eq!(result[0], 1);
-    assert_eq!(result[19], 20);
+    assert_eq!(result, expected_result);
 
-    // --- 6. Shutdown ---
+    // --- 5. Shutdown ---
     info!("Example finished successfully. Shutting down.");
     driver_handle.abort();
     executor_handle.abort();

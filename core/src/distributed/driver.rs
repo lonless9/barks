@@ -235,7 +235,7 @@ impl DriverServiceImpl {
             // The entire task, including data and operation, is serialized into this field.
             serialized_task: pending_task.serialized_task,
             properties: HashMap::new(),
-            max_result_size_bytes: 1024 * 1024 * 100, // 100MB default limit
+            max_result_size_bytes: 1024 * 1024 * 128, // 128MB default limit
             ..Default::default()
         };
 

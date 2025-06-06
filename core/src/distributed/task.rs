@@ -16,8 +16,13 @@ use tracing::{debug, info, warn};
 ///
 /// This trait is the key to solving the hardcoding and generics problem.
 /// Any struct implementing this trait can be serialized, sent to an executor,
-/// deserialized, and then executed. The `typetag` attribute makes the
-/// trait object serializable.
+/// deserialized, and then executed. The `typetag` attribute, when combined
+/// with a self-describing format like `serde_json`, makes the trait object serializable.
+///
+/// The typical serialization pattern is two-layered:
+/// 1. The `Box<dyn Task>` object is serialized using `serde_json` to preserve type information.
+/// 2. The raw data payload within the task struct (e.g., `partition_data`) is often
+///    pre-serialized using an efficient binary format like `bincode`.
 #[typetag::serde(tag = "type")]
 #[async_trait::async_trait]
 pub trait Task: Send + Sync {
@@ -100,14 +105,19 @@ impl Task for ChainedI32Task {
         //    operation becomes the input for the next.
         for op in &self.operations {
             current_data = match op {
-                crate::operations::SerializableI32Operation::Map(map_op) => current_data
-                    .into_par_iter()
-                    .map(|item| map_op.execute(item))
-                    .collect(),
-                crate::operations::SerializableI32Operation::Filter(filter_op) => current_data
-                    .into_par_iter()
-                    .filter(|item| filter_op.test(item))
-                    .collect(),
+                crate::operations::SerializableI32Operation::Map(map_op) => {
+                    current_data // Use Rayon for parallel map
+                        .par_iter()
+                        .map(|item| map_op.execute(*item))
+                        .collect()
+                }
+                crate::operations::SerializableI32Operation::Filter(filter_op) => {
+                    current_data // Use Rayon for parallel filter
+                        .par_iter()
+                        .filter(|&item| filter_op.test(item))
+                        .cloned()
+                        .collect()
+                }
             };
         }
 

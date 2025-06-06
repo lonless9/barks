@@ -10,19 +10,23 @@ pub struct StandardUnsafeMemory;
 
 impl UnsafeMemory for StandardUnsafeMemory {
     unsafe fn allocate(&self, size: usize, align: usize) -> Result<NonNull<u8>> {
-        let layout = Layout::from_size_align(size, align)
-            .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
+        unsafe {
+            let layout = Layout::from_size_align(size, align)
+                .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
 
-        let ptr = alloc(layout);
-        NonNull::new(ptr).ok_or_else(|| anyhow::anyhow!("Allocation failed"))
+            let ptr = alloc(layout);
+            NonNull::new(ptr).ok_or_else(|| anyhow::anyhow!("Allocation failed"))
+        }
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize, align: usize) -> Result<()> {
-        let layout = Layout::from_size_align(size, align)
-            .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
+        unsafe {
+            let layout = Layout::from_size_align(size, align)
+                .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
 
-        dealloc(ptr.as_ptr(), layout);
-        Ok(())
+            dealloc(ptr.as_ptr(), layout);
+            Ok(())
+        }
     }
 
     unsafe fn reallocate(
@@ -32,21 +36,27 @@ impl UnsafeMemory for StandardUnsafeMemory {
         new_size: usize,
         align: usize,
     ) -> Result<NonNull<u8>> {
-        let old_layout = Layout::from_size_align(old_size, align)
-            .map_err(|e| anyhow::anyhow!("Invalid old layout: {}", e))?;
+        unsafe {
+            let old_layout = Layout::from_size_align(old_size, align)
+                .map_err(|e| anyhow::anyhow!("Invalid old layout: {}", e))?;
 
-        let new_ptr = realloc(ptr.as_ptr(), old_layout, new_size);
-        NonNull::new(new_ptr).ok_or_else(|| anyhow::anyhow!("Reallocation failed"))
+            let new_ptr = realloc(ptr.as_ptr(), old_layout, new_size);
+            NonNull::new(new_ptr).ok_or_else(|| anyhow::anyhow!("Reallocation failed"))
+        }
     }
 
     unsafe fn copy(&self, src: NonNull<u8>, dst: NonNull<u8>, size: usize) -> Result<()> {
-        copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), size);
-        Ok(())
+        unsafe {
+            copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), size);
+            Ok(())
+        }
     }
 
     unsafe fn set(&self, ptr: NonNull<u8>, value: u8, size: usize) -> Result<()> {
-        write_bytes(ptr.as_ptr(), value, size);
-        Ok(())
+        unsafe {
+            write_bytes(ptr.as_ptr(), value, size);
+            Ok(())
+        }
     }
 }
 
@@ -80,6 +90,11 @@ impl Drop for UnsafeVecBuffer {
     }
 }
 
+// SAFETY: UnsafeVecBuffer is designed to be used in unsafe contexts
+// where the caller ensures thread safety
+unsafe impl Send for UnsafeVecBuffer {}
+unsafe impl Sync for UnsafeVecBuffer {}
+
 impl UnsafeBuffer for UnsafeVecBuffer {
     fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
@@ -106,12 +121,14 @@ impl UnsafeBuffer for UnsafeVecBuffer {
     }
 
     unsafe fn reserve(&mut self, additional: usize) -> Result<()> {
-        let new_capacity = self.capacity + additional;
-        let allocator = StandardUnsafeMemory;
+        unsafe {
+            let new_capacity = self.capacity + additional;
+            let allocator = StandardUnsafeMemory;
 
-        let new_ptr = allocator.reallocate(self.ptr, self.capacity, new_capacity, 1)?;
-        self.ptr = new_ptr;
-        self.capacity = new_capacity;
-        Ok(())
+            let new_ptr = allocator.reallocate(self.ptr, self.capacity, new_capacity, 1)?;
+            self.ptr = new_ptr;
+            self.capacity = new_capacity;
+            Ok(())
+        }
     }
 }

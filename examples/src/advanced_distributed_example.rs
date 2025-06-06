@@ -222,7 +222,7 @@ async fn test_distributed_execution() -> Result<()> {
             );
             // Expected: (1..100) -> double -> (2..200) -> filter(>50) -> [52, 54, ..., 200]
             // (100 - 25) = 75 elements
-            assert_eq!(result.len(), 75);
+            assert_eq!(result.len(), 75, "The number of elements should be 75");
             assert_eq!(result[0], 52); // 26*2
         }
         Err(e) => {
