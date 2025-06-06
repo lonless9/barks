@@ -11,7 +11,7 @@ use crate::distributed::proto::driver::{
 use crate::distributed::proto::executor::{
     LaunchTaskRequest, executor_service_client::ExecutorServiceClient,
 };
-use crate::distributed::task::{PendingTask, TaskScheduler};
+use crate::distributed::task::{PendingTask, Task, TaskScheduler};
 use crate::distributed::types::{
     ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
 };
@@ -223,14 +223,20 @@ impl DriverServiceImpl {
             Self::get_or_create_executor_client_static(&executor, executor_clients).await?;
 
         let task_id = pending_task.task_id.clone();
+        info!(
+            "Launching task {} on executor {}",
+            task_id, executor.info.executor_id
+        );
+
         let request = LaunchTaskRequest {
-            task_id: pending_task.task_id,
+            task_id: task_id.clone(),
             stage_id: pending_task.stage_id,
             partition_index: pending_task.partition_index as u32,
-            serialized_rdd: vec![], // This field is not used in the current design
-            serialized_partition: pending_task.task_data,
+            // The entire task, including data and operation, is serialized into this field.
+            serialized_task: pending_task.serialized_task,
             properties: HashMap::new(),
             max_result_size_bytes: 1024 * 1024 * 100, // 100MB default limit
+            ..Default::default()
         };
 
         client
@@ -509,14 +515,20 @@ impl Driver {
     }
 
     /// Submit a task for execution
+    /// Takes a serializable `Task` trait object.
     pub async fn submit_task(
         &self,
         task_id: TaskId,
         stage_id: StageId,
         partition_index: usize,
-        task_data: Vec<u8>,
+        task: Box<dyn Task>,
         preferred_executor: Option<ExecutorId>,
-    ) -> oneshot::Receiver<TaskResult> {
+    ) -> Result<oneshot::Receiver<TaskResult>, anyhow::Error> {
+        // Serialize the task object using `serde_json` because `typetag` works well with it.
+        // The inner data (`partition_data`) is still efficiently serialized with bincode.
+        let serialized_task = serde_json::to_vec(&task)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize task object: {}", e))?;
+
         let (sender, receiver) = oneshot::channel();
         self.service
             .completion_notifiers
@@ -525,16 +537,16 @@ impl Driver {
             .insert(task_id.clone(), sender);
 
         self.task_scheduler
-            .submit_task(
+            .submit_pending_task(PendingTask {
                 task_id,
                 stage_id,
                 partition_index,
-                task_data,
+                serialized_task,
                 preferred_executor,
-            )
+            })
             .await;
 
-        receiver
+        Ok(receiver)
     }
 
     /// Get the number of registered executors
@@ -545,55 +557,6 @@ impl Driver {
     /// Get the number of pending tasks
     pub async fn pending_task_count(&self) -> usize {
         self.task_scheduler.pending_task_count().await
-    }
-
-    /// Submit an RDD task for distributed execution
-    pub async fn submit_rdd_task<T>(
-        &self,
-        task_id: TaskId,
-        stage_id: StageId,
-        partition_index: usize,
-        partition_data: Vec<T>,
-        operation: RddOperation,
-        preferred_executor: Option<ExecutorId>,
-    ) -> Result<(), anyhow::Error>
-    where
-        T: Send
-            + Sync
-            + Clone
-            + serde::Serialize
-            + for<'de> serde::Deserialize<'de>
-            + bincode::Encode
-            + bincode::Decode<()>
-            + std::fmt::Debug
-            + 'static,
-    {
-        // Serialize the partition data using bincode
-        let serialized_partition =
-            bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to serialize partition data: {}", e))?;
-
-        // Create task data combining partition and operation
-        let task_data = TaskData {
-            partition_data: serialized_partition,
-            operation,
-        };
-
-        let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard())
-            .map_err(|e| anyhow::anyhow!("Failed to serialize task data: {}", e))?;
-
-        // Submit to task scheduler
-        self.task_scheduler
-            .submit_task(
-                task_id,
-                stage_id,
-                partition_index,
-                serialized_task,
-                preferred_executor,
-            )
-            .await;
-
-        Ok(())
     }
 
     /// Collect results from all executors for a stage
@@ -609,26 +572,4 @@ impl Driver {
         // TODO: Implement proper result collection
         Ok(Vec::new())
     }
-}
-
-/// RDD operation types that can be executed distributedly
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
-pub enum RddOperation {
-    /// Map operation with serialized closure
-    Map { closure_data: Vec<u8> },
-    /// Filter operation with serialized predicate
-    Filter { predicate_data: Vec<u8> },
-    /// Collect operation - gather all elements
-    Collect,
-    /// Reduce operation with serialized function
-    Reduce { function_data: Vec<u8> },
-    /// FlatMap operation with serialized closure
-    FlatMap { closure_data: Vec<u8> },
-}
-
-/// Task data structure for RDD operations
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
-pub struct TaskData {
-    pub partition_data: Vec<u8>,
-    pub operation: RddOperation,
 }

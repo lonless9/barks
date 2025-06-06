@@ -22,5 +22,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[bin]]
-name = "distributed_rdd_example"
-path = "distributed_rdd_example.rs"
+name = "advanced_distributed_example"
+path = "src/advanced_distributed_example.rs"

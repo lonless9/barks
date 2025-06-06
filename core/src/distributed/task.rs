@@ -1,305 +1,229 @@
 //! Distributed task execution and management
 //!
 //! This module provides task execution capabilities for the distributed
-//! computing framework, including task runners and result handling.
-
-use crate::distributed::driver::{RddOperation, TaskData};
+//! computing framework. It defines a generic, serializable `Task` trait
+//! that allows arbitrary computations to be executed by the Executor.
 use crate::distributed::types::*;
-
+use anyhow::Result;
 use rayon::prelude::*;
-
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info};
+use std::time::Instant;
+use tracing::{debug, info, warn};
+
+/// A trait for any task that can be executed on an executor.
+///
+/// This trait is the key to solving the hardcoding and generics problem.
+/// Any struct implementing this trait can be serialized, sent to an executor,
+/// deserialized, and then executed. The `typetag` attribute makes the
+/// trait object serializable.
+#[typetag::serde(tag = "type")]
+#[async_trait::async_trait]
+pub trait Task: Send + Sync {
+    /// Executes the task logic on a partition's data and returns the result as serialized bytes.
+    /// This method encapsulates the entire computation for a single partition.
+    async fn execute(&self, partition_index: usize) -> Result<Vec<u8>, anyhow::Error>;
+}
+
+/// A concrete task that contains data and an operation identifier.
+/// This is a flexible task that dispatches operations based on a string identifier.
+/// It solves the problem of adding new operations without changing the Executor's code,
+/// but it still relies on a match statement. A more advanced design would use
+/// separate `Task` structs for each operation, leveraging `typetag` for dispatch.
+#[derive(Serialize, Deserialize)]
+pub struct DataMapTask {
+    // Data is already serialized as Vec<T> into bincode bytes.
+    // The `execute` method will deserialize it based on the operation.
+    pub partition_data: Vec<u8>,
+    pub operation_type: String, // e.g., "collect", "map_double_i32", "filter_even_i32"
+}
+
+#[typetag::serde]
+#[async_trait::async_trait]
+impl Task for DataMapTask {
+    async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+        // This method demonstrates how to handle different operations on generic data.
+        // The key is to deserialize the data *within* the branch for the specific operation,
+        // as only that branch knows the concrete type (e.g., `i32`).
+
+        let result_bytes = match self.operation_type.as_str() {
+            "collect" => {
+                // For collect, we don't need to know the type. Just return the raw bytes.
+                self.partition_data.clone()
+            }
+            "map_double_i32" => {
+                let (data, _): (Vec<i32>, _) =
+                    bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+                let result: Vec<i32> = data.par_iter().map(|x| x * 2).collect();
+                bincode::encode_to_vec(&result, bincode::config::standard())
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?
+            }
+            "filter_even_i32" => {
+                let (data, _): (Vec<i32>, _) =
+                    bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+                let result: Vec<i32> = data.par_iter().filter(|&x| x % 2 == 0).cloned().collect();
+                bincode::encode_to_vec(&result, bincode::config::standard())
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unknown operation type: {}",
+                    self.operation_type
+                ));
+            }
+        };
+
+        Ok(result_bytes)
+    }
+}
+
+/// A task that executes a chain of serializable operations on i32 data.
+/// This replaces the less flexible I32OperationTask.
+#[derive(Serialize, Deserialize)]
+pub struct ChainedI32Task {
+    /// Serialized partition data as Vec<i32>
+    pub partition_data: Vec<u8>,
+    /// The full chain of operations to apply to the partition data.
+    pub operations: Vec<crate::operations::SerializableI32Operation>,
+}
+
+#[typetag::serde]
+#[async_trait::async_trait]
+impl Task for ChainedI32Task {
+    async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+        // 1. Deserialize the initial partition data.
+        let (mut current_data, _): (Vec<i32>, _) =
+            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+
+        // 2. Apply each operation in the chain sequentially. The output of one
+        //    operation becomes the input for the next.
+        for op in &self.operations {
+            current_data = match op {
+                crate::operations::SerializableI32Operation::Map(map_op) => current_data
+                    .into_par_iter()
+                    .map(|item| map_op.execute(item))
+                    .collect(),
+                crate::operations::SerializableI32Operation::Filter(filter_op) => current_data
+                    .into_par_iter()
+                    .filter(|item| filter_op.test(item))
+                    .collect(),
+            };
+        }
+
+        // 3. Serialize the final result.
+        bincode::encode_to_vec(&current_data, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))
+    }
+}
 
 /// Task runner for executing distributed tasks
 pub struct TaskRunner {
-    /// Maximum number of concurrent tasks
-    max_concurrent_tasks: usize,
-    /// Task execution channel
-    task_sender: mpsc::UnboundedSender<TaskExecution>,
-    /// Running tasks tracking
-    running_tasks: Arc<tokio::sync::Mutex<HashMap<TaskId, TaskHandle>>>,
     /// Semaphore to limit concurrent tasks
     semaphore: Arc<tokio::sync::Semaphore>,
-}
-
-/// Task execution request
-struct TaskExecution {
-    task_id: TaskId,
-    stage_id: StageId,
-    partition_index: usize,
-    task_data: Vec<u8>,
-    result_sender: oneshot::Sender<TaskExecutionResult>,
 }
 
 /// Task execution result
 #[derive(Debug)]
 pub struct TaskExecutionResult {
-    pub task_id: TaskId,
-    pub stage_id: StageId,
-    pub partition_index: usize,
     pub state: TaskState,
     pub result: Option<Vec<u8>>,
     pub error_message: Option<String>,
     pub metrics: TaskMetrics,
 }
 
-/// Handle for a running task
-struct TaskHandle {
-    task_id: TaskId,
-    start_time: Instant,
-    cancel_sender: Option<oneshot::Sender<()>>,
-}
-
 impl TaskRunner {
     /// Create a new task runner
     pub fn new(max_concurrent_tasks: usize) -> Self {
-        let (task_sender, mut task_receiver) = mpsc::unbounded_channel::<TaskExecution>();
-        let running_tasks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
-        // Create a semaphore to limit concurrency
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_tasks));
-
-        let running_tasks_clone = Arc::clone(&running_tasks);
-        let semaphore_clone = Arc::clone(&semaphore);
-
-        // Spawn task execution loop
-        tokio::spawn(async move {
-            while let Some(task_execution) = task_receiver.recv().await {
-                let running_tasks = Arc::clone(&running_tasks_clone);
-                let semaphore_clone = Arc::clone(&semaphore_clone);
-
-                tokio::spawn(async move {
-                    // Acquire a permit from the semaphore
-                    let _permit = semaphore_clone.acquire().await.unwrap();
-                    Self::execute_task_internal(task_execution, running_tasks).await;
-                    // Permit is released when `_permit` goes out of scope
-                });
-            }
-        });
-
         Self {
-            max_concurrent_tasks,
-            task_sender,
-            running_tasks,
-            semaphore,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent_tasks)),
         }
     }
 
     /// Submit a task for execution
     pub async fn submit_task(
         &self,
-        task_id: TaskId,
-        stage_id: StageId,
         partition_index: usize,
-        task_data: Vec<u8>,
-    ) -> Result<TaskExecutionResult, anyhow::Error> {
-        let (result_sender, result_receiver) = oneshot::channel();
-
-        let task_execution = TaskExecution {
-            task_id,
-            stage_id,
-            partition_index,
-            task_data,
-            result_sender,
-        };
-
-        self.task_sender
-            .send(task_execution)
-            .map_err(|e| anyhow::anyhow!("Failed to submit task: {}", e))?;
-
-        result_receiver
+        serialized_task: Vec<u8>,
+    ) -> TaskExecutionResult {
+        // Acquire a permit to limit concurrency
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive task result: {}", e))
-    }
+            .expect("Semaphore closed");
 
-    /// Kill a running task
-    pub async fn kill_task(&self, task_id: &TaskId, reason: &str) -> Result<(), anyhow::Error> {
-        let mut running_tasks = self.running_tasks.lock().await;
-
-        if let Some(task_handle) = running_tasks.remove(task_id) {
-            if let Some(cancel_sender) = task_handle.cancel_sender {
-                let _ = cancel_sender.send(());
-                info!("Killed task {} with reason: {}", task_id, reason);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get the number of running tasks
-    pub async fn running_task_count(&self) -> usize {
-        self.running_tasks.lock().await.len()
-    }
-
-    /// Get information about running tasks
-    pub async fn get_running_tasks(&self) -> Vec<(TaskId, Duration)> {
-        let running_tasks = self.running_tasks.lock().await;
-        running_tasks
-            .values()
-            .map(|handle| (handle.task_id.clone(), handle.start_time.elapsed()))
-            .collect()
-    }
-
-    /// Internal task execution logic
-    async fn execute_task_internal(
-        task_execution: TaskExecution,
-        running_tasks: Arc<tokio::sync::Mutex<HashMap<TaskId, TaskHandle>>>,
-    ) {
         let start_time = Instant::now();
-        let mut metrics = TaskMetrics::default(); // Will be filled by execution logic
+        let mut metrics = TaskMetrics::default();
 
         // Execute task and get result bytes or an error
         let execution_result =
-            Self::deserialize_and_execute_task(&task_execution.task_data, &mut metrics).await;
+            Self::deserialize_and_execute_task(partition_index, &serialized_task, &mut metrics)
+                .await;
 
-        // Update metrics
         metrics.executor_run_time_ms = start_time.elapsed().as_millis() as u64;
 
-        // Assemble the final result struct
-        let final_result = match execution_result {
+        // Drop permit to release the semaphore slot
+        drop(permit);
+
+        match execution_result {
             Ok(result_bytes) => TaskExecutionResult {
-                task_id: task_execution.task_id.clone(),
-                stage_id: task_execution.stage_id.clone(),
-                partition_index: task_execution.partition_index,
                 state: TaskState::Finished,
                 result: Some(result_bytes),
                 error_message: None,
                 metrics,
             },
             Err(e) => TaskExecutionResult {
-                task_id: task_execution.task_id.clone(),
-                stage_id: task_execution.stage_id.clone(),
-                partition_index: task_execution.partition_index,
                 state: TaskState::Failed,
                 result: None,
                 error_message: Some(e.to_string()),
                 metrics,
             },
-        };
-
-        // Remove from running tasks
-        {
-            let mut running_tasks = running_tasks.lock().await;
-            running_tasks.remove(&final_result.task_id);
         }
+    }
 
-        // Send result back
-        if task_execution.result_sender.send(final_result).is_err() {
-            error!("Failed to send task result back to caller");
-        }
+    /// Kill a running task
+    pub async fn kill_task(&self, task_id: &TaskId, _reason: &str) -> Result<(), anyhow::Error> {
+        // In this simplified model, we can't easily interrupt the rayon-based
+        // computation. A full implementation would require more complex cancellation logic.
+        warn!(
+            "Task killing is not fully implemented. Task {} may continue to run.",
+            task_id
+        );
+        Ok(())
     }
 
     /// Deserialize and execute a task
     async fn deserialize_and_execute_task(
-        task_data: &[u8],
-        metrics: &mut TaskMetrics,
+        partition_index: usize,
+        serialized_task: &[u8],
+        metrics: &mut TaskMetrics, // `metrics` is now mutable
     ) -> Result<Vec<u8>, anyhow::Error> {
         let deserialize_start = Instant::now();
 
-        // Deserialize the task data, which is expected to be a `TaskData` struct.
-        let (rdd_task_data, _): (TaskData, _) =
-            bincode::decode_from_slice(task_data, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize task into TaskData: {}", e))?;
+        // Deserialize the trait object from JSON. `typetag` injects a "type" field
+        // that `serde_json` uses to determine which concrete struct to create.
+        // We must use a serde-compatible format like JSON.
+        let task: Box<dyn Task> = serde_json::from_slice(serialized_task)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize task with serde_json: {}", e))?;
 
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
-        // Execute RDD task with rayon parallel processing. This function now returns
-        // the already serialized result.
         let execution_start = Instant::now();
-        let serialized_result = Self::execute_rdd_task_with_rayon(&rdd_task_data).await?;
-        metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
 
-        metrics.result_size_bytes = serialized_result.len() as u64;
-
-        Ok(serialized_result)
-    }
-
-    /// Execute an RDD task with rayon parallel processing
-    async fn execute_rdd_task_with_rayon(task_data: &TaskData) -> Result<Vec<u8>, anyhow::Error> {
-        // =================================================================================
-        // !!! ARCHITECTURAL NOTE: This function is a major simplification. !!!
-        //
-        // In a real distributed computing framework like Spark, this is where the magic
-        // of executing arbitrary user code would happen. This would involve:
-        //
-        // 1.  **Deserializing Closures**: The `RddOperation`'s `closure_data` would contain
-        //     a serialized function (e.g., from a `map` or `filter` call). This is very
-        //     challenging in Rust due to its complex type and lifetime system. Libraries
-        //     like `serde_closure` attempt to solve this but have limitations.
-        // 2.  **Generic Data Types**: The function is currently hardcoded for `Vec<i32>`. A
-        //     real implementation would be generic over `T` where `T` is serializable.
-        // 3.  **Applying the Closure**: The deserialized closure would be applied to each
-        //     element of the deserialized `partition_data`.
-        //
-        // The current implementation uses a pattern match on `RddOperation` to execute
-        // hardcoded logic. This is a placeholder to demonstrate the Driver-Executor RPC
-        // flow but does not provide the flexibility of a real RDD system.
-        // =================================================================================
-        info!("Executing RDD task with rayon parallel processing");
-
-        // Get the operation directly from task data
-        let operation = &task_data.operation;
-
-        // For demonstration, we'll work with Vec<i32> data
-        // In a real implementation, this would be generic over the data type
-        let (partition_data, _): (Vec<i32>, _) =
-            bincode::decode_from_slice(&task_data.partition_data, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize partition data: {}", e))?;
-
-        debug!(
-            "Processing {} elements with operation: {:?}",
-            partition_data.len(),
-            operation
-        );
-        debug!("Input partition data: {:?}", partition_data);
-
-        // Execute the operation using rayon for parallel processing
-        let result: Vec<i32> = match *operation {
-            RddOperation::Map { closure_data: _ } => {
-                // For demonstration, apply a simple map operation
-                partition_data
-                    .into_par_iter()
-                    .map(|x| x * 2) // Simple doubling operation
-                    .collect()
-            }
-            RddOperation::Filter { predicate_data: _ } => {
-                // For demonstration, filter even numbers
-                partition_data
-                    .into_par_iter()
-                    .filter(|&x| x % 2 == 0)
-                    .collect()
-            }
-            RddOperation::Collect => {
-                // Simply return the data as-is
-                partition_data
-            }
-            RddOperation::Reduce { function_data: _ } => {
-                // For demonstration, sum all elements and return as single-element vector
-                let sum = partition_data.into_par_iter().sum::<i32>();
-                vec![sum]
-            }
-            RddOperation::FlatMap { closure_data: _ } => {
-                // For demonstration, duplicate each element
-                partition_data
-                    .into_par_iter()
-                    .flat_map(|x| vec![x, x])
-                    .collect()
+        // The actual execution happens here. The `Task` object contains all necessary logic.
+        let result_bytes = match task.execute(partition_index).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(e);
             }
         };
 
-        info!("RDD task completed, result size: {} elements", result.len());
-        debug!("Output result data: {:?}", result);
+        metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
+        metrics.result_size_bytes = result_bytes.len() as u64;
 
-        // Serialize the result
-        let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
-            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
-
-        Ok(serialized_result)
+        Ok(result_bytes)
     }
 }
 
@@ -308,7 +232,7 @@ impl TaskRunner {
 pub struct TaskScheduler {
     /// Available executors
     executors: Arc<tokio::sync::Mutex<HashMap<ExecutorId, ExecutorInfo>>>,
-    /// Pending tasks queue
+    /// Pending tasks queue (FIFO)
     pending_tasks: Arc<tokio::sync::Mutex<Vec<PendingTask>>>,
 }
 
@@ -318,7 +242,8 @@ pub struct PendingTask {
     pub task_id: TaskId,
     pub stage_id: StageId,
     pub partition_index: usize,
-    pub task_data: Vec<u8>,
+    // This will now be the serialized `Box<dyn Task>`
+    pub serialized_task: Vec<u8>,
     pub preferred_executor: Option<ExecutorId>,
 }
 
@@ -347,29 +272,6 @@ impl TaskScheduler {
     }
 
     /// Submit a task for scheduling
-    pub async fn submit_task(
-        &self,
-        task_id: TaskId,
-        stage_id: StageId,
-        partition_index: usize,
-        task_data: Vec<u8>,
-        preferred_executor: Option<ExecutorId>,
-    ) {
-        let pending_task = PendingTask {
-            task_id: task_id.clone(),
-            stage_id,
-            partition_index,
-            task_data,
-            preferred_executor,
-        };
-
-        let mut pending_tasks = self.pending_tasks.lock().await;
-        pending_tasks.push(pending_task);
-
-        debug!("Submitted task {} for scheduling", task_id);
-    }
-
-    /// Submit a pending task back to the queue (e.g., on failure)
     pub async fn submit_pending_task(&self, pending_task: PendingTask) {
         let mut pending_tasks = self.pending_tasks.lock().await;
         // Add to the front for quick retry, or back for fairness. Let's add to back.
@@ -377,7 +279,7 @@ impl TaskScheduler {
         debug!("Re-queued task for scheduling");
     }
 
-    /// Get the next task for an executor
+    /// Get the next task from the queue for an executor
     pub async fn get_next_task(&self) -> Option<PendingTask> {
         let mut pending_tasks = self.pending_tasks.lock().await;
 

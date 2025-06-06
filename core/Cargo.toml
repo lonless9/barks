@@ -18,8 +18,11 @@ bincode.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid = { version = "1.6.1", features = ["v4"] }
-num_cpus = "1.16.0"
+uuid.workspace = true
+typetag.workspace = true
+async-trait.workspace = true
+dyn-clone = "1.0"
+num_cpus.workspace = true
 barks-utils = { path = "../common/utils" }
 
 [build-dependencies]

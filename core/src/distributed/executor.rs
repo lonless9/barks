@@ -8,10 +8,9 @@ use crate::distributed::proto::driver::{
     TaskStatusRequest as DriverTaskStatusRequest, driver_service_client::DriverServiceClient,
 };
 use crate::distributed::proto::executor::{
-    ExecutorInfo as ProtoExecutorInfo, ExecutorMetrics as ProtoExecutorMetrics,
-    ExecutorStatus as ProtoExecutorStatus, GetStatusRequest, GetStatusResponse, KillTaskRequest,
-    KillTaskResponse, LaunchTaskRequest, LaunchTaskResponse, ShutdownRequest, ShutdownResponse,
-    TaskInfo as ProtoTaskInfo, TaskStatus as ProtoTaskStatus,
+    ExecutorInfo as ProtoExecutorInfo, ExecutorMetrics as ProtoExecutorMetrics, GetStatusRequest,
+    GetStatusResponse, KillTaskRequest, KillTaskResponse, LaunchTaskRequest, LaunchTaskResponse,
+    ShutdownRequest, ShutdownResponse, TaskInfo as ProtoTaskInfo,
     executor_service_server::{ExecutorService, ExecutorServiceServer},
 };
 use crate::distributed::task::TaskRunner;
@@ -120,7 +119,7 @@ impl ExecutorService for ExecutorServiceImpl {
         let task_id = req.task_id.clone();
         let stage_id = req.stage_id.clone();
         let partition_index = req.partition_index;
-        let task_data = req.serialized_partition;
+        let serialized_task = req.serialized_task;
 
         // Clone necessary Arcs to move into the spawned task
         let status_arc = Arc::clone(&self.status);
@@ -128,7 +127,7 @@ impl ExecutorService for ExecutorServiceImpl {
         let metrics_arc = Arc::clone(&self.metrics);
         let task_runner_arc = Arc::clone(&self.task_runner);
         let driver_client_arc = Arc::clone(&self.driver_client);
-        let executor_info_arc = self.executor_info.clone();
+        let _executor_info_arc = self.executor_info.clone();
         let executor_id = self.executor_info.executor_id.clone();
 
         // Update status to busy
@@ -155,46 +154,25 @@ impl ExecutorService for ExecutorServiceImpl {
         // The spawned task will report the status to the driver upon completion.
         tokio::spawn(async move {
             // Submit task to task runner
-            let execution_result = task_runner_arc
-                .submit_task(
-                    task_id.clone(),
-                    stage_id,
-                    partition_index as usize,
-                    task_data,
-                )
+            let task_result = task_runner_arc
+                .submit_task(partition_index as usize, serialized_task)
                 .await;
 
-            let (state, result_bytes, error_message, result_metrics) = match execution_result {
-                Ok(result) => {
-                    info!("Task {} completed successfully", task_id);
-                    (
-                        result.state,
-                        result.result,
-                        result.error_message,
-                        result.metrics,
-                    )
-                }
-                Err(e) => {
-                    error!("Task {} failed to execute: {}", task_id, e);
-                    (
-                        TaskState::Failed,
-                        None,
-                        Some(e.to_string()),
-                        Default::default(),
-                    )
-                }
-            };
+            info!(
+                "Task {} completed with state: {:?}",
+                task_id, task_result.state
+            );
 
             // Update internal metrics
             {
                 let mut metrics = metrics_arc.lock().await;
                 metrics.total_tasks += 1;
-                if state == TaskState::Finished {
+                if task_result.state == TaskState::Finished {
                     metrics.succeeded_tasks += 1;
                 } else {
                     metrics.failed_tasks += 1;
                 }
-                metrics.total_duration_ms += result_metrics.executor_run_time_ms;
+                metrics.total_duration_ms += task_result.metrics.executor_run_time_ms;
             }
 
             // Remove from running tasks
@@ -211,20 +189,26 @@ impl ExecutorService for ExecutorServiceImpl {
                 let status_request = DriverTaskStatusRequest {
                     executor_id: executor_id,
                     task_id: task_id.clone(),
-                    state: state as i32,
-                    result: result_bytes.unwrap_or_default(),
-                    error_message: error_message.unwrap_or_default(),
+                    state: task_result.state as i32,
+                    result: task_result.result.unwrap_or_default(),
+                    error_message: task_result.error_message.unwrap_or_default(),
                     task_metrics: Some(ProtoTaskMetrics {
-                        executor_deserialize_time_ms: result_metrics.executor_deserialize_time_ms,
+                        executor_deserialize_time_ms: task_result
+                            .metrics
+                            .executor_deserialize_time_ms,
                         executor_deserialize_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                        executor_run_time_ms: result_metrics.executor_run_time_ms,
+                        executor_run_time_ms: task_result.metrics.executor_run_time_ms,
                         executor_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                        result_size_bytes: result_metrics.result_size_bytes,
-                        jvm_gc_time_ms: result_metrics.jvm_gc_time_ms,
-                        result_serialization_time_ms: result_metrics.result_serialization_time_ms,
-                        memory_bytes_spilled: result_metrics.memory_bytes_spilled,
-                        disk_bytes_spilled: result_metrics.disk_bytes_spilled,
-                        peak_execution_memory_bytes: result_metrics.peak_execution_memory_bytes,
+                        result_size_bytes: task_result.metrics.result_size_bytes,
+                        jvm_gc_time_ms: task_result.metrics.jvm_gc_time_ms,
+                        result_serialization_time_ms: task_result
+                            .metrics
+                            .result_serialization_time_ms,
+                        memory_bytes_spilled: task_result.metrics.memory_bytes_spilled,
+                        disk_bytes_spilled: task_result.metrics.disk_bytes_spilled,
+                        peak_execution_memory_bytes: task_result
+                            .metrics
+                            .peak_execution_memory_bytes,
                         input_bytes_read: 0,     // TODO: Implement input tracking
                         input_records_read: 0,   // TODO: Implement input tracking
                         output_bytes_written: 0, // TODO: Implement output tracking

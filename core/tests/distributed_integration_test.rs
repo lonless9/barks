@@ -5,7 +5,7 @@
 
 use barks_core::distributed::{
     Driver, Executor, ExecutorInfo,
-    driver::{RddOperation, TaskData},
+    task::{DataMapTask, Task},
 };
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -84,19 +84,16 @@ async fn test_task_submission() {
 
         // Create a task with some data and an operation
         let partition_data: Vec<i32> = vec![i as i32, i as i32 + 1];
-        let task = TaskData {
-            partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                .expect("Failed to serialize partition data"),
-            operation: RddOperation::Collect,
-        };
+        let serialized_partition_data =
+            bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                .expect("Failed to serialize partition data");
 
-        // The actual payload for the scheduler is the serialized `TaskData`
-        let task_data = bincode::encode_to_vec(&task, bincode::config::standard())
-            .expect("Failed to serialize task");
+        let task: Box<dyn Task> = Box::new(DataMapTask {
+            partition_data: serialized_partition_data,
+            operation_type: "collect".to_string(), // For a simple test, just collect
+        });
 
-        let _result_receiver = driver
-            .submit_task(task_id, stage_id, i, task_data, None)
-            .await;
+        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
     }
 
     // Verify pending tasks
@@ -122,50 +119,28 @@ async fn test_rdd_task_submission() {
 
     sleep(Duration::from_millis(500)).await;
 
-    // Create RDD tasks with different operations
-    let operations = vec![
-        RddOperation::Map {
-            closure_data: vec![],
-        },
-        RddOperation::Filter {
-            predicate_data: vec![],
-        },
-        RddOperation::Collect,
-        RddOperation::Reduce {
-            function_data: vec![],
-        },
-        RddOperation::FlatMap {
-            closure_data: vec![],
-        },
-    ];
+    let operations = vec!["map_double_i32", "filter_even_i32", "collect"];
 
-    for (i, operation) in operations.into_iter().enumerate() {
+    for (i, operation_type) in operations.iter().enumerate() {
         let task_id = format!("rdd-test-task-{}", i);
-        let stage_id = format!("rdd-test-stage-{}", i);
-
+        let stage_id = "rdd-test-stage-1".to_string();
         // Create sample partition data
         let partition_data: Vec<i32> = (0..50).map(|x| x * (i + 1) as i32).collect();
         let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .expect("Failed to serialize partition data");
 
-        let rdd_task = TaskData {
+        let task: Box<dyn Task> = Box::new(DataMapTask {
             partition_data: serialized_data,
-            operation: operation,
-        };
+            operation_type: operation_type.to_string(),
+        });
 
-        // The task data sent to the scheduler is the serialized `TaskData`
-        let task_data = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
-            .expect("Failed to serialize RDD task");
-
-        let _result_receiver = driver
-            .submit_task(task_id, stage_id, i, task_data, None)
-            .await;
+        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
     }
 
     // Verify pending tasks
     sleep(Duration::from_millis(100)).await;
     let pending_count = driver.pending_task_count().await;
-    assert_eq!(pending_count, 5, "Driver should have 5 pending RDD tasks");
+    assert_eq!(pending_count, 3, "Driver should have 3 pending RDD tasks");
 }
 
 /// Test multiple executors registration
@@ -228,33 +203,35 @@ async fn test_multiple_executors() {
 /// Test task serialization and deserialization
 #[test]
 fn test_task_serialization() {
-    // Test TaskData serialization, which is the core of an RDD task
+    // Test DataMapTask serialization, which is the core of an RDD task
     let partition_data: Vec<i32> = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
         .expect("Failed to serialize partition data");
 
-    let rdd_task = TaskData {
+    let task: Box<dyn Task> = Box::new(DataMapTask {
         partition_data: serialized_data.clone(),
-        operation: RddOperation::Map {
-            closure_data: vec![1, 2],
-        },
-    };
+        operation_type: "map_double_i32".to_string(),
+    });
 
-    let serialized_rdd = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
-        .expect("Failed to serialize TaskData");
+    let serialized_task = serde_json::to_vec(&task).expect("Failed to serialize DataMapTask");
 
-    let (deserialized_rdd, _): (TaskData, _) =
-        bincode::decode_from_slice(&serialized_rdd, bincode::config::standard())
-            .expect("Failed to deserialize TaskData");
+    let deserialized_task: Box<dyn Task> =
+        serde_json::from_slice(&serialized_task).expect("Failed to deserialize DataMapTask");
 
-    assert_eq!(rdd_task.partition_data, deserialized_rdd.partition_data);
+    // We can't directly compare the tasks, but we can test that they work the same way
+    // by executing them and comparing results
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
-    // Verify the partition data can be deserialized
-    let (recovered_data, _): (Vec<i32>, _) = bincode::decode_from_slice(
-        &deserialized_rdd.partition_data,
-        bincode::config::standard(),
-    )
-    .expect("Failed to deserialize partition data");
+    let original_result = rt.block_on(async { task.execute(0).await.unwrap() });
+    let deserialized_result = rt.block_on(async { deserialized_task.execute(0).await.unwrap() });
 
-    assert_eq!(partition_data, recovered_data);
+    assert_eq!(original_result, deserialized_result);
+
+    // Verify the result data can be deserialized
+    let (result_data, _): (Vec<i32>, _) =
+        bincode::decode_from_slice(&original_result, bincode::config::standard())
+            .expect("Failed to deserialize result data");
+
+    let expected: Vec<i32> = partition_data.iter().map(|x| x * 2).collect();
+    assert_eq!(result_data, expected);
 }

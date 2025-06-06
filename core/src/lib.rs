@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod distributed;
+pub mod operations;
 pub mod rdd;
 pub mod scheduler;
 pub mod traits;
