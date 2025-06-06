@@ -113,14 +113,14 @@ message TaskInfo {
     string stage_id = 2;
     uint32 partition_index = 3;
     uint64 start_time = 4;
-    TaskStatus status = 5;
+    TaskState status = 5;
 }
 
-// Task status
-enum TaskStatus {
-    TASK_STATUS_PENDING = 0;
-    TASK_STATUS_RUNNING = 1;
-    TASK_STATUS_FINISHED = 2;
-    TASK_STATUS_FAILED = 3;
-    TASK_STATUS_KILLED = 4;
+// Task state (matches driver.proto)
+enum TaskState {
+    TASK_PENDING = 0;
+    TASK_RUNNING = 1;
+    TASK_FINISHED = 2;
+    TASK_FAILED = 3;
+    TASK_KILLED = 4;
 }

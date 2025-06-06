@@ -96,6 +96,14 @@ impl DriverServiceImpl {
         // Start heartbeat monitoring task
         let heartbeat_receiver = Arc::clone(&self.heartbeat_receiver);
         let executors = Arc::clone(&self.executors);
+        // ADDED: Clone task_scheduler for liveness check
+        let task_scheduler_clone = Arc::clone(&self.task_scheduler);
+
+        // Spawn liveness check task
+        let executors_for_liveness = Arc::clone(&executors);
+        tokio::spawn(async move {
+            Self::check_executor_liveness(executors_for_liveness, task_scheduler_clone, 30).await;
+        });
         tokio::spawn(async move {
             Self::heartbeat_monitor(heartbeat_receiver, executors).await;
         });
@@ -292,6 +300,46 @@ impl DriverServiceImpl {
         }
     }
 
+    /// Periodically checks for dead executors and removes them.
+    async fn check_executor_liveness(
+        executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
+        task_scheduler: Arc<TaskScheduler>,
+        timeout_secs: u64,
+    ) {
+        let mut interval = tokio::time::interval(Duration::from_secs(timeout_secs / 2));
+        loop {
+            interval.tick().await;
+            let now = Self::current_timestamp();
+            let mut dead_executors = Vec::new();
+
+            let executors_guard = executors.lock().await;
+            for (id, executor) in executors_guard.iter() {
+                // Only check active executors
+                if executor.status != ExecutorStatus::Failed
+                    && now.saturating_sub(executor.last_heartbeat) > timeout_secs
+                {
+                    warn!(
+                        "Executor {} timed out. Last heartbeat was {} seconds ago.",
+                        id,
+                        now - executor.last_heartbeat
+                    );
+                    dead_executors.push(id.clone());
+                }
+            }
+            drop(executors_guard); // Release lock
+
+            if !dead_executors.is_empty() {
+                let mut executors_guard = executors.lock().await;
+                for id in &dead_executors {
+                    if let Some(executor) = executors_guard.get_mut(id) {
+                        executor.status = ExecutorStatus::Failed;
+                        task_scheduler.unregister_executor(id).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Get current timestamp
     fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -346,6 +394,18 @@ impl DriverService for DriverServiceImpl {
         request: Request<RegisterExecutorRequest>,
     ) -> Result<Response<RegisterExecutorResponse>, Status> {
         let req = request.into_inner();
+
+        // Invalidate any existing client for this executor ID to force re-connection
+        // in case the executor is re-registering with a new address.
+        {
+            let mut clients = self.executor_clients.lock().await;
+            if clients.remove(&req.executor_id).is_some() {
+                info!(
+                    "Removed stale client for re-registering executor: {}",
+                    req.executor_id
+                );
+            }
+        }
 
         info!("Registering executor: {}", req.executor_id);
 
