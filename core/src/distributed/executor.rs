@@ -20,8 +20,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, mpsc};
-use tokio::time::{interval, sleep};
+use tokio::sync::Mutex;
+use tokio::time::interval;
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{error, info, warn};
 
@@ -95,29 +95,6 @@ impl ExecutorServiceImpl {
             .unwrap()
             .as_secs()
     }
-
-    /// Convert internal ExecutorStatus to protobuf
-    fn convert_to_proto_status(status: ExecutorStatus) -> i32 {
-        match status {
-            ExecutorStatus::Starting => 0,
-            ExecutorStatus::Running => 1,
-            ExecutorStatus::Idle => 2,
-            ExecutorStatus::Busy => 3,
-            ExecutorStatus::Stopping => 4,
-            ExecutorStatus::Failed => 5,
-        }
-    }
-
-    /// Convert internal TaskStatus to protobuf
-    fn convert_to_proto_task_status(status: TaskState) -> i32 {
-        match status {
-            TaskState::Pending => 0,
-            TaskState::Running => 1,
-            TaskState::Finished => 2,
-            TaskState::Failed => 3,
-            TaskState::Killed => 4,
-        }
-    }
 }
 
 #[tonic::async_trait]
@@ -167,14 +144,24 @@ impl ExecutorService for ExecutorServiceImpl {
             )
             .await;
 
-        let (state, error_message, result_metrics) = match execution_result {
+        let (state, result_bytes, error_message, result_metrics) = match execution_result {
             Ok(result) => {
                 info!("Task {} completed successfully", task_id);
-                (result.state, result.error_message, result.metrics)
+                (
+                    result.state,
+                    result.result,
+                    result.error_message,
+                    result.metrics,
+                )
             }
             Err(e) => {
                 error!("Task {} failed to execute: {}", task_id, e);
-                (TaskState::Failed, Some(e.to_string()), Default::default())
+                (
+                    TaskState::Failed,
+                    None,
+                    Some(e.to_string()),
+                    Default::default(),
+                )
             }
         };
 
@@ -204,8 +191,8 @@ impl ExecutorService for ExecutorServiceImpl {
             let status_request = DriverTaskStatusRequest {
                 executor_id,
                 task_id: task_id.clone(),
-                state: Self::convert_to_proto_task_status(state) as i32,
-                result: vec![], // Result data would be handled separately in a real implementation
+                state: state as i32,
+                result: result_bytes.unwrap_or_default(),
                 error_message: error_message.unwrap_or_default(),
                 task_metrics: Some(ProtoTaskMetrics {
                     executor_deserialize_time_ms: result_metrics.executor_deserialize_time_ms,
@@ -301,9 +288,6 @@ impl ExecutorService for ExecutorServiceImpl {
             None
         };
 
-        let running_tasks: Vec<TaskInfo> =
-            self.running_tasks.lock().await.values().cloned().collect();
-
         let proto_info = ProtoExecutorInfo {
             executor_id: self.executor_info.executor_id.clone(),
             host: self.executor_info.host.clone(),
@@ -328,19 +312,10 @@ impl ExecutorService for ExecutorServiceImpl {
             active_tasks: m.active_tasks,
         });
 
-        let proto_running_tasks: Vec<ProtoTaskInfo> = running_tasks
-            .into_iter()
-            .map(|task| ProtoTaskInfo {
-                task_id: task.task_id,
-                stage_id: task.stage_id,
-                partition_index: task.partition_index,
-                start_time: task.start_time,
-                status: Self::convert_to_proto_task_status(task.status),
-            })
-            .collect();
+        let proto_running_tasks = self.get_proto_running_tasks().await;
 
         let response = GetStatusResponse {
-            status: Self::convert_to_proto_status(status),
+            status: status as i32,
             info: Some(proto_info),
             metrics: proto_metrics,
             running_tasks: proto_running_tasks,
@@ -373,6 +348,22 @@ impl ExecutorService for ExecutorServiceImpl {
         };
 
         Ok(Response::new(response))
+    }
+}
+
+impl ExecutorServiceImpl {
+    async fn get_proto_running_tasks(&self) -> Vec<ProtoTaskInfo> {
+        let running_tasks = self.running_tasks.lock().await;
+        running_tasks
+            .values()
+            .map(|task| ProtoTaskInfo {
+                task_id: task.task_id.clone(),
+                stage_id: task.stage_id.clone(),
+                partition_index: task.partition_index,
+                start_time: task.start_time,
+                status: task.status as i32,
+            })
+            .collect()
     }
 }
 
@@ -443,6 +434,7 @@ impl Executor {
             let executor_id = self.service.executor_info.executor_id.clone();
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);
+            let running_tasks = Arc::clone(&self.service.running_tasks);
             let heartbeat_interval = self.heartbeat_interval;
 
             tokio::spawn(async move {
@@ -452,13 +444,14 @@ impl Executor {
                 loop {
                     interval.tick().await;
 
+                    let active_tasks_count = running_tasks.lock().await.len() as u32;
                     let current_status = *status.lock().await;
                     let current_metrics = metrics.lock().await.clone();
 
                     let heartbeat_request = HeartbeatRequest {
                         executor_id: executor_id.clone(),
-                        timestamp: ExecutorServiceImpl::current_timestamp(),
-                        status: ExecutorServiceImpl::convert_to_proto_status(current_status),
+                        timestamp: Executor::current_timestamp(),
+                        status: current_status as i32,
                         accumulator_updates: vec![], // TODO: Implement accumulator updates
                         metrics: Some(crate::distributed::proto::driver::ExecutorMetrics {
                             total_tasks: current_metrics.total_tasks,
@@ -471,6 +464,7 @@ impl Executor {
                             total_shuffle_write_bytes: 0, // TODO: Implement
                             max_memory_bytes: current_metrics.max_memory_bytes,
                             memory_used_bytes: current_metrics.memory_used_bytes,
+                            active_tasks: active_tasks_count,
                         }),
                     };
 
@@ -497,5 +491,15 @@ impl Executor {
         } else {
             Err("No driver client available for heartbeat".into())
         }
+    }
+}
+
+impl Executor {
+    // Helper for getting current timestamp, moved from service to be accessible here
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 }

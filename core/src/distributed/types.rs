@@ -2,7 +2,6 @@
 //!
 //! This module defines the core types used in distributed execution.
 
-use crate::traits::RddResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -55,96 +54,6 @@ impl ExecutorInfo {
         self.attributes = attributes;
         self
     }
-}
-
-/// Task definition for distributed execution
-#[derive(Debug, Clone)]
-pub struct DistributedTask<T>
-where
-    T: Send + Sync + Clone + Debug,
-{
-    pub task_id: TaskId,
-    pub stage_id: StageId,
-    pub partition_index: usize,
-    pub partition_data: Vec<T>, // Serialized partition data instead of trait object
-    pub task_type: TaskType,
-    pub properties: HashMap<String, String>,
-}
-
-/// Types of tasks that can be executed
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TaskType {
-    /// Map operation with serialized function representation
-    Map { operation_id: String },
-    /// Filter operation with serialized predicate representation
-    Filter { operation_id: String },
-    /// Collect operation
-    Collect,
-    /// Custom operation with operation identifier
-    Custom { operation_id: String },
-}
-
-impl<T> DistributedTask<T>
-where
-    T: Send + Sync + Clone + Debug,
-{
-    pub fn new(
-        task_id: TaskId,
-        stage_id: StageId,
-        partition_index: usize,
-        partition_data: Vec<T>,
-        task_type: TaskType,
-    ) -> Self {
-        Self {
-            task_id,
-            stage_id,
-            partition_index,
-            partition_data,
-            task_type,
-            properties: HashMap::new(),
-        }
-    }
-
-    pub fn with_properties(mut self, properties: HashMap<String, String>) -> Self {
-        self.properties = properties;
-        self
-    }
-
-    /// Execute the task and return the result
-    /// This is a simplified version - in a real implementation,
-    /// the task_type would determine the actual computation
-    pub fn execute(&self) -> RddResult<Vec<T>> {
-        match &self.task_type {
-            TaskType::Collect => Ok(self.partition_data.clone()),
-            TaskType::Map { operation_id: _ } => {
-                // In a real implementation, we would look up the operation
-                // and apply it to the partition data
-                Ok(self.partition_data.clone())
-            }
-            TaskType::Filter { operation_id: _ } => {
-                // In a real implementation, we would look up the predicate
-                // and filter the partition data
-                Ok(self.partition_data.clone())
-            }
-            TaskType::Custom { operation_id: _ } => {
-                // In a real implementation, we would look up the custom operation
-                Ok(self.partition_data.clone())
-            }
-        }
-    }
-}
-
-/// Task result containing the computed data
-#[derive(Debug, Clone)]
-pub struct TaskResult<T>
-where
-    T: Send + Sync + Clone + Debug,
-{
-    pub task_id: TaskId,
-    pub stage_id: StageId,
-    pub partition_index: usize,
-    pub result: RddResult<Vec<T>>,
-    pub metrics: TaskMetrics,
 }
 
 /// Task execution metrics
@@ -205,34 +114,36 @@ impl Default for ExecutorMetrics {
 
 /// Executor status enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
 pub enum ExecutorStatus {
-    Starting,
-    Running,
-    Idle,
-    Busy,
-    Stopping,
-    Failed,
+    Starting = 0,
+    Running = 1, // Service is up
+    Idle = 2,    // Service is up and waiting for tasks
+    Busy = 3,    // Service is up and executing tasks
+    Stopping = 4,
+    Failed = 5,
 }
 
 impl Default for ExecutorStatus {
     fn default() -> Self {
-        ExecutorStatus::Starting
+        Self::Starting
     }
 }
 
 /// Task state enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
 pub enum TaskState {
-    Pending,
-    Running,
-    Finished,
-    Failed,
-    Killed,
+    Pending = 0,
+    Running = 1,
+    Finished = 2,
+    Failed = 3,
+    Killed = 4,
 }
 
 impl Default for TaskState {
     fn default() -> Self {
-        TaskState::Pending
+        Self::Pending
     }
 }
 
@@ -247,14 +158,12 @@ pub mod serialization {
         task_id: &TaskId,
         stage_id: &StageId,
         partition_index: usize,
-        task_type: &TaskType,
         properties: &HashMap<String, String>,
     ) -> Result<Vec<u8>> {
         let metadata = serde_json::json!({
             "task_id": task_id,
             "stage_id": stage_id,
             "partition_index": partition_index,
-            "task_type": task_type,
             "properties": properties
         });
         serde_json::to_vec(&metadata)

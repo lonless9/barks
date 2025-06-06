@@ -4,7 +4,8 @@
 //! properly and execute tasks in a distributed manner.
 
 use barks_core::distributed::{
-    Driver, Executor, ExecutorInfo, RddOperationType, RddTaskInfo, SimpleTaskInfo,
+    Driver, Executor, ExecutorInfo, SimpleTaskInfo,
+    driver::{RddOperation, TaskData},
 };
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -116,19 +117,18 @@ async fn test_rdd_task_submission() {
 
     // Create RDD tasks with different operations
     let operations = vec![
-        RddOperationType::Map {
-            function_id: "double".to_string(),
+        RddOperation::Map {
+            closure_data: vec![],
         },
-        RddOperationType::Filter {
-            predicate_id: "positive".to_string(),
+        RddOperation::Filter {
+            predicate_data: vec![],
         },
-        RddOperationType::Collect,
-        RddOperationType::Reduce {
-            function_id: "sum".to_string(),
+        RddOperation::Collect,
+        RddOperation::Reduce {
+            function_data: vec![],
         },
-        RddOperationType::Custom {
-            operation_id: "custom_op".to_string(),
-            function_data: vec![1, 2, 3, 4],
+        RddOperation::FlatMap {
+            closure_data: vec![],
         },
     ];
 
@@ -141,14 +141,12 @@ async fn test_rdd_task_submission() {
         let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .expect("Failed to serialize partition data");
 
-        let rdd_task = RddTaskInfo {
-            task_id: task_id.clone(),
-            stage_id: stage_id.clone(),
-            partition_index: i,
-            serialized_partition_data: serialized_data,
-            operation_type: operation,
+        let rdd_task = TaskData {
+            partition_data: serialized_data,
+            operation: operation,
         };
 
+        // The task data sent to the scheduler is the serialized `TaskData`
         let task_data = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
             .expect("Failed to serialize RDD task");
 
@@ -243,39 +241,30 @@ fn test_task_serialization() {
     assert_eq!(simple_task.partition_index, deserialized.partition_index);
     assert_eq!(simple_task.data_size, deserialized.data_size);
 
-    // Test RddTaskInfo serialization
+    // Test TaskData serialization, which is the core of an RDD task
     let partition_data: Vec<i32> = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
         .expect("Failed to serialize partition data");
 
-    let rdd_task = RddTaskInfo {
-        task_id: "rdd-test-001".to_string(),
-        stage_id: "rdd-stage-001".to_string(),
-        partition_index: 0,
-        serialized_partition_data: serialized_data.clone(),
-        operation_type: RddOperationType::Map {
-            function_id: "test_map".to_string(),
+    let rdd_task = TaskData {
+        partition_data: serialized_data.clone(),
+        operation: RddOperation::Map {
+            closure_data: vec![1, 2],
         },
     };
 
     let serialized_rdd = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
-        .expect("Failed to serialize RddTaskInfo");
+        .expect("Failed to serialize TaskData");
 
-    let (deserialized_rdd, _): (RddTaskInfo, _) =
+    let (deserialized_rdd, _): (TaskData, _) =
         bincode::decode_from_slice(&serialized_rdd, bincode::config::standard())
-            .expect("Failed to deserialize RddTaskInfo");
+            .expect("Failed to deserialize TaskData");
 
-    assert_eq!(rdd_task.task_id, deserialized_rdd.task_id);
-    assert_eq!(rdd_task.stage_id, deserialized_rdd.stage_id);
-    assert_eq!(rdd_task.partition_index, deserialized_rdd.partition_index);
-    assert_eq!(
-        rdd_task.serialized_partition_data,
-        deserialized_rdd.serialized_partition_data
-    );
+    assert_eq!(rdd_task.partition_data, deserialized_rdd.partition_data);
 
     // Verify the partition data can be deserialized
     let (recovered_data, _): (Vec<i32>, _) = bincode::decode_from_slice(
-        &deserialized_rdd.serialized_partition_data,
+        &deserialized_rdd.partition_data,
         bincode::config::standard(),
     )
     .expect("Failed to deserialize partition data");

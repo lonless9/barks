@@ -3,6 +3,7 @@
 //! This module provides task execution capabilities for the distributed
 //! computing framework, including task runners and result handling.
 
+use crate::distributed::driver::{RddOperation, TaskData};
 use crate::distributed::types::*;
 use crate::traits::{Partition, RddResult};
 use rayon::prelude::*;
@@ -190,51 +191,22 @@ impl TaskRunner {
     ) -> Result<Vec<u8>, anyhow::Error> {
         let deserialize_start = Instant::now();
 
-        // Try to deserialize as RDD task first, then fall back to simple task
-        if let Ok((rdd_task_data, _)) = bincode::decode_from_slice::<
-            crate::distributed::driver::TaskData,
-            _,
-        >(task_data, bincode::config::standard())
-        {
-            metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
+        // Deserialize the task data, which is expected to be a `TaskData` struct.
+        let (rdd_task_data, _): (TaskData, _) =
+            bincode::decode_from_slice(task_data, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize task into TaskData: {}", e))?;
 
-            // Execute RDD task with rayon parallel processing
-            let execution_start = Instant::now();
-            let result = Self::execute_rdd_task_with_rayon(&rdd_task_data).await?;
+        metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
-            metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
+        // Execute RDD task with rayon parallel processing. This function now returns
+        // the already serialized result.
+        let execution_start = Instant::now();
+        let serialized_result = Self::execute_rdd_task_with_rayon(&rdd_task_data).await?;
+        metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
 
-            // Serialize result
-            let serialize_start = Instant::now();
-            let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
+        metrics.result_size_bytes = serialized_result.len() as u64;
 
-            metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
-            metrics.result_size_bytes = serialized_result.len() as u64;
-
-            Ok(serialized_result)
-        } else {
-            // Fall back to simple task execution
-            let (task_info, _): (SimpleTaskInfo, _) =
-                bincode::decode_from_slice(task_data, bincode::config::standard())
-                    .map_err(|e| anyhow::anyhow!("Failed to deserialize task: {}", e))?;
-
-            metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
-
-            let execution_start = Instant::now();
-            let result = Self::execute_simple_task(&task_info).await?;
-            metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
-
-            // Serialize result using latest bincode API
-            let serialize_start = Instant::now();
-            let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
-
-            metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
-            metrics.result_size_bytes = serialized_result.len() as u64;
-
-            Ok(serialized_result)
-        }
+        Ok(serialized_result)
     }
 
     /// Execute a simple task (placeholder implementation)
@@ -263,9 +235,7 @@ impl TaskRunner {
     }
 
     /// Execute an RDD task with rayon parallel processing
-    async fn execute_rdd_task_with_rayon(
-        task_data: &crate::distributed::driver::TaskData,
-    ) -> Result<Vec<u8>, anyhow::Error> {
+    async fn execute_rdd_task_with_rayon(task_data: &TaskData) -> Result<Vec<u8>, anyhow::Error> {
         info!("Executing RDD task with rayon parallel processing");
 
         // Get the operation directly from task data
@@ -286,30 +256,30 @@ impl TaskRunner {
 
         // Execute the operation using rayon for parallel processing
         let result: Vec<i32> = match *operation {
-            crate::distributed::driver::RddOperation::Map { closure_data: _ } => {
+            RddOperation::Map { closure_data: _ } => {
                 // For demonstration, apply a simple map operation
                 partition_data
                     .into_par_iter()
                     .map(|x| x * 2) // Simple doubling operation
                     .collect()
             }
-            crate::distributed::driver::RddOperation::Filter { predicate_data: _ } => {
+            RddOperation::Filter { predicate_data: _ } => {
                 // For demonstration, filter even numbers
                 partition_data
                     .into_par_iter()
                     .filter(|&x| x % 2 == 0)
                     .collect()
             }
-            crate::distributed::driver::RddOperation::Collect => {
+            RddOperation::Collect => {
                 // Simply return the data as-is
                 partition_data
             }
-            crate::distributed::driver::RddOperation::Reduce { function_data: _ } => {
+            RddOperation::Reduce { function_data: _ } => {
                 // For demonstration, sum all elements and return as single-element vector
                 let sum = partition_data.into_par_iter().sum::<i32>();
                 vec![sum]
             }
-            crate::distributed::driver::RddOperation::FlatMap { closure_data: _ } => {
+            RddOperation::FlatMap { closure_data: _ } => {
                 // For demonstration, duplicate each element
                 partition_data
                     .into_par_iter()
@@ -327,61 +297,6 @@ impl TaskRunner {
 
         Ok(serialized_result)
     }
-
-    /// Execute an RDD task with proper operation handling
-    async fn execute_rdd_task(task_info: &RddTaskInfo) -> Result<Vec<u8>, anyhow::Error> {
-        debug!(
-            "Executing RDD task {} for partition {} with operation {:?}",
-            task_info.task_id, task_info.partition_index, task_info.operation_type
-        );
-
-        // For now, we'll implement basic operations
-        // In a real implementation, this would deserialize the partition data
-        // and apply the appropriate RDD operation
-        match &task_info.operation_type {
-            RddOperationType::Collect => {
-                // Simply return the partition data as-is
-                Ok(task_info.serialized_partition_data.clone())
-            }
-            RddOperationType::Map { function_id } => {
-                info!("Applying map operation with function_id: {}", function_id);
-                // For demonstration, we'll just return the data
-                // In reality, we'd deserialize, apply the function, and re-serialize
-                Ok(task_info.serialized_partition_data.clone())
-            }
-            RddOperationType::Filter { predicate_id } => {
-                info!(
-                    "Applying filter operation with predicate_id: {}",
-                    predicate_id
-                );
-                // For demonstration, we'll just return the data
-                // In reality, we'd deserialize, apply the predicate, and re-serialize
-                Ok(task_info.serialized_partition_data.clone())
-            }
-            RddOperationType::Reduce { function_id } => {
-                info!(
-                    "Applying reduce operation with function_id: {}",
-                    function_id
-                );
-                // For demonstration, we'll just return the data
-                // In reality, we'd deserialize, apply the reduction, and re-serialize
-                Ok(task_info.serialized_partition_data.clone())
-            }
-            RddOperationType::Custom {
-                operation_id,
-                function_data,
-            } => {
-                info!(
-                    "Applying custom operation {} with {} bytes of function data",
-                    operation_id,
-                    function_data.len()
-                );
-                // For demonstration, we'll just return the data
-                // In reality, we'd deserialize the function and apply it
-                Ok(task_info.serialized_partition_data.clone())
-            }
-        }
-    }
 }
 
 /// Simplified task information for demonstration
@@ -391,35 +306,6 @@ pub struct SimpleTaskInfo {
     pub stage_id: StageId,
     pub partition_index: usize,
     pub data_size: usize,
-}
-
-/// RDD task information for distributed execution
-/// For now, we'll use a simplified approach with serialized data
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
-pub struct RddTaskInfo {
-    pub task_id: TaskId,
-    pub stage_id: StageId,
-    pub partition_index: usize,
-    pub serialized_partition_data: Vec<u8>,
-    pub operation_type: RddOperationType,
-}
-
-/// Types of RDD operations that can be executed distributedly
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
-pub enum RddOperationType {
-    /// Map operation - applies a function to each element
-    Map { function_id: String },
-    /// Filter operation - filters elements based on a predicate
-    Filter { predicate_id: String },
-    /// Collect operation - gathers all elements
-    Collect,
-    /// Reduce operation - reduces elements using an associative function
-    Reduce { function_id: String },
-    /// Custom operation with serialized function
-    Custom {
-        operation_id: String,
-        function_data: Vec<u8>,
-    },
 }
 
 impl SimpleTaskInfo {
@@ -439,6 +325,7 @@ impl SimpleTaskInfo {
 }
 
 /// Task scheduler for distributing tasks to executors
+#[derive(Clone)]
 pub struct TaskScheduler {
     /// Available executors
     executors: Arc<tokio::sync::Mutex<HashMap<ExecutorId, ExecutorInfo>>>,
@@ -501,6 +388,14 @@ impl TaskScheduler {
         pending_tasks.push(pending_task);
 
         debug!("Submitted task {} for scheduling", task_id);
+    }
+
+    /// Submit a pending task back to the queue (e.g., on failure)
+    pub async fn submit_pending_task(&self, pending_task: PendingTask) {
+        let mut pending_tasks = self.pending_tasks.lock().await;
+        // Add to the front for quick retry, or back for fairness. Let's add to back.
+        pending_tasks.push(pending_task);
+        debug!("Re-queued task for scheduling");
     }
 
     /// Get the next task for an executor

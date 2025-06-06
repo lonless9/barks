@@ -4,16 +4,14 @@
 //! and managing the overall distributed computation.
 
 use crate::distributed::proto::driver::{
-    ExecutorMetrics as ProtoExecutorMetrics, ExecutorStatus as ProtoExecutorStatus, GetTaskRequest,
-    GetTaskResponse, HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest,
-    RegisterExecutorResponse, Task, TaskMetrics as ProtoTaskMetrics, TaskState as ProtoTaskState,
+    HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest, RegisterExecutorResponse,
     TaskStatusRequest, TaskStatusResponse,
     driver_service_server::{DriverService, DriverServiceServer},
 };
 use crate::distributed::proto::executor::{
     LaunchTaskRequest, executor_service_client::ExecutorServiceClient,
 };
-use crate::distributed::task::TaskScheduler;
+use crate::distributed::task::{PendingTask, TaskScheduler};
 use crate::distributed::types::{
     ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
 };
@@ -118,27 +116,30 @@ impl DriverServiceImpl {
         for executor in idle_executors {
             if let Some(pending_task) = self.task_scheduler.get_next_task().await {
                 info!(
-                    "Scheduling task {} to executor {}",
-                    pending_task.task_id, executor.info.executor_id
+                    "Attempting to schedule task {} to executor {}",
+                    pending_task.task_id,
+                    executor.info.executor_id.clone()
                 );
 
                 let executor_id = executor.info.executor_id.clone();
-                let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
                 let task_id = pending_task.task_id.clone();
-
-                self.task_statuses
-                    .lock()
-                    .await
-                    .insert(task_id.clone(), TaskState::Running);
+                let task_scheduler = self.task_scheduler.clone();
 
                 // Launch task on executor
                 tokio::spawn(async move {
-                    if let Err(e) = Self::launch_task_on_executor(executor_addr, pending_task).await
+                    // Mark task as running before launch attempt
+                    // In a more robust system, you'd handle states more carefully.
+
+                    if let Err(e) =
+                        Self::launch_task_on_executor(executor, pending_task.clone()).await
                     {
                         error!(
                             "Failed to launch task {} on executor {}: {}",
                             task_id, executor_id, e
                         );
+                        // Re-queue the task if launch fails
+                        warn!("Re-queueing task {}", pending_task.task_id);
+                        task_scheduler.submit_pending_task(pending_task).await;
                     }
                 });
             }
@@ -158,17 +159,21 @@ impl DriverServiceImpl {
     }
 
     async fn launch_task_on_executor(
-        executor_addr: String,
-        pending_task: crate::distributed::task::PendingTask,
+        executor: RegisteredExecutor,
+        pending_task: PendingTask,
     ) -> Result<(), anyhow::Error> {
+        let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
         info!(
             "Attempting to launch task {} on executor at {}",
             pending_task.task_id, executor_addr
         );
-        // In a production system, you would use a connection pool.
-        // For this example, we connect on each task dispatch.
-        let mut client = ExecutorServiceClient::connect(executor_addr).await?;
 
+        // In a real system, you'd use a connection pool instead of connecting every time.
+        let mut client = ExecutorServiceClient::connect(executor_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to executor: {}", e))?;
+
+        let task_id = pending_task.task_id.clone();
         let request = LaunchTaskRequest {
             task_id: pending_task.task_id,
             stage_id: pending_task.stage_id,
@@ -179,9 +184,15 @@ impl DriverServiceImpl {
             max_result_size_bytes: 1024 * 1024 * 100, // 100MB default limit
         };
 
-        client.launch_task(request).await?;
+        client
+            .launch_task(request)
+            .await
+            .map_err(|e| anyhow::anyhow!("RPC call to LaunchTask failed: {}", e))?;
 
-        info!("Successfully launched task on executor.");
+        info!(
+            "Successfully requested executor {} to launch task {}",
+            executor.info.executor_id, task_id
+        );
         Ok(())
     }
 
@@ -246,11 +257,11 @@ impl DriverServiceImpl {
     /// Convert protobuf TaskState to internal type
     fn convert_task_state(state: i32) -> TaskState {
         match state {
-            0 => TaskState::Pending,
-            1 => TaskState::Running,
-            2 => TaskState::Finished,
-            3 => TaskState::Failed,
-            4 => TaskState::Killed,
+            0 /* TASK_PENDING */ => TaskState::Pending,
+            1 /* TASK_RUNNING */ => TaskState::Running,
+            2 /* TASK_FINISHED */ => TaskState::Finished,
+            3 /* TASK_FAILED */ => TaskState::Failed,
+            4 /* TASK_KILLED */ => TaskState::Killed,
             _ => TaskState::Failed,
         }
     }
@@ -321,7 +332,7 @@ impl DriverService for DriverServiceImpl {
                 total_gc_time_ms: proto_metrics.total_gc_time_ms,
                 max_memory_bytes: proto_metrics.max_memory_bytes,
                 memory_used_bytes: proto_metrics.memory_used_bytes,
-                active_tasks: 0, // TODO: Calculate active tasks from running tasks
+                active_tasks: proto_metrics.active_tasks,
             }
         } else {
             ExecutorMetrics::default()
@@ -389,44 +400,6 @@ impl DriverService for DriverServiceImpl {
         };
 
         Ok(Response::new(response))
-    }
-
-    /// Get task assignment for executor
-    async fn get_task(
-        &self,
-        request: Request<GetTaskRequest>,
-    ) -> Result<Response<GetTaskResponse>, Status> {
-        let req = request.into_inner();
-
-        debug!("Executor {} requesting task", req.executor_id);
-
-        // Try to get a task from the scheduler
-        if let Some(pending_task) = self.task_scheduler.get_next_task().await {
-            let task = Task {
-                task_id: pending_task.task_id,
-                stage_id: pending_task.stage_id,
-                partition_index: pending_task.partition_index as u32,
-                serialized_rdd: vec![], // TODO: Implement RDD serialization
-                serialized_partition: pending_task.task_data,
-                properties: HashMap::new(),
-            };
-
-            let response = GetTaskResponse {
-                has_task: true,
-                task: Some(task),
-            };
-
-            debug!("Assigned task to executor: {}", req.executor_id);
-            Ok(Response::new(response))
-        } else {
-            // No tasks available
-            let response = GetTaskResponse {
-                has_task: false,
-                task: None,
-            };
-
-            Ok(Response::new(response))
-        }
     }
 }
 
