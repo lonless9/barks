@@ -2,7 +2,11 @@
 members = [
     "common/*",
     "core",
-    "sql/*",
+    "sql/api",
+    "sql/catalyst",
+    "sql/core",
+    "sql/hive",
+    "sql/connect/*",
     "streaming",
     "mllib/*",
     "graphx",
@@ -61,6 +65,3 @@ reqwest = "0.12"
 
 # async traits
 async-trait = "0.1"
-
-[build-dependencies]
-tonic-build = "0.13.1"
