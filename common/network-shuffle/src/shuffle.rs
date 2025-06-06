@@ -1,12 +1,12 @@
 //! Shuffle implementations
 
 use crate::traits::*;
+use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
 
 /// Basic shuffle data implementation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,19 +32,19 @@ where
 {
     type Key = K;
     type Value = V;
-    
+
     fn key(&self) -> &Self::Key {
         &self.key
     }
-    
+
     fn value(&self) -> &Self::Value {
         &self.value
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
-    
+
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(data)?)
     }
@@ -81,7 +81,11 @@ pub struct MemoryShuffleWriter<D: ShuffleData> {
 }
 
 impl<D: ShuffleData> MemoryShuffleWriter<D> {
-    pub fn new(shuffle_id: u32, map_id: u32, blocks: Arc<RwLock<HashMap<ShuffleBlockId, Vec<u8>>>>) -> Self {
+    pub fn new(
+        shuffle_id: u32,
+        map_id: u32,
+        blocks: Arc<RwLock<HashMap<ShuffleBlockId, Vec<u8>>>>,
+    ) -> Self {
         Self {
             shuffle_id,
             map_id,
@@ -95,33 +99,33 @@ impl<D: ShuffleData> MemoryShuffleWriter<D> {
 #[async_trait]
 impl<D: ShuffleData> ShuffleWriter for MemoryShuffleWriter<D> {
     type Data = D;
-    
+
     async fn write(&mut self, partition_id: u32, data: Self::Data) -> Result<()> {
         let block_id = ShuffleBlockId {
             shuffle_id: self.shuffle_id,
             map_id: self.map_id,
             reduce_id: partition_id,
         };
-        
+
         let bytes = data.to_bytes()?;
         self.bytes_written += bytes.len() as u64;
-        
+
         let mut blocks = self.blocks.write().await;
         blocks.insert(block_id, bytes);
-        
+
         Ok(())
     }
-    
+
     async fn flush(&mut self) -> Result<()> {
         // Memory implementation doesn't need flushing
         Ok(())
     }
-    
+
     async fn close(&mut self) -> Result<()> {
         // Nothing to close for memory implementation
         Ok(())
     }
-    
+
     fn bytes_written(&self) -> u64 {
         self.bytes_written
     }

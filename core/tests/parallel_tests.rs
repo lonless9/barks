@@ -2,7 +2,7 @@
 //!
 //! These tests verify the parallel execution functionality using Rayon
 
-use barks_core::{FlowContext, SimpleRdd, LocalScheduler};
+use barks_core::{FlowContext, LocalScheduler, SimpleRdd};
 
 #[test]
 fn test_parallel_collect() {
@@ -59,7 +59,8 @@ fn test_parallel_foreach() {
     rdd.foreach(move |_| {
         let mut count = counter_clone.lock().unwrap();
         *count += 1;
-    }).unwrap();
+    })
+    .unwrap();
 
     let final_count = *counter.lock().unwrap();
     assert_eq!(final_count, data.len());
@@ -83,7 +84,8 @@ fn test_flow_context_with_transformations() {
     let context = FlowContext::new("parallel-transform-test");
 
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = context.parallelize_with_partitions(data, 4)
+    let rdd = context
+        .parallelize_with_partitions(data, 4)
         .map(|x| x * 2)
         .filter(|&x| x > 10);
 
@@ -130,10 +132,11 @@ fn test_complex_parallel_pipeline() {
 
     // Create a larger dataset for meaningful parallel processing
     let data: Vec<i32> = (1..=1000).collect();
-    let rdd = context.parallelize_with_partitions(data, 10)
-        .map(|x| x * x)           // Square each number
-        .filter(|&x| x % 2 == 0)  // Keep only even squares
-        .map(|x| x / 2);          // Divide by 2
+    let rdd = context
+        .parallelize_with_partitions(data, 10)
+        .map(|x| x * x) // Square each number
+        .filter(|&x| x % 2 == 0) // Keep only even squares
+        .map(|x| x / 2); // Divide by 2
 
     let result = context.run(rdd.clone()).unwrap();
 

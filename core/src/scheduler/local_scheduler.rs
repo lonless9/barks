@@ -3,7 +3,7 @@
 //! This module provides a local task scheduler that uses Rayon's thread pool
 //! to execute RDD operations in parallel on a single machine.
 
-use crate::traits::{RddResult, RddError, Partition};
+use crate::traits::{Partition, RddError, RddResult};
 use rayon::prelude::*;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -70,10 +70,8 @@ impl LocalScheduler {
         T: Send + Sync + Debug,
     {
         // Use rayon to execute tasks in parallel
-        let results: Result<Vec<Vec<T>>, RddError> = tasks
-            .into_par_iter()
-            .map(|task| task.execute())
-            .collect();
+        let results: Result<Vec<Vec<T>>, RddError> =
+            tasks.into_par_iter().map(|task| task.execute()).collect();
 
         results
     }
@@ -92,7 +90,13 @@ impl LocalScheduler {
     }
 
     /// Execute a collection of tasks and reduce the results using a fold operation
-    pub fn execute_and_reduce<T, R, F, G>(&self, tasks: Vec<Task<T>>, identity: R, fold_fn: F, reduce_fn: G) -> RddResult<R>
+    pub fn execute_and_reduce<T, R, F, G>(
+        &self,
+        tasks: Vec<Task<T>>,
+        identity: R,
+        fold_fn: F,
+        reduce_fn: G,
+    ) -> RddResult<R>
     where
         T: Send + Sync + Debug,
         R: Send + Sync + Clone + Debug,
@@ -105,12 +109,13 @@ impl LocalScheduler {
                 let partition_data = task.execute()?;
                 Ok(partition_data.into_iter().fold(identity.clone(), &fold_fn))
             })
-            .reduce(|| Ok(identity.clone()), |acc, item| {
-                match (acc, item) {
+            .reduce(
+                || Ok(identity.clone()),
+                |acc, item| match (acc, item) {
                     (Ok(a), Ok(b)) => Ok(reduce_fn(a, b)),
                     (Err(e), _) | (_, Err(e)) => Err(e),
-                }
-            });
+                },
+            );
 
         results
     }

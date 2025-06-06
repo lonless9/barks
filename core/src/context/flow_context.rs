@@ -5,7 +5,7 @@
 
 use crate::rdd::SimpleRdd;
 use crate::scheduler::{LocalScheduler, Task};
-use crate::traits::{RddResult, Partition};
+use crate::traits::{Partition, RddResult};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -73,19 +73,31 @@ impl FlowContext {
     /// When num_slices is None, uses defaultParallelism
     /// When num_slices is Some(1), creates single partition (no parallel advantages)
     /// When num_slices is Some(n > 1), enables parallel processing
-    pub fn parallelize_with_slices<T>(&self, data: Vec<T>, num_slices: Option<usize>) -> SimpleRdd<T>
+    pub fn parallelize_with_slices<T>(
+        &self,
+        data: Vec<T>,
+        num_slices: Option<usize>,
+    ) -> SimpleRdd<T>
     where
         T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
     {
         let num_partitions = num_slices.unwrap_or(self.default_parallelism);
         // Ensure minimum of 2 partitions for parallel processing unless explicitly set to 1
-        let num_partitions = if num_slices.is_none() && num_partitions < 2 { 2 } else { num_partitions };
+        let num_partitions = if num_slices.is_none() && num_partitions < 2 {
+            2
+        } else {
+            num_partitions
+        };
         SimpleRdd::from_vec_with_partitions(data, num_partitions)
     }
 
     /// Create an RDD from a vector with specified number of partitions
     /// Kept for backward compatibility
-    pub fn parallelize_with_partitions<T>(&self, data: Vec<T>, num_partitions: usize) -> SimpleRdd<T>
+    pub fn parallelize_with_partitions<T>(
+        &self,
+        data: Vec<T>,
+        num_partitions: usize,
+    ) -> SimpleRdd<T>
     where
         T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
     {

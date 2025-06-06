@@ -1,9 +1,9 @@
 //! Unsafe memory implementations
 
 use crate::traits::*;
-use std::alloc::{alloc, dealloc, realloc, Layout};
-use std::ptr::{copy_nonoverlapping, write_bytes, NonNull};
 use anyhow::Result;
+use std::alloc::{Layout, alloc, dealloc, realloc};
+use std::ptr::{NonNull, copy_nonoverlapping, write_bytes};
 
 /// Standard unsafe memory allocator
 pub struct StandardUnsafeMemory;
@@ -12,32 +12,38 @@ impl UnsafeMemory for StandardUnsafeMemory {
     unsafe fn allocate(&self, size: usize, align: usize) -> Result<NonNull<u8>> {
         let layout = Layout::from_size_align(size, align)
             .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
-        
+
         let ptr = alloc(layout);
         NonNull::new(ptr).ok_or_else(|| anyhow::anyhow!("Allocation failed"))
     }
-    
+
     unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize, align: usize) -> Result<()> {
         let layout = Layout::from_size_align(size, align)
             .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
-        
+
         dealloc(ptr.as_ptr(), layout);
         Ok(())
     }
-    
-    unsafe fn reallocate(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize, align: usize) -> Result<NonNull<u8>> {
+
+    unsafe fn reallocate(
+        &self,
+        ptr: NonNull<u8>,
+        old_size: usize,
+        new_size: usize,
+        align: usize,
+    ) -> Result<NonNull<u8>> {
         let old_layout = Layout::from_size_align(old_size, align)
             .map_err(|e| anyhow::anyhow!("Invalid old layout: {}", e))?;
-        
+
         let new_ptr = realloc(ptr.as_ptr(), old_layout, new_size);
         NonNull::new(new_ptr).ok_or_else(|| anyhow::anyhow!("Reallocation failed"))
     }
-    
+
     unsafe fn copy(&self, src: NonNull<u8>, dst: NonNull<u8>, size: usize) -> Result<()> {
         copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), size);
         Ok(())
     }
-    
+
     unsafe fn set(&self, ptr: NonNull<u8>, value: u8, size: usize) -> Result<()> {
         write_bytes(ptr.as_ptr(), value, size);
         Ok(())
@@ -78,19 +84,19 @@ impl UnsafeBuffer for UnsafeVecBuffer {
     fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
     }
-    
+
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.ptr.as_ptr()
     }
-    
+
     fn size(&self) -> usize {
         self.size
     }
-    
+
     fn capacity(&self) -> usize {
         self.capacity
     }
-    
+
     unsafe fn resize(&mut self, new_size: usize) -> Result<()> {
         if new_size > self.capacity {
             anyhow::bail!("New size exceeds capacity");
@@ -98,11 +104,11 @@ impl UnsafeBuffer for UnsafeVecBuffer {
         self.size = new_size;
         Ok(())
     }
-    
+
     unsafe fn reserve(&mut self, additional: usize) -> Result<()> {
         let new_capacity = self.capacity + additional;
         let allocator = StandardUnsafeMemory;
-        
+
         let new_ptr = allocator.reallocate(self.ptr, self.capacity, new_capacity, 1)?;
         self.ptr = new_ptr;
         self.capacity = new_capacity;

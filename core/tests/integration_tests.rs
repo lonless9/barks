@@ -51,9 +51,7 @@ fn test_map_filter_chain() {
     let rdd = SimpleRdd::from_vec(data);
 
     // Map: multiply by 2, then filter: keep only numbers > 10
-    let result_rdd = rdd
-        .map(|x| x * 2)
-        .filter(|&x| x > 10);
+    let result_rdd = rdd.map(|x| x * 2).filter(|&x| x > 10);
 
     let result = result_rdd.collect().unwrap();
     assert_eq!(result, vec![12, 14, 16, 18, 20]);
@@ -65,9 +63,7 @@ fn test_filter_map_chain() {
     let rdd = SimpleRdd::from_vec(data);
 
     // Filter: keep only even numbers, then map: multiply by 3
-    let result_rdd = rdd
-        .filter(|&x| x % 2 == 0)
-        .map(|x| x * 3);
+    let result_rdd = rdd.filter(|&x| x % 2 == 0).map(|x| x * 3);
 
     let result = result_rdd.collect().unwrap();
     assert_eq!(result, vec![6, 12, 18, 24, 30]);
@@ -144,8 +140,8 @@ fn test_complete_pipeline() {
 
     // Apply transformations: map (x * 2) -> filter (x > 15) -> collect
     let result = rdd
-        .map(|x| x * 2)           // [2, 4, 6, 8, ..., 40]
-        .filter(|&x| x > 15)      // [16, 18, 20, ..., 40]
+        .map(|x| x * 2) // [2, 4, 6, 8, ..., 40]
+        .filter(|&x| x > 15) // [16, 18, 20, ..., 40]
         .collect()
         .unwrap();
 
@@ -153,7 +149,8 @@ fn test_complete_pipeline() {
     assert_eq!(result, expected);
 
     // Verify count
-    let count_rdd = context.parallelize((1..=20).collect())
+    let count_rdd = context
+        .parallelize((1..=20).collect())
         .map(|x| x * 2)
         .filter(|&x| x > 15);
 
@@ -167,9 +164,7 @@ fn test_lazy_evaluation() {
     let rdd = SimpleRdd::from_vec(data);
 
     // These transformations should not execute until an action is called
-    let transformed_rdd = rdd
-        .map(|x| x * 10)
-        .filter(|&x| x > 25);
+    let transformed_rdd = rdd.map(|x| x * 10).filter(|&x| x > 25);
 
     // Only now should the computation happen
     let result = transformed_rdd.collect().unwrap();

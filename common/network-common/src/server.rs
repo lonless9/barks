@@ -1,10 +1,10 @@
 //! Network server implementations
 
-use crate::traits::*;
 use crate::protocol::*;
+use crate::traits::*;
+use anyhow::Result;
 use async_trait::async_trait;
 use std::net::SocketAddr;
-use anyhow::Result;
 
 /// Basic message handler implementation
 pub struct BasicMessageHandler;
@@ -44,24 +44,24 @@ impl Default for TcpNetworkServer {
 impl NetworkServer for TcpNetworkServer {
     type Message = MessageEnvelope;
     type Handler = BasicMessageHandler;
-    
+
     async fn start(&mut self, address: SocketAddr) -> Result<()> {
         // TODO: Implement actual TCP server
         self.address = Some(address);
         self.running = true;
         Ok(())
     }
-    
+
     async fn stop(&mut self) -> Result<()> {
         self.running = false;
         self.address = None;
         Ok(())
     }
-    
+
     fn register_handler(&mut self, handler: Self::Handler) {
         self.handler = Some(handler);
     }
-    
+
     fn is_running(&self) -> bool {
         self.running
     }

@@ -1,12 +1,12 @@
 //! Key-Value Store implementations
 
 use crate::traits::*;
+use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
 
 /// In-memory key-value store implementation
 #[derive(Debug, Clone)]

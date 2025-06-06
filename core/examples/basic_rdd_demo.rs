@@ -47,8 +47,8 @@ fn main() {
     println!("\n4. Chained Transformations (map -> filter):");
     let rdd = SimpleRdd::from_vec(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     let result_rdd = rdd
-        .map(|x| x * 3)           // Multiply by 3
-        .filter(|&x| x > 15);     // Keep numbers > 15
+        .map(|x| x * 3) // Multiply by 3
+        .filter(|&x| x > 15); // Keep numbers > 15
     let result = result_rdd.collect().unwrap();
     println!("   Input: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]");
     println!("   Map(x * 3) -> Filter(> 15): {:?}", result);
@@ -57,8 +57,8 @@ fn main() {
     println!("\n5. Chained Transformations (filter -> map):");
     let rdd = SimpleRdd::from_vec(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     let result_rdd = rdd
-        .filter(|&x| x > 5)       // Keep numbers > 5
-        .map(|x| x * x);          // Square them
+        .filter(|&x| x > 5) // Keep numbers > 5
+        .map(|x| x * x); // Square them
     let result = result_rdd.collect().unwrap();
     println!("   Input: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]");
     println!("   Filter(> 5) -> Map(x²): {:?}", result);
@@ -86,36 +86,43 @@ fn main() {
 
     // Build a complex transformation pipeline
     let complex_rdd = rdd
-        .map(|x| x * 2)           // Double each number
-        .filter(|&x| x % 3 == 0)  // Keep multiples of 3
-        .map(|x| x + 1);          // Add 1
+        .map(|x| x * 2) // Double each number
+        .filter(|&x| x % 3 == 0) // Keep multiples of 3
+        .map(|x| x + 1); // Add 1
 
     println!("   Pipeline: Map(x * 2) -> Filter(x % 3 == 0) -> Map(x + 1)");
 
     // Only now does the computation happen (lazy evaluation)
     let final_result = complex_rdd.collect().unwrap();
     println!("   Result count: {}", final_result.len());
-    println!("   First 10 results: {:?}", &final_result[..10.min(final_result.len())]);
+    println!(
+        "   First 10 results: {:?}",
+        &final_result[..10.min(final_result.len())]
+    );
 
     // Demo 8: Demonstrate serialization bounds
     println!("\n8. Working with Different Data Types:");
 
     // String data (using owned strings to maintain same type)
-    let string_data = vec!["hello".to_string(), "world".to_string(), "rust".to_string(), "barks".to_string()];
+    let string_data = vec![
+        "hello".to_string(),
+        "world".to_string(),
+        "rust".to_string(),
+        "barks".to_string(),
+    ];
     let string_rdd = SimpleRdd::from_vec(string_data);
-    let uppercase_result = string_rdd
-        .map(|s| s.to_uppercase())
-        .collect()
-        .unwrap();
+    let uppercase_result = string_rdd.map(|s| s.to_uppercase()).collect().unwrap();
     println!("   String transformation: {:?}", uppercase_result);
 
     // Tuple data (using owned strings for serialization)
-    let tuple_data = vec![(1, "a".to_string()), (2, "b".to_string()), (3, "c".to_string()), (4, "d".to_string())];
+    let tuple_data = vec![
+        (1, "a".to_string()),
+        (2, "b".to_string()),
+        (3, "c".to_string()),
+        (4, "d".to_string()),
+    ];
     let tuple_rdd = SimpleRdd::from_vec(tuple_data);
-    let filtered_tuples = tuple_rdd
-        .filter(|(num, _)| num % 2 == 0)
-        .collect()
-        .unwrap();
+    let filtered_tuples = tuple_rdd.filter(|(num, _)| num % 2 == 0).collect().unwrap();
     println!("   Tuple filtering: {:?}", filtered_tuples);
 
     println!("\n=== Barks Demo Complete ===");

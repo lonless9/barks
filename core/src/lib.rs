@@ -3,12 +3,12 @@
 //! This module provides the core functionality of Barks including
 //! RDDs and context management for Phase 0 implementation.
 
-pub mod rdd;
 pub mod context;
-pub mod traits;
+pub mod rdd;
 pub mod scheduler;
+pub mod traits;
 
-pub use rdd::*;
 pub use context::*;
-pub use traits::*;
+pub use rdd::*;
 pub use scheduler::*;
+pub use traits::*;

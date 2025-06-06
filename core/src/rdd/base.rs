@@ -3,7 +3,7 @@
 //! This module contains the fundamental RDD types for Phase 0 implementation.
 //! Uses a simplified concrete approach for single-threaded execution.
 
-use crate::traits::{RddResult, RddError, Partition, BasicPartition};
+use crate::traits::{BasicPartition, Partition, RddError, RddResult};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -37,24 +37,24 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SimpleRdd::Vec { data, num_partitions } => {
-                f.debug_struct("SimpleRdd::Vec")
-                    .field("data_len", &data.len())
-                    .field("num_partitions", num_partitions)
-                    .finish()
-            }
-            SimpleRdd::Map { parent, .. } => {
-                f.debug_struct("SimpleRdd::Map")
-                    .field("parent", parent)
-                    .field("func", &"<map_function>")
-                    .finish()
-            }
-            SimpleRdd::Filter { parent, .. } => {
-                f.debug_struct("SimpleRdd::Filter")
-                    .field("parent", parent)
-                    .field("predicate", &"<filter_predicate>")
-                    .finish()
-            }
+            SimpleRdd::Vec {
+                data,
+                num_partitions,
+            } => f
+                .debug_struct("SimpleRdd::Vec")
+                .field("data_len", &data.len())
+                .field("num_partitions", num_partitions)
+                .finish(),
+            SimpleRdd::Map { parent, .. } => f
+                .debug_struct("SimpleRdd::Map")
+                .field("parent", parent)
+                .field("func", &"<map_function>")
+                .finish(),
+            SimpleRdd::Filter { parent, .. } => f
+                .debug_struct("SimpleRdd::Filter")
+                .field("parent", parent)
+                .field("predicate", &"<filter_predicate>")
+                .finish(),
         }
     }
 }
@@ -65,24 +65,21 @@ where
 {
     fn clone(&self) -> Self {
         match self {
-            SimpleRdd::Vec { data, num_partitions } => {
-                SimpleRdd::Vec {
-                    data: Arc::clone(data),
-                    num_partitions: *num_partitions,
-                }
-            }
-            SimpleRdd::Map { parent, func } => {
-                SimpleRdd::Map {
-                    parent: parent.clone(),
-                    func: Arc::clone(func),
-                }
-            }
-            SimpleRdd::Filter { parent, predicate } => {
-                SimpleRdd::Filter {
-                    parent: parent.clone(),
-                    predicate: Arc::clone(predicate),
-                }
-            }
+            SimpleRdd::Vec {
+                data,
+                num_partitions,
+            } => SimpleRdd::Vec {
+                data: Arc::clone(data),
+                num_partitions: *num_partitions,
+            },
+            SimpleRdd::Map { parent, func } => SimpleRdd::Map {
+                parent: parent.clone(),
+                func: Arc::clone(func),
+            },
+            SimpleRdd::Filter { parent, predicate } => SimpleRdd::Filter {
+                parent: parent.clone(),
+                predicate: Arc::clone(predicate),
+            },
         }
     }
 }
@@ -101,7 +98,11 @@ where
 
     /// Create a new RDD from a vector with specified number of partitions
     pub fn from_vec_with_partitions(data: Vec<T>, num_partitions: usize) -> Self {
-        let num_partitions = if num_partitions == 0 { 1 } else { num_partitions };
+        let num_partitions = if num_partitions == 0 {
+            1
+        } else {
+            num_partitions
+        };
         Self::Vec {
             data: Arc::new(data),
             num_partitions,
@@ -164,7 +165,11 @@ where
             return self; // No need to coalesce
         }
 
-        let num_partitions = if num_partitions == 0 { 1 } else { num_partitions };
+        let num_partitions = if num_partitions == 0 {
+            1
+        } else {
+            num_partitions
+        };
 
         match self {
             SimpleRdd::Vec { data, .. } => SimpleRdd::Vec {
@@ -185,7 +190,10 @@ where
     /// Compute the elements of this RDD for the given partition
     pub fn compute(&self, partition: &dyn Partition) -> RddResult<Vec<T>> {
         match self {
-            SimpleRdd::Vec { data, num_partitions } => {
+            SimpleRdd::Vec {
+                data,
+                num_partitions,
+            } => {
                 let partition_index = partition.index();
                 if partition_index >= *num_partitions {
                     return Err(RddError::InvalidPartition(partition_index));
@@ -208,7 +216,10 @@ where
             }
             SimpleRdd::Filter { parent, predicate } => {
                 let parent_data = parent.compute(partition)?;
-                Ok(parent_data.into_iter().filter(|item| predicate(item)).collect())
+                Ok(parent_data
+                    .into_iter()
+                    .filter(|item| predicate(item))
+                    .collect())
             }
         }
     }
@@ -216,14 +227,10 @@ where
     /// Get the list of partitions for this RDD
     pub fn partitions(&self) -> Vec<Box<dyn Partition>> {
         match self {
-            SimpleRdd::Vec { num_partitions, .. } => {
-                (0..*num_partitions)
-                    .map(|i| Box::new(BasicPartition::new(i)) as Box<dyn Partition>)
-                    .collect()
-            }
-            SimpleRdd::Map { parent, .. } | SimpleRdd::Filter { parent, .. } => {
-                parent.partitions()
-            }
+            SimpleRdd::Vec { num_partitions, .. } => (0..*num_partitions)
+                .map(|i| Box::new(BasicPartition::new(i)) as Box<dyn Partition>)
+                .collect(),
+            SimpleRdd::Map { parent, .. } | SimpleRdd::Filter { parent, .. } => parent.partitions(),
         }
     }
 

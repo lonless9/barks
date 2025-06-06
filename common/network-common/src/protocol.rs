@@ -1,8 +1,8 @@
 //! Network protocol definitions
 
-use serde::{Deserialize, Serialize};
 use crate::traits::NetworkMessage;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// Standard network message envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,11 +19,11 @@ impl NetworkMessage for MessageEnvelope {
     fn message_type(&self) -> &str {
         &self.message_type
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
-    
+
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(data)?)
     }
@@ -41,11 +41,11 @@ impl NetworkMessage for RpcRequest {
     fn message_type(&self) -> &str {
         "rpc_request"
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
-    
+
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(data)?)
     }
@@ -64,11 +64,11 @@ impl NetworkMessage for RpcResponse {
     fn message_type(&self) -> &str {
         "rpc_response"
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
-    
+
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(data)?)
     }
@@ -86,11 +86,11 @@ impl NetworkMessage for HeartbeatMessage {
     fn message_type(&self) -> &str {
         "heartbeat"
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
-    
+
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(serde_json::from_slice(data)?)
     }
