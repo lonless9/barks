@@ -16,13 +16,18 @@ use tracing::{debug, info, warn};
 ///
 /// This trait is the key to solving the hardcoding and generics problem.
 /// Any struct implementing this trait can be serialized, sent to an executor,
-/// deserialized, and then executed. The `typetag` attribute, when combined
-/// with a self-describing format like `serde_json`, makes the trait object serializable.
+/// deserialized, and then executed.
 ///
-/// The typical serialization pattern is two-layered:
-/// 1. The `Box<dyn Task>` object is serialized using `serde_json` to preserve type information.
-/// 2. The raw data payload within the task struct (e.g., `partition_data`) is often
-///    pre-serialized using an efficient binary format like `bincode`.
+/// ## Serialization Pattern
+/// A two-layer serialization approach is used for efficiency and correctness:
+/// 1.  **Outer Layer (Trait Object):** The `Box<dyn Task>` is serialized using a self-describing
+///     format like `serde_json`. The `typetag` crate automatically adds a `type` field to the
+///     JSON output, allowing the correct concrete struct to be instantiated during deserialization.
+/// 2.  **Inner Layer (Data Payload):** Large data payloads within the task struct (e.g., `partition_data`)
+///     should be stored as `Vec<u8>`, pre-serialized with an efficient binary format like `bincode`.
+///
+/// This combination provides the flexibility of JSON for the trait object and the performance of
+/// bincode for the bulk data.
 #[typetag::serde(tag = "type")]
 #[async_trait::async_trait]
 pub trait Task: Send + Sync {
@@ -33,7 +38,9 @@ pub trait Task: Send + Sync {
 
 /// A task that executes a chain of serializable operations on i32 data.
 /// This replaces the less flexible I32OperationTask.
-#[derive(Serialize, Deserialize)]
+/// This struct is a concrete implementation of the `Task` trait and serves as the primary
+/// model for how to package a stage of computation for an RDD partition.
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ChainedI32Task {
     /// Serialized partition data as Vec<i32>
     pub partition_data: Vec<u8>,
@@ -112,31 +119,31 @@ impl TaskRunner {
             .await
             .expect("Semaphore closed");
 
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
         let mut metrics = TaskMetrics::default();
 
         // Execute task and get result bytes or an error
-        let execution_result =
+        let execution_result = tokio::task::spawn_blocking(move || {
             Self::deserialize_and_execute_task(partition_index, &serialized_task, &mut metrics)
-                .await;
-
-        metrics.executor_run_time_ms = start_time.elapsed().as_millis() as u64;
+        })
+        .await
+        .unwrap(); // Propagate panics from deserialization/execution
 
         // Drop permit to release the semaphore slot
         drop(permit);
 
         match execution_result {
-            Ok(result_bytes) => TaskExecutionResult {
+            Ok((result_bytes, task_metrics)) => TaskExecutionResult {
                 state: TaskState::Finished,
                 result: Some(result_bytes),
                 error_message: None,
-                metrics,
+                metrics: task_metrics,
             },
             Err(e) => TaskExecutionResult {
                 state: TaskState::Failed,
                 result: None,
                 error_message: Some(e.to_string()),
-                metrics,
+                metrics: TaskMetrics::default(),
             },
         }
     }
@@ -152,36 +159,25 @@ impl TaskRunner {
         Ok(())
     }
 
-    /// Deserialize and execute a task
-    async fn deserialize_and_execute_task(
+    // This is now a blocking function suitable for `spawn_blocking`
+    fn deserialize_and_execute_task(
         partition_index: usize,
-        serialized_task: &[u8],
-        metrics: &mut TaskMetrics, // `metrics` is now mutable
-    ) -> Result<Vec<u8>, anyhow::Error> {
+        serialized_task: &Vec<u8>,
+        metrics: &mut TaskMetrics,
+    ) -> Result<(Vec<u8>, TaskMetrics)> {
         let deserialize_start = Instant::now();
-
-        // Deserialize the trait object from JSON. `typetag` injects a "type" field
-        // that `serde_json` uses to determine which concrete struct to create.
-        // We must use a serde-compatible format like JSON.
         let task: Box<dyn Task> = serde_json::from_slice(serialized_task)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize task with serde_json: {}", e))?;
-
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
         let execution_start = Instant::now();
-
-        // The actual execution happens here. The `Task` object contains all necessary logic.
-        let result_bytes = match task.execute(partition_index).await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                return Err(e);
-            }
-        };
+        let result_bytes = tokio::runtime::Handle::current()
+            .block_on(async { task.execute(partition_index).await })?;
 
         metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
         metrics.result_size_bytes = result_bytes.len() as u64;
 
-        Ok(result_bytes)
+        Ok((result_bytes, metrics.clone()))
     }
 }
 
@@ -191,7 +187,8 @@ pub struct TaskScheduler {
     /// Available executors
     executors: Arc<tokio::sync::Mutex<HashMap<ExecutorId, ExecutorInfo>>>,
     /// Pending tasks queue (FIFO)
-    pending_tasks: Arc<tokio::sync::Mutex<Vec<PendingTask>>>,
+    // Using VecDeque for more efficient queue operations (pop_front)
+    pending_tasks: Arc<tokio::sync::Mutex<std::collections::VecDeque<PendingTask>>>,
 }
 
 /// Pending task information
@@ -210,7 +207,7 @@ impl TaskScheduler {
     pub fn new() -> Self {
         Self {
             executors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            pending_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            pending_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
         }
     }
 
@@ -232,21 +229,18 @@ impl TaskScheduler {
     /// Submit a task for scheduling
     pub async fn submit_pending_task(&self, pending_task: PendingTask) {
         let mut pending_tasks = self.pending_tasks.lock().await;
-        // Add to the front for quick retry, or back for fairness. Let's add to back.
-        pending_tasks.push(pending_task);
-        debug!("Re-queued task for scheduling");
+        // Add to the back for fairness (FIFO)
+        pending_tasks.push_back(pending_task);
+        debug!(
+            "Submitted task to pending queue. Queue size: {}",
+            pending_tasks.len()
+        );
     }
 
     /// Get the next task from the queue for an executor
     pub async fn get_next_task(&self) -> Option<PendingTask> {
         let mut pending_tasks = self.pending_tasks.lock().await;
-
-        // Simple FIFO for now
-        if !pending_tasks.is_empty() {
-            Some(pending_tasks.remove(0))
-        } else {
-            None
-        }
+        pending_tasks.pop_front()
     }
 
     /// Get the number of registered executors

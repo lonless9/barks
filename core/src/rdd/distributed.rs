@@ -141,34 +141,34 @@ impl DistributedI32Rdd {
 
     /// Traverses the RDD lineage, collects all serializable operations in reverse order,
     /// and returns the base RDD's data and partitions.
-    pub fn analyze_lineage(mut self) -> (Arc<Vec<i32>>, usize, Vec<SerializableI32Operation>) {
+    pub fn analyze_lineage(self) -> (Arc<Vec<i32>>, usize, Vec<SerializableI32Operation>) {
         let mut operations = Vec::new();
+        let mut current_rdd = self;
 
-        loop {
-            match self {
+        let (base_data, num_partitions) = loop {
+            match current_rdd {
                 DistributedI32Rdd::Vec {
                     data,
                     num_partitions,
-                } => {
-                    // Reached the base RDD. Reverse the collected operations
-                    // to get the correct execution order.
-                    operations.reverse();
-                    return (data, num_partitions, operations);
-                }
+                } => break (data, num_partitions),
                 DistributedI32Rdd::Map { parent, operation } => {
                     operations.push(SerializableI32Operation::Map(dyn_clone::clone_box(
                         &*operation,
                     )));
-                    self = *parent;
+                    current_rdd = *parent;
                 }
                 DistributedI32Rdd::Filter { parent, predicate } => {
                     operations.push(SerializableI32Operation::Filter(dyn_clone::clone_box(
                         &*predicate,
                     )));
-                    self = *parent;
+                    current_rdd = *parent;
                 }
             }
-        }
+        };
+
+        // Reverse the collected operations to get the correct execution order.
+        operations.reverse();
+        (base_data, num_partitions, operations)
     }
 
     /// Compute the elements of this RDD for the given partition
