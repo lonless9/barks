@@ -18,6 +18,8 @@ bincode.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid = { version = "1.6.1", features = ["v4"] }
+num_cpus = "1.16.0"
 barks-utils = { path = "../common/utils" }
 
 [build-dependencies]

@@ -23,6 +23,8 @@ pub struct TaskRunner {
     task_sender: mpsc::UnboundedSender<TaskExecution>,
     /// Running tasks tracking
     running_tasks: Arc<tokio::sync::Mutex<HashMap<TaskId, TaskHandle>>>,
+    /// Semaphore to limit concurrent tasks
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// Task execution request
@@ -59,16 +61,23 @@ impl TaskRunner {
         let (task_sender, mut task_receiver) = mpsc::unbounded_channel::<TaskExecution>();
         let running_tasks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+        // Create a semaphore to limit concurrency
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_tasks));
+
         let running_tasks_clone = Arc::clone(&running_tasks);
+        let semaphore_clone = Arc::clone(&semaphore);
 
         // Spawn task execution loop
         tokio::spawn(async move {
             while let Some(task_execution) = task_receiver.recv().await {
                 let running_tasks = Arc::clone(&running_tasks_clone);
+                let semaphore_clone = Arc::clone(&semaphore_clone);
 
-                // Execute task in a separate task
                 tokio::spawn(async move {
+                    // Acquire a permit from the semaphore
+                    let _permit = semaphore_clone.acquire().await.unwrap();
                     Self::execute_task_internal(task_execution, running_tasks).await;
+                    // Permit is released when `_permit` goes out of scope
                 });
             }
         });
@@ -77,6 +86,7 @@ impl TaskRunner {
             max_concurrent_tasks,
             task_sender,
             running_tasks,
+            semaphore,
         }
     }
 
@@ -211,6 +221,25 @@ impl TaskRunner {
 
     /// Execute an RDD task with rayon parallel processing
     async fn execute_rdd_task_with_rayon(task_data: &TaskData) -> Result<Vec<u8>, anyhow::Error> {
+        // =================================================================================
+        // !!! ARCHITECTURAL NOTE: This function is a major simplification. !!!
+        //
+        // In a real distributed computing framework like Spark, this is where the magic
+        // of executing arbitrary user code would happen. This would involve:
+        //
+        // 1.  **Deserializing Closures**: The `RddOperation`'s `closure_data` would contain
+        //     a serialized function (e.g., from a `map` or `filter` call). This is very
+        //     challenging in Rust due to its complex type and lifetime system. Libraries
+        //     like `serde_closure` attempt to solve this but have limitations.
+        // 2.  **Generic Data Types**: The function is currently hardcoded for `Vec<i32>`. A
+        //     real implementation would be generic over `T` where `T` is serializable.
+        // 3.  **Applying the Closure**: The deserialized closure would be applied to each
+        //     element of the deserialized `partition_data`.
+        //
+        // The current implementation uses a pattern match on `RddOperation` to execute
+        // hardcoded logic. This is a placeholder to demonstrate the Driver-Executor RPC
+        // flow but does not provide the flexibility of a real RDD system.
+        // =================================================================================
         info!("Executing RDD task with rayon parallel processing");
 
         // Get the operation directly from task data

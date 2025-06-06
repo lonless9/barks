@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Distributed context for managing RDD operations across a cluster
 pub struct DistributedContext {
@@ -96,7 +97,7 @@ impl Default for ExecutorConfig {
 impl DistributedContext {
     /// Create a new distributed context in driver mode
     pub fn new_driver(app_name: String, config: DistributedConfig) -> Self {
-        let driver_id = format!("{}-driver-{}", app_name, uuid::Uuid::new_v4());
+        let driver_id = format!("{}-driver-{}", app_name, Uuid::new_v4());
         let driver = Arc::new(Driver::new(driver_id));
 
         Self {
@@ -278,22 +279,43 @@ impl DistributedContext {
                 return self.run_local(rdd).await;
             }
             info!(
-                "Running RDD computation in distributed mode with {} executors",
+                "Running RDD computation in distributed mode with {} executor(s)",
                 executor_count
             );
 
-            // For now, this only supports a single-stage computation on a VecRdd.
+            // This is a critical simplification. In a real system, the RDD's computation
+            // graph (lineage) would be serialized and sent to executors. Here, we only
+            // support distributing the data from a base RDD created with `parallelize`.
+            // Executing transformed RDDs (map, filter, etc.) is not supported in distributed
+            // mode yet because it requires serializing closures, which is a complex problem.
+            // The original implementation (`rdd.collect()?`) was incorrect as it centralized
+            // all data on the driver, defeating the purpose of distributed computing.
+
             // A full implementation would require serializing the RDD and its closures.
             // We will collect the data on the driver and distribute it.
             // This simulates a "shuffle" read where the driver is the source.
-            let data_to_distribute = rdd.collect()?;
 
-            let stage_id = format!("stage-{}", uuid::Uuid::new_v4());
+            let stage_id = format!("stage-{}", Uuid::new_v4());
 
-            let num_partitions =
-                std::cmp::min(data_to_distribute.len(), self.config.default_parallelism);
-            let chunks =
-                barks_utils::vec_utils::partition_evenly(data_to_distribute, num_partitions);
+            let (base_data, num_partitions) = if let SimpleRdd::Vec {
+                data,
+                num_partitions,
+            } = rdd
+            {
+                (data, num_partitions)
+            } else {
+                // This is a key limitation of the current implementation.
+                // We return an error to make it clear that distributed execution of
+                // complex RDDs (with map/filter) is not yet supported.
+                return Err(crate::traits::RddError::ContextError(
+                    "Distributed execution of transformed RDDs is not yet supported. Only base RDDs from `parallelize` can be run.".to_string(),
+                ));
+            };
+
+            let chunks = barks_utils::vec_utils::partition_evenly(
+                base_data.as_ref().clone(),
+                num_partitions,
+            );
 
             let mut result_futures = Vec::new();
 
@@ -303,12 +325,12 @@ impl DistributedContext {
                 // We assume a simple "Collect" operation for demonstration
                 // where the executor just returns the data it received.
                 let partition_data = bincode::encode_to_vec(&chunk, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
+                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?; // TODO: Use barks-utils
 
                 let task_payload = crate::distributed::driver::TaskData {
                     partition_data,
                     operation: crate::distributed::driver::RddOperation::Collect,
-                };
+                }; // TODO: This should reflect the RDD's operations
 
                 let task_data = bincode::encode_to_vec(&task_payload, bincode::config::standard())
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
@@ -391,37 +413,4 @@ impl DistributedContext {
 pub struct DriverStats {
     pub executor_count: usize,
     pub pending_task_count: usize,
-}
-
-// Add uuid dependency for generating unique IDs
-mod uuid {
-    use std::fmt;
-
-    pub struct Uuid(u128);
-
-    impl Uuid {
-        pub fn new_v4() -> Self {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            Self(timestamp)
-        }
-    }
-
-    impl fmt::Display for Uuid {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{:032x}", self.0)
-        }
-    }
-}
-
-// Add num_cpus functionality
-mod num_cpus {
-    pub fn get() -> usize {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-    }
 }

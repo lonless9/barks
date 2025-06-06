@@ -17,7 +17,7 @@ use crate::distributed::types::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tonic::{Request, Response, Status, transport::Server};
@@ -44,10 +44,10 @@ pub struct DriverServiceImpl {
     /// Completed task results
     task_results: Arc<Mutex<HashMap<TaskId, TaskResult>>>,
     /// Notifiers for waiting tasks
-    completion_notifiers: Arc<StdMutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+    completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
     /// Executor clients cache
     executor_clients:
-        Arc<StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
+        Arc<Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
     /// Heartbeat monitoring
     heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
     heartbeat_sender: mpsc::UnboundedSender<HeartbeatInfo>,
@@ -82,8 +82,8 @@ impl DriverServiceImpl {
             executors: Arc::new(Mutex::new(HashMap::new())),
             task_statuses: Arc::new(Mutex::new(HashMap::new())),
             task_results: Arc::new(Mutex::new(HashMap::new())),
-            completion_notifiers: Arc::new(StdMutex::new(HashMap::new())),
-            executor_clients: Arc::new(StdMutex::new(HashMap::new())),
+            completion_notifiers: Arc::new(Mutex::new(HashMap::new())),
+            executor_clients: Arc::new(Mutex::new(HashMap::new())),
             heartbeat_receiver: Arc::new(Mutex::new(heartbeat_receiver)),
             heartbeat_sender,
         }
@@ -103,11 +103,20 @@ impl DriverServiceImpl {
         // Start background task scheduler
         self.start_scheduler().await;
 
-        // Start gRPC server
-        Server::builder()
-            .add_service(DriverServiceServer::new(self.clone()))
-            .serve(addr)
-            .await?;
+        // Start gRPC server in background
+        let service = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = Server::builder()
+                .add_service(DriverServiceServer::new(service))
+                .serve(addr)
+                .await
+            {
+                error!("Driver gRPC server failed: {}", e);
+            }
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         Ok(())
     }
@@ -179,33 +188,26 @@ impl DriverServiceImpl {
 
     /// Gets or creates a gRPC client for an executor.
     async fn get_or_create_executor_client(
+        &self,
         executor: &RegisteredExecutor,
-        clients: Arc<
-            StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
-        >,
     ) -> Result<ExecutorServiceClient<tonic::transport::Channel>, anyhow::Error> {
+        let executor_id = &executor.info.executor_id;
+        // Lock the client cache to prevent race conditions during client creation.
+        let mut clients_guard = self.executor_clients.lock().await;
+
+        // If client already exists, clone and return it.
+        if let Some(client) = clients_guard.get(executor_id) {
+            return Ok(client.clone());
+        }
+
+        // Client not found, create a new one.
         let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
-
-        // First, check if client exists
-        {
-            let clients_guard = clients.lock().unwrap();
-            if let Some(client) = clients_guard.get(&executor.info.executor_id) {
-                return Ok(client.clone());
-            }
-        } // Release lock before await
-
-        // Client not found, create a new one and cache it
         info!(
             "Connecting to executor {} at {}",
-            executor.info.executor_id, executor_addr
+            executor_id, executor_addr
         );
-        let client = ExecutorServiceClient::connect(executor_addr.clone()).await?;
-
-        // Insert the new client
-        {
-            let mut clients_guard = clients.lock().unwrap();
-            clients_guard.insert(executor.info.executor_id.clone(), client.clone());
-        }
+        let client = ExecutorServiceClient::connect(executor_addr).await?;
+        clients_guard.insert(executor_id.clone(), client.clone());
 
         Ok(client)
     }
@@ -213,11 +215,12 @@ impl DriverServiceImpl {
     async fn launch_task_on_executor(
         executor: RegisteredExecutor,
         pending_task: PendingTask,
-        clients: Arc<
-            StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
+        executor_clients: Arc<
+            Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
     ) -> Result<(), anyhow::Error> {
-        let mut client = Self::get_or_create_executor_client(&executor, clients).await?;
+        let mut client =
+            Self::get_or_create_executor_client_static(&executor, executor_clients).await?;
 
         let task_id = pending_task.task_id.clone();
         let request = LaunchTaskRequest {
@@ -240,6 +243,24 @@ impl DriverServiceImpl {
             executor.info.executor_id, task_id
         );
         Ok(())
+    }
+
+    // Helper function to create client to avoid self parameter issues in spawn
+    async fn get_or_create_executor_client_static(
+        executor: &RegisteredExecutor,
+        clients: Arc<Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
+    ) -> Result<ExecutorServiceClient<tonic::transport::Channel>, anyhow::Error> {
+        let mut clients_guard = clients.lock().await;
+        let executor_id = &executor.info.executor_id;
+
+        if let Some(client) = clients_guard.get(executor_id) {
+            return Ok(client.clone());
+        }
+
+        let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
+        let client = ExecutorServiceClient::connect(executor_addr).await?;
+        clients_guard.insert(executor_id.clone(), client.clone());
+        Ok(client)
     }
 
     /// Monitor executor heartbeats
@@ -449,12 +470,7 @@ impl DriverService for DriverServiceImpl {
             .lock()
             .await
             .insert(req.task_id.clone(), result.clone());
-        if let Some(notifier) = self
-            .completion_notifiers
-            .lock()
-            .unwrap()
-            .remove(&req.task_id)
-        {
+        if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id) {
             let _ = notifier.send(result);
         }
 
@@ -505,7 +521,7 @@ impl Driver {
         self.service
             .completion_notifiers
             .lock()
-            .unwrap()
+            .await
             .insert(task_id.clone(), sender);
 
         self.task_scheduler

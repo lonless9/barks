@@ -79,11 +79,20 @@ impl ExecutorServiceImpl {
             *status = ExecutorStatus::Running;
         }
 
-        // Start gRPC server
-        Server::builder()
-            .add_service(ExecutorServiceServer::new(self.clone()))
-            .serve(addr)
-            .await?;
+        // Start gRPC server in background
+        let service = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = Server::builder()
+                .add_service(ExecutorServiceServer::new(service))
+                .serve(addr)
+                .await
+            {
+                error!("Executor gRPC server failed: {}", e);
+            }
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         Ok(())
     }
@@ -112,6 +121,14 @@ impl ExecutorService for ExecutorServiceImpl {
         let stage_id = req.stage_id.clone();
         let partition_index = req.partition_index;
         let task_data = req.serialized_partition;
+
+        // Clone necessary Arcs to move into the spawned task
+        let status_arc = Arc::clone(&self.status);
+        let running_tasks_arc = Arc::clone(&self.running_tasks);
+        let metrics_arc = Arc::clone(&self.metrics);
+        let task_runner_arc = Arc::clone(&self.task_runner);
+        let driver_client_arc = Arc::clone(&self.driver_client);
+        let executor_info_arc = self.executor_info.clone();
         let executor_id = self.executor_info.executor_id.clone();
 
         // Update status to busy
@@ -119,115 +136,119 @@ impl ExecutorService for ExecutorServiceImpl {
             let mut status = self.status.lock().await;
             *status = ExecutorStatus::Busy;
         }
+        let task_id_clone = task_id.clone();
 
         // Add to running tasks map for tracking
         {
             let mut running_tasks = self.running_tasks.lock().await;
             let task_info = TaskInfo {
-                task_id: task_id.clone(),
+                task_id: task_id_clone.clone(),
                 stage_id: stage_id.clone(),
                 partition_index,
                 start_time: Self::current_timestamp(),
                 status: TaskState::Running,
             };
-            running_tasks.insert(task_id.clone(), task_info);
+            running_tasks.insert(task_id_clone.clone(), task_info);
         }
 
-        // Submit task to task runner
-        let execution_result = self
-            .task_runner
-            .submit_task(
-                task_id.clone(),
-                stage_id,
-                partition_index as usize,
-                task_data,
-            )
-            .await;
-
-        let (state, result_bytes, error_message, result_metrics) = match execution_result {
-            Ok(result) => {
-                info!("Task {} completed successfully", task_id);
-                (
-                    result.state,
-                    result.result,
-                    result.error_message,
-                    result.metrics,
+        // Spawn the task execution in the background and return immediately.
+        // The spawned task will report the status to the driver upon completion.
+        tokio::spawn(async move {
+            // Submit task to task runner
+            let execution_result = task_runner_arc
+                .submit_task(
+                    task_id.clone(),
+                    stage_id,
+                    partition_index as usize,
+                    task_data,
                 )
-            }
-            Err(e) => {
-                error!("Task {} failed to execute: {}", task_id, e);
-                (
-                    TaskState::Failed,
-                    None,
-                    Some(e.to_string()),
-                    Default::default(),
-                )
-            }
-        };
+                .await;
 
-        // Update internal metrics
-        {
-            let mut metrics = self.metrics.lock().await;
-            metrics.total_tasks += 1;
-            if state == TaskState::Finished {
-                metrics.succeeded_tasks += 1;
-            } else {
-                metrics.failed_tasks += 1;
-            }
-            metrics.total_duration_ms += result_metrics.executor_run_time_ms;
-        }
-
-        // Remove from running tasks
-        self.running_tasks.lock().await.remove(&task_id);
-
-        // Update executor status to idle if no more tasks are running
-        if self.running_tasks.lock().await.is_empty() {
-            *self.status.lock().await = ExecutorStatus::Idle;
-        }
-
-        // Report task status to driver
-        let mut driver_client_guard = self.driver_client.lock().await;
-        if let Some(client) = driver_client_guard.as_mut() {
-            let status_request = DriverTaskStatusRequest {
-                executor_id,
-                task_id: task_id.clone(),
-                state: state as i32,
-                result: result_bytes.unwrap_or_default(),
-                error_message: error_message.unwrap_or_default(),
-                task_metrics: Some(ProtoTaskMetrics {
-                    executor_deserialize_time_ms: result_metrics.executor_deserialize_time_ms,
-                    executor_deserialize_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                    executor_run_time_ms: result_metrics.executor_run_time_ms,
-                    executor_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                    result_size_bytes: result_metrics.result_size_bytes,
-                    jvm_gc_time_ms: result_metrics.jvm_gc_time_ms,
-                    result_serialization_time_ms: result_metrics.result_serialization_time_ms,
-                    memory_bytes_spilled: result_metrics.memory_bytes_spilled,
-                    disk_bytes_spilled: result_metrics.disk_bytes_spilled,
-                    peak_execution_memory_bytes: result_metrics.peak_execution_memory_bytes,
-                    input_bytes_read: 0,       // TODO: Implement input tracking
-                    input_records_read: 0,     // TODO: Implement input tracking
-                    output_bytes_written: 0,   // TODO: Implement output tracking
-                    output_records_written: 0, // TODO: Implement output tracking
-                    shuffle_read_bytes: 0,     // TODO: Implement shuffle tracking
-                    shuffle_read_records: 0,   // TODO: Implement shuffle tracking
-                    shuffle_write_bytes: 0,    // TODO: Implement shuffle tracking
-                    shuffle_write_records: 0,  // TODO: Implement shuffle tracking
-                    shuffle_write_time_ms: 0,  // TODO: Implement shuffle tracking
-                }),
+            let (state, result_bytes, error_message, result_metrics) = match execution_result {
+                Ok(result) => {
+                    info!("Task {} completed successfully", task_id);
+                    (
+                        result.state,
+                        result.result,
+                        result.error_message,
+                        result.metrics,
+                    )
+                }
+                Err(e) => {
+                    error!("Task {} failed to execute: {}", task_id, e);
+                    (
+                        TaskState::Failed,
+                        None,
+                        Some(e.to_string()),
+                        Default::default(),
+                    )
+                }
             };
-            if let Err(e) = client.report_task_status(status_request).await {
-                error!(
-                    "Failed to report task status for {} to driver: {}",
-                    task_id, e
+
+            // Update internal metrics
+            {
+                let mut metrics = metrics_arc.lock().await;
+                metrics.total_tasks += 1;
+                if state == TaskState::Finished {
+                    metrics.succeeded_tasks += 1;
+                } else {
+                    metrics.failed_tasks += 1;
+                }
+                metrics.total_duration_ms += result_metrics.executor_run_time_ms;
+            }
+
+            // Remove from running tasks
+            running_tasks_arc.lock().await.remove(&task_id);
+
+            // Update executor status to idle if no more tasks are running
+            if running_tasks_arc.lock().await.is_empty() {
+                *status_arc.lock().await = ExecutorStatus::Idle;
+            }
+
+            // Report task status to driver
+            let mut driver_client_guard = driver_client_arc.lock().await;
+            if let Some(client) = driver_client_guard.as_mut() {
+                let status_request = DriverTaskStatusRequest {
+                    executor_id: executor_id,
+                    task_id: task_id.clone(),
+                    state: state as i32,
+                    result: result_bytes.unwrap_or_default(),
+                    error_message: error_message.unwrap_or_default(),
+                    task_metrics: Some(ProtoTaskMetrics {
+                        executor_deserialize_time_ms: result_metrics.executor_deserialize_time_ms,
+                        executor_deserialize_cpu_time_ms: 0, // TODO: Implement CPU time tracking
+                        executor_run_time_ms: result_metrics.executor_run_time_ms,
+                        executor_cpu_time_ms: 0, // TODO: Implement CPU time tracking
+                        result_size_bytes: result_metrics.result_size_bytes,
+                        jvm_gc_time_ms: result_metrics.jvm_gc_time_ms,
+                        result_serialization_time_ms: result_metrics.result_serialization_time_ms,
+                        memory_bytes_spilled: result_metrics.memory_bytes_spilled,
+                        disk_bytes_spilled: result_metrics.disk_bytes_spilled,
+                        peak_execution_memory_bytes: result_metrics.peak_execution_memory_bytes,
+                        input_bytes_read: 0,     // TODO: Implement input tracking
+                        input_records_read: 0,   // TODO: Implement input tracking
+                        output_bytes_written: 0, // TODO: Implement output tracking
+                        output_records_written: 0, // TODO: Implement output tracking
+                        shuffle_read_bytes: 0,   // TODO: Implement shuffle tracking
+                        shuffle_read_records: 0, // TODO: Implement shuffle tracking
+                        shuffle_write_bytes: 0,  // TODO: Implement shuffle tracking
+                        shuffle_write_records: 0, // TODO: Implement shuffle tracking
+                        shuffle_write_time_ms: 0, // TODO: Implement shuffle tracking
+                    }),
+                };
+                if let Err(e) = client.report_task_status(status_request).await {
+                    error!(
+                        "Failed to report task status for {} to driver: {}",
+                        task_id, e
+                    );
+                }
+            } else {
+                warn!(
+                    "Cannot report status for task {}, no driver client.",
+                    task_id
                 );
             }
-        } else {
-            warn!(
-                "Cannot report status for task {}, no driver client.",
-                task_id
-            );
-        }
+        });
 
         let response = LaunchTaskResponse {
             success: true,
