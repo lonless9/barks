@@ -389,10 +389,7 @@ impl DistributedContext {
 
             // 2. Partition the base data for distribution.
             let stage_id = format!("stage-{}", uuid::Uuid::new_v4());
-            let chunks = barks_utils::vec_utils::partition_evenly(
-                base_data.as_ref().clone(),
-                num_partitions,
-            );
+            let chunks = barks_utils::partition_evenly(base_data.as_ref().clone(), num_partitions);
 
             let mut result_futures = Vec::new();
 

@@ -122,12 +122,16 @@ impl TaskRunner {
         let _start_time = Instant::now();
         let mut metrics = TaskMetrics::default();
 
-        // Execute task and get result bytes or an error
+        // Execute the task in a separate blocking thread and handle all possible outcomes,
+        // including panics, to prevent the executor from crashing.
         let execution_result = tokio::task::spawn_blocking(move || {
             Self::deserialize_and_execute_task(partition_index, &serialized_task, &mut metrics)
         })
         .await
-        .unwrap(); // Propagate panics from deserialization/execution
+        .unwrap_or_else(|join_error| {
+            // This case handles panics within the blocking task.
+            Err(anyhow::anyhow!("Task execution panicked: {}", join_error))
+        });
 
         // Drop permit to release the semaphore slot
         drop(permit);
@@ -344,6 +348,10 @@ mod tests {
     async fn test_custom_task_serialization_and_execution() {
         let data = vec![1, 2, 3, 4, 5];
         let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
+
+        // This test demonstrates how to extend the framework with custom logic.
+        // a different task type, demonstrating the flexibility of the `Task` trait system.
+        // This is a powerful pattern for extending the framework with custom logic.
 
         // Create a custom task trait object
         let task: Box<dyn Task> = Box::new(CustomSquareTask {

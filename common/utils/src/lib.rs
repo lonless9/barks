@@ -12,3 +12,6 @@ pub use collections::*;
 pub use io::*;
 pub use serialization::*;
 pub use traits::*;
+
+// Re-export commonly used functions for convenience
+pub use collections::vec_utils::partition_evenly;
