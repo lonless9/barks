@@ -314,92 +314,32 @@ impl DistributedContext {
                 executor_count
             );
 
-            // This is a critical simplification. In a real system, the RDD's computation
-            // graph (lineage) would be serialized and sent to executors. Here, we only
-            // support distributing the data from a base RDD created with `parallelize`.
-            // Executing transformed `SimpleRdd`s (with closures) is not supported in distributed
-            // mode because closures cannot be easily serialized. Use `DistributedI32Rdd`
-            // and `run_i32` for true distributed computation of transformed RDDs.
-
-            // A full implementation would require serializing the RDD and its closures.
-            // We will collect the data on the driver and distribute it.
-            // This simulates a "shuffle" read where the driver is the source.
-
-            let stage_id = format!("stage-{}", Uuid::new_v4());
-
-            let (base_data, num_partitions) = if let SimpleRdd::Vec {
+            // SimpleRdd contains non-serializable closures, making it unsuitable for
+            // true distributed execution of transformed RDDs. This path is limited
+            // to distributing only the base data of a VecRdd.
+            // For true distributed computation, use `DistributedI32Rdd` and `run_i32`.
+            if let SimpleRdd::Vec {
                 data,
                 num_partitions,
             } = rdd
             {
-                (data, num_partitions)
-            } else {
-                // This is a key limitation of the current implementation.
-                // We fall back to local execution for transformed SimpleRdds.
                 warn!(
-                    "Running transformed SimpleRdd in distributed mode is not supported, falling back to local execution."
+                    "Distributing a base SimpleRdd. Transformations will not be distributed. Falling back to local execution."
+                );
+                // In a future implementation, one could distribute the base data
+                // for a simple collect operation. For now, we fall back to local.
+                return self
+                    .run_local(SimpleRdd::Vec {
+                        data,
+                        num_partitions,
+                    })
+                    .await;
+            } else {
+                warn!(
+                    "Transformed SimpleRdd contains non-serializable closures and cannot be run in distributed mode. Falling back to local execution."
                 );
                 return self.run_local(rdd).await;
-            };
-
-            let chunks = barks_utils::vec_utils::partition_evenly(
-                base_data.as_ref().clone(),
-                num_partitions,
-            );
-
-            let mut result_futures = Vec::new();
-
-            for (i, chunk) in chunks.into_iter().enumerate() {
-                let task_id = format!("task-{}-{}", stage_id, i);
-
-                // Create a task that contains the data for the partition and the operation to perform.
-                // For a simple `run()` (collect), the operation is just to return the data.
-                // We serialize the partition data here using bincode.
-                let serialized_partition_data =
-                    bincode::encode_to_vec(&chunk, bincode::config::standard())
-                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-                let task: Box<dyn crate::distributed::task::Task> =
-                    Box::new(crate::distributed::task::DataMapTask {
-                        partition_data: serialized_partition_data,
-                        operation_type: "collect".to_string(), // For a simple .run(), we just collect
-                    });
-
-                let result_future = driver
-                    .submit_task(task_id, stage_id.clone(), i, task, None)
-                    .await
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-                result_futures.push(result_future);
             }
-
-            info!("Submitted {} tasks for execution", result_futures.len());
-
-            // Wait for all results
-            let mut collected_results = Vec::new();
-            for future in result_futures {
-                match future.await {
-                    Ok(crate::distributed::driver::TaskResult::Success(bytes)) => {
-                        let (partition_result, _): (Vec<T>, _) =
-                            bincode::decode_from_slice(&bytes, bincode::config::standard())
-                                .map_err(|e| {
-                                    crate::traits::RddError::SerializationError(e.to_string())
-                                })?;
-                        collected_results.extend(partition_result);
-                    }
-                    Ok(crate::distributed::driver::TaskResult::Failure(err_msg)) => {
-                        return Err(crate::traits::RddError::ComputationError(err_msg));
-                    }
-                    Err(e) => {
-                        // RecvError
-                        return Err(crate::traits::RddError::ContextError(format!(
-                            "Driver communication failed: {}",
-                            e
-                        )));
-                    }
-                }
-            }
-
-            Ok(collected_results)
         } else {
             Err(crate::traits::RddError::ContextError(
                 "No driver instance available".to_string(),

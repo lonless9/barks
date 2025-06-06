@@ -175,12 +175,13 @@ impl ExecutorService for ExecutorServiceImpl {
                 metrics.total_duration_ms += task_result.metrics.executor_run_time_ms;
             }
 
-            // Remove from running tasks
-            running_tasks_arc.lock().await.remove(&task_id);
-
-            // Update executor status to idle if no more tasks are running
-            if running_tasks_arc.lock().await.is_empty() {
-                *status_arc.lock().await = ExecutorStatus::Idle;
+            // Atomically update running tasks map and executor status
+            {
+                let mut running_tasks = running_tasks_arc.lock().await;
+                running_tasks.remove(&task_id);
+                if running_tasks.is_empty() {
+                    *status_arc.lock().await = ExecutorStatus::Idle;
+                }
             }
 
             // Report task status to driver

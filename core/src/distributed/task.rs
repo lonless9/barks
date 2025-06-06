@@ -31,58 +31,6 @@ pub trait Task: Send + Sync {
     async fn execute(&self, partition_index: usize) -> Result<Vec<u8>, anyhow::Error>;
 }
 
-/// A concrete task that contains data and an operation identifier.
-/// This is a flexible task that dispatches operations based on a string identifier.
-/// It solves the problem of adding new operations without changing the Executor's code,
-/// but it still relies on a match statement. A more advanced design would use
-/// separate `Task` structs for each operation, leveraging `typetag` for dispatch.
-#[derive(Serialize, Deserialize)]
-pub struct DataMapTask {
-    // Data is already serialized as Vec<T> into bincode bytes.
-    // The `execute` method will deserialize it based on the operation.
-    pub partition_data: Vec<u8>,
-    pub operation_type: String, // e.g., "collect", "map_double_i32", "filter_even_i32"
-}
-
-#[typetag::serde]
-#[async_trait::async_trait]
-impl Task for DataMapTask {
-    async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
-        // This method demonstrates how to handle different operations on generic data.
-        // The key is to deserialize the data *within* the branch for the specific operation,
-        // as only that branch knows the concrete type (e.g., `i32`).
-
-        let result_bytes = match self.operation_type.as_str() {
-            "collect" => {
-                // For collect, we don't need to know the type. Just return the raw bytes.
-                self.partition_data.clone()
-            }
-            "map_double_i32" => {
-                let (data, _): (Vec<i32>, _) =
-                    bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
-                let result: Vec<i32> = data.par_iter().map(|x| x * 2).collect();
-                bincode::encode_to_vec(&result, bincode::config::standard())
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?
-            }
-            "filter_even_i32" => {
-                let (data, _): (Vec<i32>, _) =
-                    bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
-                let result: Vec<i32> = data.par_iter().filter(|&x| x % 2 == 0).cloned().collect();
-                bincode::encode_to_vec(&result, bincode::config::standard())
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unknown operation type: {}",
-                    self.operation_type
-                ));
-            }
-        };
-
-        Ok(result_bytes)
-    }
-}
-
 /// A task that executes a chain of serializable operations on i32 data.
 /// This replaces the less flexible I32OperationTask.
 #[derive(Serialize, Deserialize)]
@@ -378,5 +326,45 @@ mod tests {
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
         assert_eq!(result, vec![2, 4, 6]);
+    }
+
+    /// A custom task for testing extensibility, as shown in examples.
+    #[derive(Serialize, Deserialize)]
+    pub struct CustomSquareTask {
+        pub partition_data: Vec<u8>, // bincode-serialized Vec<i32>
+    }
+
+    #[typetag::serde]
+    #[async_trait::async_trait]
+    impl Task for CustomSquareTask {
+        async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+            let (data, _): (Vec<i32>, usize) =
+                bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+            let result: Vec<i32> = data.iter().map(|x| x * x).collect();
+            bincode::encode_to_vec(&result, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_task_serialization_and_execution() {
+        let data = vec![1, 2, 3, 4, 5];
+        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
+
+        // Create a custom task trait object
+        let task: Box<dyn Task> = Box::new(CustomSquareTask {
+            partition_data: serialized_data,
+        });
+
+        // Serialize it
+        let serialized_task = serde_json::to_vec(&task).unwrap();
+
+        // Deserialize it
+        let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
+
+        let result_bytes = deserialized_task.execute(0).await.unwrap();
+        let (result, _): (Vec<i32>, _) =
+            bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
+        assert_eq!(result, vec![1, 4, 9, 16, 25]);
     }
 }
