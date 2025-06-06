@@ -285,6 +285,7 @@ dependencies = [
 name = "barks-core"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "serde",
  "thiserror",
 ]

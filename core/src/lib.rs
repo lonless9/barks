@@ -6,7 +6,9 @@
 pub mod rdd;
 pub mod context;
 pub mod traits;
+pub mod scheduler;
 
 pub use rdd::*;
 pub use context::*;
 pub use traits::*;
+pub use scheduler::*;
