@@ -26,6 +26,9 @@ pub struct TaskRunner {
 
 /// Task execution request
 struct TaskExecution {
+    task_id: TaskId,
+    stage_id: StageId,
+    partition_index: usize,
     task_data: Vec<u8>,
     result_sender: oneshot::Sender<TaskExecutionResult>,
 }
@@ -79,22 +82,28 @@ impl TaskRunner {
     /// Submit a task for execution
     pub async fn submit_task(
         &self,
+        task_id: TaskId,
+        stage_id: StageId,
+        partition_index: usize,
         task_data: Vec<u8>,
     ) -> Result<TaskExecutionResult, anyhow::Error> {
         let (result_sender, result_receiver) = oneshot::channel();
 
         let task_execution = TaskExecution {
+            task_id,
+            stage_id,
+            partition_index,
             task_data,
             result_sender,
         };
 
         self.task_sender
             .send(task_execution)
-            .map_err(|_| anyhow::anyhow!("Failed to submit task"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to submit task: {}", e))?;
 
         result_receiver
             .await
-            .map_err(|_| anyhow::anyhow!("Failed to receive task result"))
+            .map_err(|e| anyhow::anyhow!("Failed to receive task result: {}", e))
     }
 
     /// Kill a running task
@@ -131,45 +140,54 @@ impl TaskRunner {
         running_tasks: Arc<tokio::sync::Mutex<HashMap<TaskId, TaskHandle>>>,
     ) {
         let start_time = Instant::now();
-        let mut metrics = TaskMetrics::default();
+        let mut metrics = TaskMetrics::default(); // Will be filled by execution logic
 
-        // Deserialize task
-        let task_result =
-            match Self::deserialize_and_execute_task(&task_execution.task_data, &mut metrics).await
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    error!("Task execution failed: {}", e);
-                    TaskExecutionResult {
-                        task_id: "unknown".to_string(),
-                        stage_id: "unknown".to_string(),
-                        partition_index: 0,
-                        state: TaskState::Failed,
-                        result: None,
-                        error_message: Some(e.to_string()),
-                        metrics: metrics.clone(),
-                    }
-                }
-            };
+        // Execute task and get result bytes or an error
+        let execution_result =
+            Self::deserialize_and_execute_task(&task_execution.task_data, &mut metrics).await;
 
         // Update metrics
         metrics.executor_run_time_ms = start_time.elapsed().as_millis() as u64;
 
+        // Assemble the final result struct
+        let final_result = match execution_result {
+            Ok(result_bytes) => TaskExecutionResult {
+                task_id: task_execution.task_id.clone(),
+                stage_id: task_execution.stage_id.clone(),
+                partition_index: task_execution.partition_index,
+                state: TaskState::Finished,
+                result: Some(result_bytes),
+                error_message: None,
+                metrics,
+            },
+            Err(e) => TaskExecutionResult {
+                task_id: task_execution.task_id.clone(),
+                stage_id: task_execution.stage_id.clone(),
+                partition_index: task_execution.partition_index,
+                state: TaskState::Failed,
+                result: None,
+                error_message: Some(e.to_string()),
+                metrics,
+            },
+        };
+
         // Remove from running tasks
         {
             let mut running_tasks = running_tasks.lock().await;
-            running_tasks.remove(&task_result.task_id);
+            running_tasks.remove(&final_result.task_id);
         }
 
         // Send result back
-        let _ = task_execution.result_sender.send(task_result);
+        if task_execution.result_sender.send(final_result).is_err() {
+            error!("Failed to send task result back to caller");
+        }
     }
 
     /// Deserialize and execute a task
     async fn deserialize_and_execute_task(
         task_data: &[u8],
         metrics: &mut TaskMetrics,
-    ) -> Result<TaskExecutionResult, anyhow::Error> {
+    ) -> Result<Vec<u8>, anyhow::Error> {
         let deserialize_start = Instant::now();
 
         // Try to deserialize as RDD task first, then fall back to simple task
@@ -194,15 +212,7 @@ impl TaskRunner {
             metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
             metrics.result_size_bytes = serialized_result.len() as u64;
 
-            Ok(TaskExecutionResult {
-                task_id: "rdd_task".to_string(), // TODO: Extract from task data
-                stage_id: "rdd_stage".to_string(),
-                partition_index: 0,
-                state: TaskState::Finished,
-                result: Some(serialized_result),
-                error_message: None,
-                metrics: metrics.clone(),
-            })
+            Ok(serialized_result)
         } else {
             // Fall back to simple task execution
             let (task_info, _): (SimpleTaskInfo, _) =
@@ -223,15 +233,7 @@ impl TaskRunner {
             metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
             metrics.result_size_bytes = serialized_result.len() as u64;
 
-            Ok(TaskExecutionResult {
-                task_id: task_info.task_id,
-                stage_id: task_info.stage_id,
-                partition_index: task_info.partition_index,
-                state: TaskState::Finished,
-                result: Some(serialized_result),
-                error_message: None,
-                metrics: metrics.clone(),
-            })
+            Ok(serialized_result)
         }
     }
 
@@ -266,10 +268,8 @@ impl TaskRunner {
     ) -> Result<Vec<u8>, anyhow::Error> {
         info!("Executing RDD task with rayon parallel processing");
 
-        // Deserialize the operation
-        let (operation, _): (crate::distributed::driver::RddOperation, _) =
-            bincode::decode_from_slice(&task_data.operation, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize operation: {}", e))?;
+        // Get the operation directly from task data
+        let operation = &task_data.operation;
 
         // For demonstration, we'll work with Vec<i32> data
         // In a real implementation, this would be generic over the data type
@@ -285,7 +285,7 @@ impl TaskRunner {
         debug!("Input partition data: {:?}", partition_data);
 
         // Execute the operation using rayon for parallel processing
-        let result: Vec<i32> = match operation {
+        let result: Vec<i32> = match *operation {
             crate::distributed::driver::RddOperation::Map { closure_data: _ } => {
                 // For demonstration, apply a simple map operation
                 partition_data
@@ -504,18 +504,10 @@ impl TaskScheduler {
     }
 
     /// Get the next task for an executor
-    pub async fn get_next_task(&self, executor_id: &ExecutorId) -> Option<PendingTask> {
+    pub async fn get_next_task(&self) -> Option<PendingTask> {
         let mut pending_tasks = self.pending_tasks.lock().await;
 
-        // First, try to find a task with preferred executor
-        if let Some(pos) = pending_tasks
-            .iter()
-            .position(|task| task.preferred_executor.as_ref() == Some(executor_id))
-        {
-            return Some(pending_tasks.remove(pos));
-        }
-
-        // Otherwise, return any available task
+        // Simple FIFO for now
         if !pending_tasks.is_empty() {
             Some(pending_tasks.remove(0))
         } else {

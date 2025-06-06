@@ -20,3 +20,7 @@ clap.workspace = true
 bincode.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[[bin]]
+name = "distributed_rdd_example"
+path = "distributed_rdd_example.rs"

@@ -195,7 +195,7 @@ impl DistributedContext {
         if let ExecutionMode::Executor = self.mode {
             if let Some(executor) = &self.executor {
                 let mut executor = executor.lock().await;
-                executor.register_with_driver(driver_addr).await?;
+                executor.register_with_driver(driver_addr.clone()).await?;
                 executor.start_heartbeat().await?;
                 info!("Executor registered with driver and heartbeat started");
             } else {
@@ -280,7 +280,7 @@ impl DistributedContext {
                     100, // Simplified data size
                 );
 
-                let task_data = serde_json::to_vec(&task_info)
+                let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
 
                 driver

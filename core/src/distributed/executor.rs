@@ -4,8 +4,8 @@
 //! rayon thread pools, and reports results back.
 
 use crate::distributed::proto::driver::{
-    HeartbeatRequest, RegisterExecutorRequest, TaskStatusRequest as DriverTaskStatusRequest,
-    driver_service_client::DriverServiceClient,
+    HeartbeatRequest, RegisterExecutorRequest, TaskMetrics as ProtoTaskMetrics,
+    TaskStatusRequest as DriverTaskStatusRequest, driver_service_client::DriverServiceClient,
 };
 use crate::distributed::proto::executor::{
     ExecutorInfo as ProtoExecutorInfo, ExecutorMetrics as ProtoExecutorMetrics,
@@ -42,6 +42,8 @@ pub struct ExecutorServiceImpl {
     executor_info: ExecutorInfo,
     /// Current executor status
     status: Arc<Mutex<ExecutorStatus>>,
+    /// Client for communicating with the driver
+    driver_client: Arc<Mutex<Option<DriverServiceClient<tonic::transport::Channel>>>>,
     /// Task runner for executing tasks
     task_runner: Arc<TaskRunner>,
     /// Executor metrics
@@ -52,10 +54,15 @@ pub struct ExecutorServiceImpl {
 
 impl ExecutorServiceImpl {
     /// Create a new executor service
-    pub fn new(executor_info: ExecutorInfo, max_concurrent_tasks: usize) -> Self {
+    pub fn new(
+        executor_info: ExecutorInfo,
+        max_concurrent_tasks: usize,
+        driver_client: Arc<Mutex<Option<DriverServiceClient<tonic::transport::Channel>>>>,
+    ) -> Self {
         Self {
             executor_info,
             status: Arc::new(Mutex::new(ExecutorStatus::Starting)),
+            driver_client,
             task_runner: Arc::new(TaskRunner::new(max_concurrent_tasks)),
             metrics: Arc::new(Mutex::new(ExecutorMetrics::default())),
             running_tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -124,107 +131,116 @@ impl ExecutorService for ExecutorServiceImpl {
 
         info!("Launching task: {}", req.task_id);
 
+        let task_id = req.task_id.clone();
+        let stage_id = req.stage_id.clone();
+        let partition_index = req.partition_index;
+        let task_data = req.serialized_partition;
+        let executor_id = self.executor_info.executor_id.clone();
+
         // Update status to busy
         {
             let mut status = self.status.lock().await;
             *status = ExecutorStatus::Busy;
         }
 
-        // Add to running tasks
+        // Add to running tasks map for tracking
         {
             let mut running_tasks = self.running_tasks.lock().await;
             let task_info = TaskInfo {
-                task_id: req.task_id.clone(),
-                stage_id: req.stage_id.clone(),
-                partition_index: req.partition_index,
+                task_id: task_id.clone(),
+                stage_id: stage_id.clone(),
+                partition_index,
                 start_time: Self::current_timestamp(),
                 status: TaskState::Running,
             };
-            running_tasks.insert(req.task_id.clone(), task_info);
+            running_tasks.insert(task_id.clone(), task_info);
         }
 
-        // Create task data for execution
-        let task_data = req.serialized_partition;
-
         // Submit task to task runner
-        let task_runner = Arc::clone(&self.task_runner);
-        let task_id = req.task_id.clone();
-        let running_tasks = Arc::clone(&self.running_tasks);
-        let metrics = Arc::clone(&self.metrics);
-        let status = Arc::clone(&self.status);
+        let execution_result = self
+            .task_runner
+            .submit_task(
+                task_id.clone(),
+                stage_id,
+                partition_index as usize,
+                task_data,
+            )
+            .await;
 
-        tokio::spawn(async move {
-            match task_runner.submit_task(task_data).await {
-                Ok(result) => {
-                    info!("Task {} completed successfully", task_id);
-
-                    // Update metrics
-                    {
-                        let mut metrics = metrics.lock().await;
-                        metrics.total_tasks += 1;
-                        metrics.succeeded_tasks += 1;
-                        metrics.total_duration_ms += result.metrics.executor_run_time_ms;
-                    }
-
-                    // Remove from running tasks
-                    {
-                        let mut running_tasks = running_tasks.lock().await;
-                        running_tasks.remove(&task_id);
-                    }
-
-                    // Update status back to idle if no more tasks
-                    {
-                        let running_count = running_tasks.lock().await.len();
-                        if running_count == 0 {
-                            let mut status = status.lock().await;
-                            *status = ExecutorStatus::Idle;
-                        }
-                    }
-
-                    // Report task completion to driver
-                    // This would be implemented by sending a status update to the driver
-                    // For now, we'll log the completion
-                    info!(
-                        "Task {} completed, result size: {} bytes",
-                        task_id,
-                        result.result.as_ref().map(|r| r.len()).unwrap_or(0)
-                    );
-                }
-                Err(e) => {
-                    error!("Task {} failed: {}", task_id, e);
-
-                    // Update metrics
-                    {
-                        let mut metrics = metrics.lock().await;
-                        metrics.total_tasks += 1;
-                        metrics.failed_tasks += 1;
-                    }
-
-                    // Remove from running tasks
-                    {
-                        let mut running_tasks = running_tasks.lock().await;
-                        running_tasks.remove(&task_id);
-                    }
-
-                    // Update status back to idle
-                    {
-                        let running_count = running_tasks.lock().await.len();
-                        if running_count == 0 {
-                            let mut status = status.lock().await;
-                            *status = ExecutorStatus::Idle;
-                        }
-                    }
-
-                    // Report task failure to driver
-                    // This would be implemented by sending a status update to the driver
-                    // For now, we'll log the failure
-                    error!(
-                        "Task {} failed and will be reported to driver: {}",
-                        task_id, e
-                    );
-                }
+        let (state, error_message, result_metrics) = match execution_result {
+            Ok(result) => {
+                info!("Task {} completed successfully", task_id);
+                (result.state, result.error_message, result.metrics)
             }
-        });
+            Err(e) => {
+                error!("Task {} failed to execute: {}", task_id, e);
+                (TaskState::Failed, Some(e.to_string()), Default::default())
+            }
+        };
+
+        // Update internal metrics
+        {
+            let mut metrics = self.metrics.lock().await;
+            metrics.total_tasks += 1;
+            if state == TaskState::Finished {
+                metrics.succeeded_tasks += 1;
+            } else {
+                metrics.failed_tasks += 1;
+            }
+            metrics.total_duration_ms += result_metrics.executor_run_time_ms;
+        }
+
+        // Remove from running tasks
+        self.running_tasks.lock().await.remove(&task_id);
+
+        // Update executor status to idle if no more tasks are running
+        if self.running_tasks.lock().await.is_empty() {
+            *self.status.lock().await = ExecutorStatus::Idle;
+        }
+
+        // Report task status to driver
+        let mut driver_client_guard = self.driver_client.lock().await;
+        if let Some(client) = driver_client_guard.as_mut() {
+            let status_request = DriverTaskStatusRequest {
+                executor_id,
+                task_id: task_id.clone(),
+                state: Self::convert_to_proto_task_status(state) as i32,
+                result: vec![], // Result data would be handled separately in a real implementation
+                error_message: error_message.unwrap_or_default(),
+                task_metrics: Some(ProtoTaskMetrics {
+                    executor_deserialize_time_ms: result_metrics.executor_deserialize_time_ms,
+                    executor_deserialize_cpu_time_ms: 0, // TODO: Implement CPU time tracking
+                    executor_run_time_ms: result_metrics.executor_run_time_ms,
+                    executor_cpu_time_ms: 0, // TODO: Implement CPU time tracking
+                    result_size_bytes: result_metrics.result_size_bytes,
+                    jvm_gc_time_ms: result_metrics.jvm_gc_time_ms,
+                    result_serialization_time_ms: result_metrics.result_serialization_time_ms,
+                    memory_bytes_spilled: result_metrics.memory_bytes_spilled,
+                    disk_bytes_spilled: result_metrics.disk_bytes_spilled,
+                    peak_execution_memory_bytes: result_metrics.peak_execution_memory_bytes,
+                    input_bytes_read: 0,       // TODO: Implement input tracking
+                    input_records_read: 0,     // TODO: Implement input tracking
+                    output_bytes_written: 0,   // TODO: Implement output tracking
+                    output_records_written: 0, // TODO: Implement output tracking
+                    shuffle_read_bytes: 0,     // TODO: Implement shuffle tracking
+                    shuffle_read_records: 0,   // TODO: Implement shuffle tracking
+                    shuffle_write_bytes: 0,    // TODO: Implement shuffle tracking
+                    shuffle_write_records: 0,  // TODO: Implement shuffle tracking
+                    shuffle_write_time_ms: 0,  // TODO: Implement shuffle tracking
+                }),
+            };
+            if let Err(e) = client.report_task_status(status_request).await {
+                error!(
+                    "Failed to report task status for {} to driver: {}",
+                    task_id, e
+                );
+            }
+        } else {
+            warn!(
+                "Cannot report status for task {}, no driver client.",
+                task_id
+            );
+        }
 
         let response = LaunchTaskResponse {
             success: true,
@@ -364,7 +380,7 @@ impl ExecutorService for ExecutorServiceImpl {
 #[derive(Clone)]
 pub struct Executor {
     service: Arc<ExecutorServiceImpl>,
-    driver_client: Option<DriverServiceClient<tonic::transport::Channel>>,
+    driver_client: Arc<Mutex<Option<DriverServiceClient<tonic::transport::Channel>>>>,
     heartbeat_interval: Duration,
 }
 
@@ -372,13 +388,15 @@ impl Executor {
     /// Create a new executor
     pub fn new(executor_info: ExecutorInfo, max_concurrent_tasks: usize) -> Self {
         let service = Arc::new(ExecutorServiceImpl::new(
-            executor_info,
+            executor_info.clone(),
             max_concurrent_tasks,
+            Arc::new(Mutex::new(None)),
         ));
 
         Self {
+            // Pass the service's client handle here
+            driver_client: Arc::clone(&service.driver_client),
             service,
-            driver_client: None,
             heartbeat_interval: Duration::from_secs(10), // 10 second heartbeat interval
         }
     }
@@ -406,7 +424,7 @@ impl Executor {
 
         if resp.success {
             info!("Successfully registered with driver: {}", resp.driver_id);
-            self.driver_client = Some(client);
+            *self.driver_client.lock().await = Some(client);
             Ok(())
         } else {
             Err(format!("Failed to register with driver: {}", resp.message).into())
@@ -420,8 +438,8 @@ impl Executor {
     }
 
     /// Start heartbeat loop
-    pub async fn start_heartbeat(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(mut client) = self.driver_client.take() {
+    pub async fn start_heartbeat(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(client) = self.driver_client.lock().await.clone() {
             let executor_id = self.service.executor_info.executor_id.clone();
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);
@@ -429,6 +447,7 @@ impl Executor {
 
             tokio::spawn(async move {
                 let mut interval = interval(heartbeat_interval);
+                let mut client = client;
 
                 loop {
                     interval.tick().await;

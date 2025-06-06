@@ -10,6 +10,9 @@ use crate::distributed::proto::driver::{
     TaskStatusRequest, TaskStatusResponse,
     driver_service_server::{DriverService, DriverServiceServer},
 };
+use crate::distributed::proto::executor::{
+    LaunchTaskRequest, executor_service_client::ExecutorServiceClient,
+};
 use crate::distributed::task::TaskScheduler;
 use crate::distributed::types::{
     ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
@@ -17,7 +20,7 @@ use crate::distributed::types::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
@@ -31,6 +34,8 @@ pub struct DriverServiceImpl {
     task_scheduler: Arc<TaskScheduler>,
     /// Registered executors
     executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
+    /// Task statuses
+    task_statuses: Arc<Mutex<HashMap<TaskId, TaskState>>>,
     /// Heartbeat monitoring
     heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
     heartbeat_sender: mpsc::UnboundedSender<HeartbeatInfo>,
@@ -63,6 +68,7 @@ impl DriverServiceImpl {
             driver_id,
             task_scheduler: Arc::new(TaskScheduler::new()),
             executors: Arc::new(Mutex::new(HashMap::new())),
+            task_statuses: Arc::new(Mutex::new(HashMap::new())),
             heartbeat_receiver: Arc::new(Mutex::new(heartbeat_receiver)),
             heartbeat_sender,
         }
@@ -79,12 +85,103 @@ impl DriverServiceImpl {
             Self::heartbeat_monitor(heartbeat_receiver, executors).await;
         });
 
+        // Start background task scheduler
+        self.start_scheduler().await;
+
         // Start gRPC server
         Server::builder()
             .add_service(DriverServiceServer::new(self.clone()))
             .serve(addr)
             .await?;
 
+        Ok(())
+    }
+
+    /// Start the background task scheduler
+    pub async fn start_scheduler(&self) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                if let Err(e) = service.schedule_tasks().await {
+                    error!("Error during task scheduling: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Schedule pending tasks to available executors
+    pub async fn schedule_tasks(&self) -> Result<(), anyhow::Error> {
+        let idle_executors = self.get_idle_executors().await;
+
+        for executor in idle_executors {
+            if let Some(pending_task) = self.task_scheduler.get_next_task().await {
+                info!(
+                    "Scheduling task {} to executor {}",
+                    pending_task.task_id, executor.info.executor_id
+                );
+
+                let executor_id = executor.info.executor_id.clone();
+                let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
+                let task_id = pending_task.task_id.clone();
+
+                self.task_statuses
+                    .lock()
+                    .await
+                    .insert(task_id.clone(), TaskState::Running);
+
+                // Launch task on executor
+                tokio::spawn(async move {
+                    if let Err(e) = Self::launch_task_on_executor(executor_addr, pending_task).await
+                    {
+                        error!(
+                            "Failed to launch task {} on executor {}: {}",
+                            task_id, executor_id, e
+                        );
+                    }
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn get_idle_executors(&self) -> Vec<RegisteredExecutor> {
+        self.executors
+            .lock()
+            .await
+            .values()
+            .filter(|e| e.status == ExecutorStatus::Idle || e.status == ExecutorStatus::Running)
+            .cloned()
+            .collect()
+    }
+
+    async fn launch_task_on_executor(
+        executor_addr: String,
+        pending_task: crate::distributed::task::PendingTask,
+    ) -> Result<(), anyhow::Error> {
+        info!(
+            "Attempting to launch task {} on executor at {}",
+            pending_task.task_id, executor_addr
+        );
+        // In a production system, you would use a connection pool.
+        // For this example, we connect on each task dispatch.
+        let mut client = ExecutorServiceClient::connect(executor_addr).await?;
+
+        let request = LaunchTaskRequest {
+            task_id: pending_task.task_id,
+            stage_id: pending_task.stage_id,
+            partition_index: pending_task.partition_index as u32,
+            serialized_rdd: vec![], // This field is not used in the current design
+            serialized_partition: pending_task.task_data,
+            properties: HashMap::new(),
+            max_result_size_bytes: 1024 * 1024 * 100, // 100MB default limit
+        };
+
+        client.launch_task(request).await?;
+
+        info!("Successfully launched task on executor.");
         Ok(())
     }
 
@@ -264,7 +361,9 @@ impl DriverService for DriverServiceImpl {
             req.task_id, req.state, req.executor_id
         );
 
+        let mut statuses = self.task_statuses.lock().await;
         let task_state = Self::convert_task_state(req.state);
+        statuses.insert(req.task_id.clone(), task_state);
 
         match task_state {
             TaskState::Finished => {
@@ -302,7 +401,7 @@ impl DriverService for DriverServiceImpl {
         debug!("Executor {} requesting task", req.executor_id);
 
         // Try to get a task from the scheduler
-        if let Some(pending_task) = self.task_scheduler.get_next_task(&req.executor_id).await {
+        if let Some(pending_task) = self.task_scheduler.get_next_task().await {
             let task = Task {
                 task_id: pending_task.task_id,
                 stage_id: pending_task.stage_id,
@@ -403,22 +502,19 @@ impl Driver {
             + serde::Serialize
             + for<'de> serde::Deserialize<'de>
             + bincode::Encode
-            + bincode::Decode<bincode::config::Configuration>
+            + bincode::Decode<()>
             + std::fmt::Debug
             + 'static,
     {
-        // Serialize the partition data and operation using bincode
+        // Serialize the partition data using bincode
         let serialized_partition =
             bincode::encode_to_vec(&partition_data, bincode::config::standard())
                 .map_err(|e| anyhow::anyhow!("Failed to serialize partition data: {}", e))?;
 
-        let serialized_operation = bincode::encode_to_vec(&operation, bincode::config::standard())
-            .map_err(|e| anyhow::anyhow!("Failed to serialize operation: {}", e))?;
-
         // Create task data combining partition and operation
         let task_data = TaskData {
             partition_data: serialized_partition,
-            operation: serialized_operation,
+            operation,
         };
 
         let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard())
@@ -472,5 +568,5 @@ pub enum RddOperation {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub struct TaskData {
     pub partition_data: Vec<u8>,
-    pub operation: Vec<u8>,
+    pub operation: RddOperation,
 }

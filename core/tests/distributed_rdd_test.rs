@@ -27,13 +27,20 @@ async fn test_task_runner_rdd_execution() {
     let task_data = TaskData {
         partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .unwrap(),
-        operation: bincode::encode_to_vec(&map_operation, bincode::config::standard()).unwrap(),
+        operation: map_operation,
     };
 
     let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
     // Execute the task
-    let result = task_runner.submit_task(serialized_task).await;
+    let result = task_runner
+        .submit_task(
+            "map-task-1".to_string(),
+            "stage-1".to_string(),
+            0,
+            serialized_task,
+        )
+        .await;
     assert!(result.is_ok());
 
     let task_result = result.unwrap();
@@ -44,12 +51,17 @@ async fn test_task_runner_rdd_execution() {
     assert!(task_result.result.is_some());
 
     // Verify the result (should be doubled values: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20])
+    let result_bytes = task_result.result.unwrap();
+    println!("Result bytes length: {}", result_bytes.len());
+
     let result_data: Vec<i32> =
-        bincode::decode_from_slice(&task_result.result.unwrap(), bincode::config::standard())
+        bincode::decode_from_slice(&result_bytes, bincode::config::standard())
             .unwrap()
             .0;
 
+    println!("Result data: {:?}", result_data);
     let expected: Vec<i32> = partition_data.iter().map(|x| x * 2).collect();
+    println!("Expected: {:?}", expected);
     assert_eq!(result_data, expected);
 }
 
@@ -69,13 +81,21 @@ async fn test_filter_operation() {
     let task_data = TaskData {
         partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .unwrap(),
-        operation: bincode::encode_to_vec(&filter_operation, bincode::config::standard()).unwrap(),
+        operation: filter_operation,
     };
 
     let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
     // Execute the task
-    let result = task_runner.submit_task(serialized_task).await.unwrap();
+    let result = task_runner
+        .submit_task(
+            "filter-task-1".to_string(),
+            "stage-1".to_string(),
+            0,
+            serialized_task,
+        )
+        .await
+        .unwrap();
 
     // Verify the result (should be even numbers: [2, 4, 6, 8, 10])
     let result_data: Vec<i32> =
@@ -103,13 +123,21 @@ async fn test_reduce_operation() {
     let task_data = TaskData {
         partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .unwrap(),
-        operation: bincode::encode_to_vec(&reduce_operation, bincode::config::standard()).unwrap(),
+        operation: reduce_operation,
     };
 
     let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
     // Execute the task
-    let result = task_runner.submit_task(serialized_task).await.unwrap();
+    let result = task_runner
+        .submit_task(
+            "reduce-task-1".to_string(),
+            "stage-1".to_string(),
+            0,
+            serialized_task,
+        )
+        .await
+        .unwrap();
 
     // Verify the result (should be sum: [15])
     let result_data: Vec<i32> =
@@ -137,13 +165,21 @@ async fn test_flatmap_operation() {
     let task_data = TaskData {
         partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .unwrap(),
-        operation: bincode::encode_to_vec(&flatmap_operation, bincode::config::standard()).unwrap(),
+        operation: flatmap_operation,
     };
 
     let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
     // Execute the task
-    let result = task_runner.submit_task(serialized_task).await.unwrap();
+    let result = task_runner
+        .submit_task(
+            "flatmap-task-1".to_string(),
+            "stage-1".to_string(),
+            0,
+            serialized_task,
+        )
+        .await
+        .unwrap();
 
     // Verify the result (should be duplicated: [1, 1, 2, 2, 3, 3])
     let result_data: Vec<i32> =
@@ -169,13 +205,21 @@ async fn test_collect_operation() {
     let task_data = TaskData {
         partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .unwrap(),
-        operation: bincode::encode_to_vec(&collect_operation, bincode::config::standard()).unwrap(),
+        operation: collect_operation,
     };
 
     let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
     // Execute the task
-    let result = task_runner.submit_task(serialized_task).await.unwrap();
+    let result = task_runner
+        .submit_task(
+            "collect-task-1".to_string(),
+            "stage-1".to_string(),
+            0,
+            serialized_task,
+        )
+        .await
+        .unwrap();
 
     // Verify the result (should be unchanged: [1, 2, 3, 4, 5])
     let result_data: Vec<i32> =
@@ -232,14 +276,22 @@ async fn test_sequential_task_execution() {
         let task_data = TaskData {
             partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
                 .unwrap(),
-            operation: bincode::encode_to_vec(&operation, bincode::config::standard()).unwrap(),
+            operation: operation,
         };
 
         let serialized_task =
             bincode::encode_to_vec(&task_data, bincode::config::standard()).unwrap();
 
         // Execute task
-        let result = task_runner.submit_task(serialized_task).await.unwrap();
+        let result = task_runner
+            .submit_task(
+                format!("task-{}", i),
+                "stage-seq".to_string(),
+                i as usize,
+                serialized_task,
+            )
+            .await
+            .unwrap();
 
         // Verify task completed successfully
         assert_eq!(
