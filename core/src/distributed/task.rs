@@ -172,37 +172,67 @@ impl TaskRunner {
     ) -> Result<TaskExecutionResult, anyhow::Error> {
         let deserialize_start = Instant::now();
 
-        // Deserialize task info using latest bincode API
-        let (task_info, _): (SimpleTaskInfo, _) =
-            bincode::decode_from_slice(task_data, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize task: {}", e))?;
+        // Try to deserialize as RDD task first, then fall back to simple task
+        if let Ok((rdd_task_data, _)) = bincode::decode_from_slice::<
+            crate::distributed::driver::TaskData,
+            _,
+        >(task_data, bincode::config::standard())
+        {
+            metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
-        metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
+            // Execute RDD task with rayon parallel processing
+            let execution_start = Instant::now();
+            let result = Self::execute_rdd_task_with_rayon(&rdd_task_data).await?;
 
-        let execution_start = Instant::now();
+            metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
 
-        // Execute the task (simplified for now)
-        let result = Self::execute_simple_task(&task_info).await?;
+            // Serialize result
+            let serialize_start = Instant::now();
+            let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
 
-        let _execution_time = execution_start.elapsed().as_millis() as u64;
+            metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
+            metrics.result_size_bytes = serialized_result.len() as u64;
 
-        // Serialize result using latest bincode API
-        let serialize_start = Instant::now();
-        let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
-            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
+            Ok(TaskExecutionResult {
+                task_id: "rdd_task".to_string(), // TODO: Extract from task data
+                stage_id: "rdd_stage".to_string(),
+                partition_index: 0,
+                state: TaskState::Finished,
+                result: Some(serialized_result),
+                error_message: None,
+                metrics: metrics.clone(),
+            })
+        } else {
+            // Fall back to simple task execution
+            let (task_info, _): (SimpleTaskInfo, _) =
+                bincode::decode_from_slice(task_data, bincode::config::standard())
+                    .map_err(|e| anyhow::anyhow!("Failed to deserialize task: {}", e))?;
 
-        metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
-        metrics.result_size_bytes = serialized_result.len() as u64;
+            metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
-        Ok(TaskExecutionResult {
-            task_id: task_info.task_id,
-            stage_id: task_info.stage_id,
-            partition_index: task_info.partition_index,
-            state: TaskState::Finished,
-            result: Some(serialized_result),
-            error_message: None,
-            metrics: metrics.clone(),
-        })
+            let execution_start = Instant::now();
+            let result = Self::execute_simple_task(&task_info).await?;
+            metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
+
+            // Serialize result using latest bincode API
+            let serialize_start = Instant::now();
+            let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
+
+            metrics.result_serialization_time_ms = serialize_start.elapsed().as_millis() as u64;
+            metrics.result_size_bytes = serialized_result.len() as u64;
+
+            Ok(TaskExecutionResult {
+                task_id: task_info.task_id,
+                stage_id: task_info.stage_id,
+                partition_index: task_info.partition_index,
+                state: TaskState::Finished,
+                result: Some(serialized_result),
+                error_message: None,
+                metrics: metrics.clone(),
+            })
+        }
     }
 
     /// Execute a simple task (placeholder implementation)
@@ -228,6 +258,74 @@ impl TaskRunner {
         );
 
         Ok(result)
+    }
+
+    /// Execute an RDD task with rayon parallel processing
+    async fn execute_rdd_task_with_rayon(
+        task_data: &crate::distributed::driver::TaskData,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        info!("Executing RDD task with rayon parallel processing");
+
+        // Deserialize the operation
+        let (operation, _): (crate::distributed::driver::RddOperation, _) =
+            bincode::decode_from_slice(&task_data.operation, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize operation: {}", e))?;
+
+        // For demonstration, we'll work with Vec<i32> data
+        // In a real implementation, this would be generic over the data type
+        let (partition_data, _): (Vec<i32>, _) =
+            bincode::decode_from_slice(&task_data.partition_data, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize partition data: {}", e))?;
+
+        debug!(
+            "Processing {} elements with operation: {:?}",
+            partition_data.len(),
+            operation
+        );
+        debug!("Input partition data: {:?}", partition_data);
+
+        // Execute the operation using rayon for parallel processing
+        let result: Vec<i32> = match operation {
+            crate::distributed::driver::RddOperation::Map { closure_data: _ } => {
+                // For demonstration, apply a simple map operation
+                partition_data
+                    .into_par_iter()
+                    .map(|x| x * 2) // Simple doubling operation
+                    .collect()
+            }
+            crate::distributed::driver::RddOperation::Filter { predicate_data: _ } => {
+                // For demonstration, filter even numbers
+                partition_data
+                    .into_par_iter()
+                    .filter(|&x| x % 2 == 0)
+                    .collect()
+            }
+            crate::distributed::driver::RddOperation::Collect => {
+                // Simply return the data as-is
+                partition_data
+            }
+            crate::distributed::driver::RddOperation::Reduce { function_data: _ } => {
+                // For demonstration, sum all elements and return as single-element vector
+                let sum = partition_data.into_par_iter().sum::<i32>();
+                vec![sum]
+            }
+            crate::distributed::driver::RddOperation::FlatMap { closure_data: _ } => {
+                // For demonstration, duplicate each element
+                partition_data
+                    .into_par_iter()
+                    .flat_map(|x| vec![x, x])
+                    .collect()
+            }
+        };
+
+        info!("RDD task completed, result size: {} elements", result.len());
+        debug!("Output result data: {:?}", result);
+
+        // Serialize the result
+        let serialized_result = bincode::encode_to_vec(&result, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
+
+        Ok(serialized_result)
     }
 
     /// Execute an RDD task with proper operation handling

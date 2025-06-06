@@ -4,7 +4,7 @@
 //! properly and execute tasks in a distributed manner.
 
 use barks_core::distributed::{
-    Driver, Executor, ExecutorInfo, SimpleTaskInfo, RddTaskInfo, RddOperationType,
+    Driver, Executor, ExecutorInfo, RddOperationType, RddTaskInfo, SimpleTaskInfo,
 };
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -18,7 +18,7 @@ async fn test_driver_executor_registration() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50061".parse().unwrap();
     let driver = Driver::new("test-driver-001".to_string());
-    
+
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
         async move {
@@ -35,22 +35,28 @@ async fn test_driver_executor_registration() {
         "test-executor-001".to_string(),
         "127.0.0.1".to_string(),
         executor_addr.port(),
-        2, // 2 cores
+        2,    // 2 cores
         4096, // 4GB memory
     );
 
     let mut executor = Executor::new(executor_info, 2);
-    
+
     // Register with driver
     let driver_url = format!("http://{}", driver_addr);
     let registration_result = executor.register_with_driver(driver_url).await;
-    
-    assert!(registration_result.is_ok(), "Executor should register successfully");
+
+    assert!(
+        registration_result.is_ok(),
+        "Executor should register successfully"
+    );
 
     // Verify executor count
     sleep(Duration::from_millis(100)).await;
     let executor_count = driver.executor_count().await;
-    assert_eq!(executor_count, 1, "Driver should have 1 registered executor");
+    assert_eq!(
+        executor_count, 1,
+        "Driver should have 1 registered executor"
+    );
 }
 
 /// Test task submission and basic scheduling
@@ -60,7 +66,7 @@ async fn test_task_submission() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50063".parse().unwrap();
     let driver = Driver::new("test-driver-002".to_string());
-    
+
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
         async move {
@@ -74,24 +80,15 @@ async fn test_task_submission() {
     for i in 0..5 {
         let task_id = format!("test-task-{}", i);
         let stage_id = format!("test-stage-{}", i / 2);
-        
-        let task_info = SimpleTaskInfo::new(
-            task_id.clone(),
-            stage_id.clone(),
-            i,
-            100 + i * 10,
-        );
+
+        let task_info = SimpleTaskInfo::new(task_id.clone(), stage_id.clone(), i, 100 + i * 10);
 
         let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())
             .expect("Failed to serialize task");
 
-        driver.submit_task(
-            task_id,
-            stage_id,
-            i,
-            task_data,
-            None,
-        ).await;
+        driver
+            .submit_task(task_id, stage_id, i, task_data, None)
+            .await;
     }
 
     // Verify pending tasks
@@ -107,7 +104,7 @@ async fn test_rdd_task_submission() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50064".parse().unwrap();
     let driver = Driver::new("test-driver-003".to_string());
-    
+
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
         async move {
@@ -119,11 +116,17 @@ async fn test_rdd_task_submission() {
 
     // Create RDD tasks with different operations
     let operations = vec![
-        RddOperationType::Map { function_id: "double".to_string() },
-        RddOperationType::Filter { predicate_id: "positive".to_string() },
+        RddOperationType::Map {
+            function_id: "double".to_string(),
+        },
+        RddOperationType::Filter {
+            predicate_id: "positive".to_string(),
+        },
         RddOperationType::Collect,
-        RddOperationType::Reduce { function_id: "sum".to_string() },
-        RddOperationType::Custom { 
+        RddOperationType::Reduce {
+            function_id: "sum".to_string(),
+        },
+        RddOperationType::Custom {
             operation_id: "custom_op".to_string(),
             function_data: vec![1, 2, 3, 4],
         },
@@ -132,7 +135,7 @@ async fn test_rdd_task_submission() {
     for (i, operation) in operations.into_iter().enumerate() {
         let task_id = format!("rdd-test-task-{}", i);
         let stage_id = format!("rdd-test-stage-{}", i);
-        
+
         // Create sample partition data
         let partition_data: Vec<i32> = (0..50).map(|x| x * (i + 1) as i32).collect();
         let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
@@ -149,13 +152,9 @@ async fn test_rdd_task_submission() {
         let task_data = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
             .expect("Failed to serialize RDD task");
 
-        driver.submit_task(
-            task_id,
-            stage_id,
-            i,
-            task_data,
-            None,
-        ).await;
+        driver
+            .submit_task(task_id, stage_id, i, task_data, None)
+            .await;
     }
 
     // Verify pending tasks
@@ -171,7 +170,7 @@ async fn test_multiple_executors() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50065".parse().unwrap();
     let driver = Driver::new("test-driver-004".to_string());
-    
+
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
         async move {
@@ -188,29 +187,37 @@ async fn test_multiple_executors() {
     for i in 0..executor_count {
         let executor_id = format!("test-executor-{:03}", i);
         let executor_addr: SocketAddr = format!("127.0.0.1:{}", 50066 + i).parse().unwrap();
-        
+
         let executor_info = ExecutorInfo::new(
             executor_id.clone(),
             "127.0.0.1".to_string(),
             executor_addr.port(),
-            2, // 2 cores
+            2,    // 2 cores
             2048, // 2GB memory
         );
 
         let mut executor = Executor::new(executor_info, 2);
-        
+
         // Register with driver
         let driver_url = format!("http://{}", driver_addr);
         let registration_result = executor.register_with_driver(driver_url).await;
-        
-        assert!(registration_result.is_ok(), "Executor {} should register successfully", executor_id);
+
+        assert!(
+            registration_result.is_ok(),
+            "Executor {} should register successfully",
+            executor_id
+        );
         executors.push(executor);
     }
 
     // Verify all executors are registered
     sleep(Duration::from_millis(200)).await;
     let registered_count = driver.executor_count().await;
-    assert_eq!(registered_count, executor_count, "Driver should have {} registered executors", executor_count);
+    assert_eq!(
+        registered_count, executor_count,
+        "Driver should have {} registered executors",
+        executor_count
+    );
 }
 
 /// Test task serialization and deserialization
@@ -226,10 +233,11 @@ fn test_task_serialization() {
 
     let serialized = bincode::encode_to_vec(&simple_task, bincode::config::standard())
         .expect("Failed to serialize SimpleTaskInfo");
-    
-    let (deserialized, _): (SimpleTaskInfo, _) = bincode::decode_from_slice(&serialized, bincode::config::standard())
-        .expect("Failed to deserialize SimpleTaskInfo");
-    
+
+    let (deserialized, _): (SimpleTaskInfo, _) =
+        bincode::decode_from_slice(&serialized, bincode::config::standard())
+            .expect("Failed to deserialize SimpleTaskInfo");
+
     assert_eq!(simple_task.task_id, deserialized.task_id);
     assert_eq!(simple_task.stage_id, deserialized.stage_id);
     assert_eq!(simple_task.partition_index, deserialized.partition_index);
@@ -245,23 +253,32 @@ fn test_task_serialization() {
         stage_id: "rdd-stage-001".to_string(),
         partition_index: 0,
         serialized_partition_data: serialized_data.clone(),
-        operation_type: RddOperationType::Map { function_id: "test_map".to_string() },
+        operation_type: RddOperationType::Map {
+            function_id: "test_map".to_string(),
+        },
     };
 
     let serialized_rdd = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
         .expect("Failed to serialize RddTaskInfo");
-    
-    let (deserialized_rdd, _): (RddTaskInfo, _) = bincode::decode_from_slice(&serialized_rdd, bincode::config::standard())
-        .expect("Failed to deserialize RddTaskInfo");
-    
+
+    let (deserialized_rdd, _): (RddTaskInfo, _) =
+        bincode::decode_from_slice(&serialized_rdd, bincode::config::standard())
+            .expect("Failed to deserialize RddTaskInfo");
+
     assert_eq!(rdd_task.task_id, deserialized_rdd.task_id);
     assert_eq!(rdd_task.stage_id, deserialized_rdd.stage_id);
     assert_eq!(rdd_task.partition_index, deserialized_rdd.partition_index);
-    assert_eq!(rdd_task.serialized_partition_data, deserialized_rdd.serialized_partition_data);
-    
+    assert_eq!(
+        rdd_task.serialized_partition_data,
+        deserialized_rdd.serialized_partition_data
+    );
+
     // Verify the partition data can be deserialized
-    let (recovered_data, _): (Vec<i32>, _) = bincode::decode_from_slice(&deserialized_rdd.serialized_partition_data, bincode::config::standard())
-        .expect("Failed to deserialize partition data");
-    
+    let (recovered_data, _): (Vec<i32>, _) = bincode::decode_from_slice(
+        &deserialized_rdd.serialized_partition_data,
+        bincode::config::standard(),
+    )
+    .expect("Failed to deserialize partition data");
+
     assert_eq!(partition_data, recovered_data);
 }

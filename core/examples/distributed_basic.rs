@@ -56,22 +56,19 @@ async fn demonstrate_task_scheduling() -> Result<(), Box<dyn std::error::Error>>
 
     // Submit some tasks
     for i in 0..5 {
-        let task_info = SimpleTaskInfo::new(
-            format!("task-{}", i),
-            "stage-1".to_string(),
-            i,
-            100,
-        );
+        let task_info = SimpleTaskInfo::new(format!("task-{}", i), "stage-1".to_string(), i, 100);
 
         let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())?;
 
-        scheduler.submit_task(
-            format!("task-{}", i),
-            "stage-1".to_string(),
-            i,
-            task_data,
-            None,
-        ).await;
+        scheduler
+            .submit_task(
+                format!("task-{}", i),
+                "stage-1".to_string(),
+                i,
+                task_data,
+                None,
+            )
+            .await;
     }
 
     info!("Submitted {} tasks", scheduler.pending_task_count().await);
@@ -83,7 +80,10 @@ async fn demonstrate_task_scheduling() -> Result<(), Box<dyn std::error::Error>>
         }
     }
 
-    info!("Remaining pending tasks: {}", scheduler.pending_task_count().await);
+    info!(
+        "Remaining pending tasks: {}",
+        scheduler.pending_task_count().await
+    );
 
     Ok(())
 }
@@ -99,7 +99,8 @@ async fn demonstrate_executor_management() -> Result<(), Box<dyn std::error::Err
         8083,
         4,
         2048,
-    ).with_attributes({
+    )
+    .with_attributes({
         let mut attrs = HashMap::new();
         attrs.insert("zone".to_string(), "us-west-1".to_string());
         attrs.insert("instance_type".to_string(), "m5.large".to_string());
@@ -138,8 +139,12 @@ async fn demonstrate_distributed_context() -> Result<(), Box<dyn std::error::Err
 
     // Create a local context for demonstration
     let context = DistributedContext::new_local("barks-demo".to_string());
-    
-    info!("Created context: {} in mode: {:?}", context.app_name(), context.mode());
+
+    info!(
+        "Created context: {} in mode: {:?}",
+        context.app_name(),
+        context.mode()
+    );
 
     // Create some test data
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -161,13 +166,14 @@ async fn demonstrate_distributed_context() -> Result<(), Box<dyn std::error::Err
     let driver_config = DistributedConfig::default();
     info!("Default driver config: {:?}", driver_config);
 
-    let driver_context = DistributedContext::new_driver(
-        "barks-driver-demo".to_string(),
-        driver_config,
-    );
+    let driver_context =
+        DistributedContext::new_driver("barks-driver-demo".to_string(), driver_config);
 
-    info!("Created driver context: {} in mode: {:?}", 
-          driver_context.app_name(), driver_context.mode());
+    info!(
+        "Created driver context: {} in mode: {:?}",
+        driver_context.app_name(),
+        driver_context.mode()
+    );
 
     Ok(())
 }
@@ -177,12 +183,7 @@ async fn demonstrate_task_execution() -> Result<(), Box<dyn std::error::Error>> 
     info!("\n--- Task Execution Demo ---");
 
     // Create a simple task
-    let task_info = SimpleTaskInfo::new(
-        "demo-task".to_string(),
-        "demo-stage".to_string(),
-        0,
-        1000,
-    );
+    let task_info = SimpleTaskInfo::new("demo-task".to_string(), "demo-stage".to_string(), 0, 1000);
 
     info!("Created task: {:?}", task_info);
 
@@ -191,24 +192,31 @@ async fn demonstrate_task_execution() -> Result<(), Box<dyn std::error::Error>> 
     info!("Serialized task size: {} bytes", task_data.len());
 
     // Deserialize the task
-    let (deserialized_task, _): (SimpleTaskInfo, _) = 
+    let (deserialized_task, _): (SimpleTaskInfo, _) =
         bincode::decode_from_slice(&task_data, bincode::config::standard())?;
-    
+
     info!("Deserialized task: {:?}", deserialized_task);
 
     // Simulate task execution
     use rayon::prelude::*;
     let start_time = std::time::Instant::now();
-    
+
     let result: Vec<i32> = (0..deserialized_task.data_size)
         .into_par_iter()
         .map(|i| (i as i32) * 2 + deserialized_task.partition_index as i32)
         .collect();
-    
+
     let execution_time = start_time.elapsed();
-    
-    info!("Task executed in {:?}, produced {} results", execution_time, result.len());
-    info!("Sample results: {:?}", &result[..std::cmp::min(10, result.len())]);
+
+    info!(
+        "Task executed in {:?}, produced {} results",
+        execution_time,
+        result.len()
+    );
+    info!(
+        "Sample results: {:?}",
+        &result[..std::cmp::min(10, result.len())]
+    );
 
     // Create task metrics
     let metrics = TaskMetrics {
@@ -237,9 +245,9 @@ async fn demonstrate_serialization() -> Result<(), Box<dyn std::error::Error>> {
         let serialized = bincode::encode_to_vec(&data, bincode::config::standard())?;
         info!("{} serialized to {} bytes", name, serialized.len());
 
-        let (deserialized, _): (Vec<_>, _) = 
+        let (deserialized, _): (Vec<_>, _) =
             bincode::decode_from_slice(&serialized, bincode::config::standard())?;
-        
+
         info!("{} deserialized successfully: {:?}", name, deserialized);
     }
 

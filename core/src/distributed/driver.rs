@@ -12,8 +12,7 @@ use crate::distributed::proto::driver::{
 };
 use crate::distributed::task::TaskScheduler;
 use crate::distributed::types::{
-    ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskMetrics,
-    TaskState,
+    ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -386,4 +385,92 @@ impl Driver {
     pub async fn pending_task_count(&self) -> usize {
         self.task_scheduler.pending_task_count().await
     }
+
+    /// Submit an RDD task for distributed execution
+    pub async fn submit_rdd_task<T>(
+        &self,
+        task_id: TaskId,
+        stage_id: StageId,
+        partition_index: usize,
+        partition_data: Vec<T>,
+        operation: RddOperation,
+        preferred_executor: Option<ExecutorId>,
+    ) -> Result<(), anyhow::Error>
+    where
+        T: Send
+            + Sync
+            + Clone
+            + serde::Serialize
+            + for<'de> serde::Deserialize<'de>
+            + bincode::Encode
+            + bincode::Decode<bincode::config::Configuration>
+            + std::fmt::Debug
+            + 'static,
+    {
+        // Serialize the partition data and operation using bincode
+        let serialized_partition =
+            bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize partition data: {}", e))?;
+
+        let serialized_operation = bincode::encode_to_vec(&operation, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize operation: {}", e))?;
+
+        // Create task data combining partition and operation
+        let task_data = TaskData {
+            partition_data: serialized_partition,
+            operation: serialized_operation,
+        };
+
+        let serialized_task = bincode::encode_to_vec(&task_data, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize task data: {}", e))?;
+
+        // Submit to task scheduler
+        self.task_scheduler
+            .submit_task(
+                task_id,
+                stage_id,
+                partition_index,
+                serialized_task,
+                preferred_executor,
+            )
+            .await;
+
+        Ok(())
+    }
+
+    /// Collect results from all executors for a stage
+    pub async fn collect_stage_results(
+        &self,
+        stage_id: &StageId,
+    ) -> Result<Vec<Vec<u8>>, anyhow::Error> {
+        // This is a simplified implementation
+        // In a real system, this would track task completion and collect results
+        info!("Collecting results for stage: {}", stage_id);
+
+        // For now, return empty results
+        // TODO: Implement proper result collection
+        Ok(Vec::new())
+    }
+}
+
+/// RDD operation types that can be executed distributedly
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+pub enum RddOperation {
+    /// Map operation with serialized closure
+    Map { closure_data: Vec<u8> },
+    /// Filter operation with serialized predicate
+    Filter { predicate_data: Vec<u8> },
+    /// Collect operation - gather all elements
+    Collect,
+    /// Reduce operation with serialized function
+    Reduce { function_data: Vec<u8> },
+    /// FlatMap operation with serialized closure
+    FlatMap { closure_data: Vec<u8> },
+}
+
+/// Task data structure for RDD operations
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+pub struct TaskData {
+    pub partition_data: Vec<u8>,
+    pub operation: Vec<u8>,
 }
