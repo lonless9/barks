@@ -4,12 +4,13 @@
 //! Driver-Executor architecture without requiring full gRPC setup.
 
 use barks_core::distributed::{
-    context::{DistributedConfig, DistributedContext, ExecutionMode},
-    task::{SimpleTaskInfo, TaskScheduler},
-    types::{ExecutorInfo, ExecutorStatus, TaskMetrics, TaskState},
+    context::{DistributedConfig, DistributedContext},
+    driver::{RddOperation, TaskData},
+    task::TaskScheduler,
+    types::{ExecutorInfo, ExecutorStatus, TaskMetrics},
 };
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,9 +57,15 @@ async fn demonstrate_task_scheduling() -> Result<(), Box<dyn std::error::Error>>
 
     // Submit some tasks
     for i in 0..5 {
-        let task_info = SimpleTaskInfo::new(format!("task-{}", i), "stage-1".to_string(), i, 100);
+        // Create a task with some data and an operation
+        let partition_data: Vec<i32> = vec![i as i32, i as i32 + 1];
+        let task = TaskData {
+            partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())?,
+            operation: RddOperation::Collect,
+        };
 
-        let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())?;
+        // The actual payload for the scheduler is the serialized `TaskData`
+        let task_data = bincode::encode_to_vec(&task, bincode::config::standard())?;
 
         scheduler
             .submit_task(
@@ -75,7 +82,7 @@ async fn demonstrate_task_scheduling() -> Result<(), Box<dyn std::error::Error>>
 
     // Simulate task assignment
     for executor_id in ["executor-1", "executor-2"] {
-        while let Some(task) = scheduler.get_next_task(executor_id).await {
+        while let Some(task) = scheduler.get_next_task().await {
             info!("Assigned task {} to {}", task.task_id, executor_id);
         }
     }
@@ -182,29 +189,38 @@ async fn demonstrate_distributed_context() -> Result<(), Box<dyn std::error::Err
 async fn demonstrate_task_execution() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n--- Task Execution Demo ---");
 
-    // Create a simple task
-    let task_info = SimpleTaskInfo::new("demo-task".to_string(), "demo-stage".to_string(), 0, 1000);
-
-    info!("Created task: {:?}", task_info);
+    // Create a task with some data and an operation
+    let partition_data: Vec<i32> = (0..1000).collect();
+    let task_data_payload = TaskData {
+        partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())?,
+        operation: RddOperation::Map {
+            closure_data: vec![], // Placeholder
+        },
+    };
+    info!(
+        "Created task with operation: {:?}",
+        task_data_payload.operation
+    );
 
     // Serialize the task
-    let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())?;
-    info!("Serialized task size: {} bytes", task_data.len());
+    let task_data_bytes = bincode::encode_to_vec(&task_data_payload, bincode::config::standard())?;
+    info!("Serialized task size: {} bytes", task_data_bytes.len());
 
-    // Deserialize the task
-    let (deserialized_task, _): (SimpleTaskInfo, _) =
-        bincode::decode_from_slice(&task_data, bincode::config::standard())?;
-
-    info!("Deserialized task: {:?}", deserialized_task);
+    // Deserialize the task (as an executor would)
+    let (deserialized_task, _): (TaskData, _) =
+        bincode::decode_from_slice(&task_data_bytes, bincode::config::standard())?;
+    info!("Deserialized task successfully.");
 
     // Simulate task execution
     use rayon::prelude::*;
     let start_time = std::time::Instant::now();
 
-    let result: Vec<i32> = (0..deserialized_task.data_size)
-        .into_par_iter()
-        .map(|i| (i as i32) * 2 + deserialized_task.partition_index as i32)
-        .collect();
+    // Simplified execution logic matching the Map operation
+    let input_data: (Vec<i32>, _) = bincode::decode_from_slice(
+        &deserialized_task.partition_data,
+        bincode::config::standard(),
+    )?;
+    let result: Vec<i32> = input_data.0.into_par_iter().map(|i| i * 2).collect();
 
     let execution_time = start_time.elapsed();
 
@@ -236,16 +252,16 @@ async fn demonstrate_serialization() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n--- Serialization Demo ---");
 
     // Test different data types
-    let test_data = vec![
+    let test_data: Vec<(&str, Vec<i32>)> = vec![
         ("integers", vec![1, 2, 3, 4, 5]),
-        ("strings", vec!["hello".to_string(), "world".to_string()]),
+        ("more_integers", vec![10, 20, 30, 40, 50]),
     ];
 
     for (name, data) in test_data {
         let serialized = bincode::encode_to_vec(&data, bincode::config::standard())?;
         info!("{} serialized to {} bytes", name, serialized.len());
 
-        let (deserialized, _): (Vec<_>, _) =
+        let (deserialized, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&serialized, bincode::config::standard())?;
 
         info!("{} deserialized successfully: {:?}", name, deserialized);

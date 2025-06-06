@@ -5,15 +5,15 @@
 
 use crate::distributed::driver::{RddOperation, TaskData};
 use crate::distributed::types::*;
-use crate::traits::{Partition, RddResult};
+
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Task runner for executing distributed tasks
 pub struct TaskRunner {
@@ -209,31 +209,6 @@ impl TaskRunner {
         Ok(serialized_result)
     }
 
-    /// Execute a simple task (placeholder implementation)
-    async fn execute_simple_task(task_info: &SimpleTaskInfo) -> Result<Vec<i32>, anyhow::Error> {
-        // This is a simplified task execution for demonstration
-        // In a real implementation, this would execute the actual RDD computation
-
-        debug!(
-            "Executing task {} for partition {}",
-            task_info.task_id, task_info.partition_index
-        );
-
-        // Simulate some computation using rayon for parallel processing
-        let result: Vec<i32> = (0..task_info.data_size)
-            .into_par_iter()
-            .map(|i| (i as i32) * 2 + task_info.partition_index as i32)
-            .collect();
-
-        info!(
-            "Task {} completed with {} elements",
-            task_info.task_id,
-            result.len()
-        );
-
-        Ok(result)
-    }
-
     /// Execute an RDD task with rayon parallel processing
     async fn execute_rdd_task_with_rayon(task_data: &TaskData) -> Result<Vec<u8>, anyhow::Error> {
         info!("Executing RDD task with rayon parallel processing");
@@ -296,31 +271,6 @@ impl TaskRunner {
             .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?;
 
         Ok(serialized_result)
-    }
-}
-
-/// Simplified task information for demonstration
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
-pub struct SimpleTaskInfo {
-    pub task_id: TaskId,
-    pub stage_id: StageId,
-    pub partition_index: usize,
-    pub data_size: usize,
-}
-
-impl SimpleTaskInfo {
-    pub fn new(
-        task_id: TaskId,
-        stage_id: StageId,
-        partition_index: usize,
-        data_size: usize,
-    ) -> Self {
-        Self {
-            task_id,
-            stage_id,
-            partition_index,
-            data_size,
-        }
     }
 }
 

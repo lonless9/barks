@@ -17,11 +17,18 @@ use crate::distributed::types::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
+
+/// Result of a completed task.
+#[derive(Debug, Clone)]
+pub enum TaskResult {
+    Success(Vec<u8>),
+    Failure(String),
+}
 
 /// Driver service implementation
 #[derive(Clone)]
@@ -34,6 +41,13 @@ pub struct DriverServiceImpl {
     executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
     /// Task statuses
     task_statuses: Arc<Mutex<HashMap<TaskId, TaskState>>>,
+    /// Completed task results
+    task_results: Arc<Mutex<HashMap<TaskId, TaskResult>>>,
+    /// Notifiers for waiting tasks
+    completion_notifiers: Arc<StdMutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+    /// Executor clients cache
+    executor_clients:
+        Arc<StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
     /// Heartbeat monitoring
     heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
     heartbeat_sender: mpsc::UnboundedSender<HeartbeatInfo>,
@@ -67,6 +81,9 @@ impl DriverServiceImpl {
             task_scheduler: Arc::new(TaskScheduler::new()),
             executors: Arc::new(Mutex::new(HashMap::new())),
             task_statuses: Arc::new(Mutex::new(HashMap::new())),
+            task_results: Arc::new(Mutex::new(HashMap::new())),
+            completion_notifiers: Arc::new(StdMutex::new(HashMap::new())),
+            executor_clients: Arc::new(StdMutex::new(HashMap::new())),
             heartbeat_receiver: Arc::new(Mutex::new(heartbeat_receiver)),
             heartbeat_sender,
         }
@@ -123,15 +140,17 @@ impl DriverServiceImpl {
 
                 let executor_id = executor.info.executor_id.clone();
                 let task_id = pending_task.task_id.clone();
+                let executor_clients = self.executor_clients.clone();
                 let task_scheduler = self.task_scheduler.clone();
 
                 // Launch task on executor
                 tokio::spawn(async move {
-                    // Mark task as running before launch attempt
-                    // In a more robust system, you'd handle states more carefully.
-
-                    if let Err(e) =
-                        Self::launch_task_on_executor(executor, pending_task.clone()).await
+                    if let Err(e) = Self::launch_task_on_executor(
+                        executor,
+                        pending_task.clone(),
+                        executor_clients,
+                    )
+                    .await
                     {
                         error!(
                             "Failed to launch task {} on executor {}: {}",
@@ -158,20 +177,47 @@ impl DriverServiceImpl {
             .collect()
     }
 
+    /// Gets or creates a gRPC client for an executor.
+    async fn get_or_create_executor_client(
+        executor: &RegisteredExecutor,
+        clients: Arc<
+            StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
+        >,
+    ) -> Result<ExecutorServiceClient<tonic::transport::Channel>, anyhow::Error> {
+        let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
+
+        // First, check if client exists
+        {
+            let clients_guard = clients.lock().unwrap();
+            if let Some(client) = clients_guard.get(&executor.info.executor_id) {
+                return Ok(client.clone());
+            }
+        } // Release lock before await
+
+        // Client not found, create a new one and cache it
+        info!(
+            "Connecting to executor {} at {}",
+            executor.info.executor_id, executor_addr
+        );
+        let client = ExecutorServiceClient::connect(executor_addr.clone()).await?;
+
+        // Insert the new client
+        {
+            let mut clients_guard = clients.lock().unwrap();
+            clients_guard.insert(executor.info.executor_id.clone(), client.clone());
+        }
+
+        Ok(client)
+    }
+
     async fn launch_task_on_executor(
         executor: RegisteredExecutor,
         pending_task: PendingTask,
+        clients: Arc<
+            StdMutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
+        >,
     ) -> Result<(), anyhow::Error> {
-        let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
-        info!(
-            "Attempting to launch task {} on executor at {}",
-            pending_task.task_id, executor_addr
-        );
-
-        // In a real system, you'd use a connection pool instead of connecting every time.
-        let mut client = ExecutorServiceClient::connect(executor_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to executor: {}", e))?;
+        let mut client = Self::get_or_create_executor_client(&executor, clients).await?;
 
         let task_id = pending_task.task_id.clone();
         let request = LaunchTaskRequest {
@@ -376,22 +422,40 @@ impl DriverService for DriverServiceImpl {
         let task_state = Self::convert_task_state(req.state);
         statuses.insert(req.task_id.clone(), task_state);
 
-        match task_state {
+        let result = match task_state {
             TaskState::Finished => {
                 info!("Task {} completed successfully", req.task_id);
-                // TODO: Process task result
+                TaskResult::Success(req.result)
             }
             TaskState::Failed => {
                 error!("Task {} failed: {}", req.task_id, req.error_message);
-                // TODO: Handle task failure, possibly reschedule
+                TaskResult::Failure(req.error_message)
             }
             TaskState::Killed => {
                 warn!("Task {} was killed", req.task_id);
-                // TODO: Handle task cancellation
+                TaskResult::Failure("Task was killed".to_string())
             }
             _ => {
                 debug!("Task {} state updated to {:?}", req.task_id, task_state);
+                return Ok(Response::new(TaskStatusResponse {
+                    success: true,
+                    message: "Status updated".to_string(),
+                }));
             }
+        };
+
+        // Store result and notify any waiters
+        self.task_results
+            .lock()
+            .await
+            .insert(req.task_id.clone(), result.clone());
+        if let Some(notifier) = self
+            .completion_notifiers
+            .lock()
+            .unwrap()
+            .remove(&req.task_id)
+        {
+            let _ = notifier.send(result);
         }
 
         let response = TaskStatusResponse {
@@ -436,7 +500,14 @@ impl Driver {
         partition_index: usize,
         task_data: Vec<u8>,
         preferred_executor: Option<ExecutorId>,
-    ) {
+    ) -> oneshot::Receiver<TaskResult> {
+        let (sender, receiver) = oneshot::channel();
+        self.service
+            .completion_notifiers
+            .lock()
+            .unwrap()
+            .insert(task_id.clone(), sender);
+
         self.task_scheduler
             .submit_task(
                 task_id,
@@ -446,6 +517,8 @@ impl Driver {
                 preferred_executor,
             )
             .await;
+
+        receiver
     }
 
     /// Get the number of registered executors

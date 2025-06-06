@@ -170,6 +170,7 @@ name = "barks-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "barks-utils",
  "bincode",
  "futures",
  "prost",
@@ -181,6 +182,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
 ]
 

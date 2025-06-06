@@ -4,7 +4,7 @@
 //! properly and execute tasks in a distributed manner.
 
 use barks_core::distributed::{
-    Driver, Executor, ExecutorInfo, SimpleTaskInfo,
+    Driver, Executor, ExecutorInfo,
     driver::{RddOperation, TaskData},
 };
 use std::net::SocketAddr;
@@ -82,12 +82,19 @@ async fn test_task_submission() {
         let task_id = format!("test-task-{}", i);
         let stage_id = format!("test-stage-{}", i / 2);
 
-        let task_info = SimpleTaskInfo::new(task_id.clone(), stage_id.clone(), i, 100 + i * 10);
+        // Create a task with some data and an operation
+        let partition_data: Vec<i32> = vec![i as i32, i as i32 + 1];
+        let task = TaskData {
+            partition_data: bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                .expect("Failed to serialize partition data"),
+            operation: RddOperation::Collect,
+        };
 
-        let task_data = bincode::encode_to_vec(&task_info, bincode::config::standard())
+        // The actual payload for the scheduler is the serialized `TaskData`
+        let task_data = bincode::encode_to_vec(&task, bincode::config::standard())
             .expect("Failed to serialize task");
 
-        driver
+        let _result_receiver = driver
             .submit_task(task_id, stage_id, i, task_data, None)
             .await;
     }
@@ -150,7 +157,7 @@ async fn test_rdd_task_submission() {
         let task_data = bincode::encode_to_vec(&rdd_task, bincode::config::standard())
             .expect("Failed to serialize RDD task");
 
-        driver
+        let _result_receiver = driver
             .submit_task(task_id, stage_id, i, task_data, None)
             .await;
     }
@@ -221,26 +228,6 @@ async fn test_multiple_executors() {
 /// Test task serialization and deserialization
 #[test]
 fn test_task_serialization() {
-    // Test SimpleTaskInfo serialization
-    let simple_task = SimpleTaskInfo::new(
-        "test-task-001".to_string(),
-        "test-stage-001".to_string(),
-        0,
-        1000,
-    );
-
-    let serialized = bincode::encode_to_vec(&simple_task, bincode::config::standard())
-        .expect("Failed to serialize SimpleTaskInfo");
-
-    let (deserialized, _): (SimpleTaskInfo, _) =
-        bincode::decode_from_slice(&serialized, bincode::config::standard())
-            .expect("Failed to deserialize SimpleTaskInfo");
-
-    assert_eq!(simple_task.task_id, deserialized.task_id);
-    assert_eq!(simple_task.stage_id, deserialized.stage_id);
-    assert_eq!(simple_task.partition_index, deserialized.partition_index);
-    assert_eq!(simple_task.data_size, deserialized.data_size);
-
     // Test TaskData serialization, which is the core of an RDD task
     let partition_data: Vec<i32> = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())

@@ -378,15 +378,15 @@ pub struct Executor {
 impl Executor {
     /// Create a new executor
     pub fn new(executor_info: ExecutorInfo, max_concurrent_tasks: usize) -> Self {
+        let driver_client = Arc::new(Mutex::new(None));
         let service = Arc::new(ExecutorServiceImpl::new(
             executor_info.clone(),
             max_concurrent_tasks,
-            Arc::new(Mutex::new(None)),
+            driver_client.clone(),
         ));
 
         Self {
-            // Pass the service's client handle here
-            driver_client: Arc::clone(&service.driver_client),
+            driver_client,
             service,
             heartbeat_interval: Duration::from_secs(10), // 10 second heartbeat interval
         }

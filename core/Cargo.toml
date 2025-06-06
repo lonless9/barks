@@ -17,6 +17,8 @@ prost.workspace = true
 bincode.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+barks-utils = { path = "../common/utils" }
 
 [build-dependencies]
 tonic-build.workspace = true
