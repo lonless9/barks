@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 pub trait Task: Send + Sync {
     /// Executes the task logic on a partition's data and returns the result as serialized bytes.
     /// This method encapsulates the entire computation for a single partition.
-    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, anyhow::Error>;
+    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, String>;
 }
 
 /// A task that executes a chain of serializable operations on i32 data.
@@ -49,34 +49,31 @@ pub struct ChainedI32Task {
 
 #[typetag::serde]
 impl Task for ChainedI32Task {
-    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
         // 1. Deserialize the initial partition data.
         let (mut current_data, _): (Vec<i32>, _) =
-            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
 
         // 2. Apply each operation in the chain sequentially. The output of one
         //    operation becomes the input for the next.
         for op in &self.operations {
             current_data = match op {
-                crate::operations::SerializableI32Operation::Map(map_op) => {
-                    current_data // Use Rayon for parallel map
-                        .par_iter()
-                        .map(|item| map_op.execute(*item))
-                        .collect()
-                }
-                crate::operations::SerializableI32Operation::Filter(filter_op) => {
-                    current_data // Use Rayon for parallel filter
-                        .par_iter()
-                        .filter(|&item| filter_op.test(item))
-                        .cloned()
-                        .collect()
-                }
+                crate::operations::SerializableI32Operation::Map(map_op) => current_data
+                    .par_iter()
+                    .map(|item| map_op.execute(*item))
+                    .collect(),
+                crate::operations::SerializableI32Operation::Filter(filter_op) => current_data
+                    .par_iter()
+                    .filter(|&item| filter_op.test(item))
+                    .cloned()
+                    .collect(),
             };
         }
 
         // 3. Serialize the final result.
         bincode::encode_to_vec(&current_data, bincode::config::standard())
-            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))
+            .map_err(|e| format!("Failed to serialize result: {}", e))
     }
 }
 
@@ -128,7 +125,7 @@ impl TaskRunner {
         .await
         .unwrap_or_else(|join_error| {
             // This case handles panics within the blocking task.
-            Err(anyhow::anyhow!("Task execution panicked: {}", join_error))
+            Err(format!("Task execution panicked: {}", join_error))
         });
 
         // Drop permit to release the semaphore slot
@@ -166,14 +163,14 @@ impl TaskRunner {
         partition_index: usize,
         serialized_task: &Vec<u8>,
         metrics: &mut TaskMetrics,
-    ) -> Result<(Vec<u8>, TaskMetrics)> {
+    ) -> Result<(Vec<u8>, TaskMetrics), String> {
         let deserialize_start = Instant::now();
         let task: Box<dyn Task> = serde_json::from_slice(serialized_task)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize task with serde_json: {}", e))?;
+            .map_err(|e| format!("Failed to deserialize task with serde_json: {}", e))?;
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
         let execution_start = Instant::now();
-        let result_bytes = task.execute(partition_index)?;
+        let result_bytes = task.execute(partition_index)?; // Errors are now String
 
         metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
         metrics.result_size_bytes = result_bytes.len() as u64;
@@ -201,6 +198,7 @@ pub struct PendingTask {
     // This will now be the serialized `Box<dyn Task>`
     pub serialized_task: Vec<u8>,
     pub preferred_executor: Option<ExecutorId>,
+    pub retries: u32,
 }
 
 impl TaskScheduler {
@@ -242,6 +240,18 @@ impl TaskScheduler {
     pub async fn get_next_task(&self) -> Option<PendingTask> {
         let mut pending_tasks = self.pending_tasks.lock().await;
         pending_tasks.pop_front()
+    }
+
+    /// Finds and removes a pending task by its ID.
+    /// This is not very efficient but is needed for the simple re-queueing logic.
+    /// A better implementation would use a HashMap for quick lookups inside the Driver.
+    pub async fn get_pending_task_by_id(&self, task_id: &TaskId) -> Option<PendingTask> {
+        let mut pending_tasks = self.pending_tasks.lock().await;
+        if let Some(pos) = pending_tasks.iter().position(|t| &t.task_id == task_id) {
+            pending_tasks.remove(pos)
+        } else {
+            None
+        }
     }
 
     /// Get the number of registered executors
@@ -331,12 +341,13 @@ mod tests {
 
     #[typetag::serde]
     impl Task for CustomSquareTask {
-        fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+        fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
             let (data, _): (Vec<i32>, usize) =
-                bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
+                bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
+                    .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
             let result: Vec<i32> = data.iter().map(|x| x * x).collect();
             bincode::encode_to_vec(&result, bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))
+                .map_err(|e| format!("Failed to serialize result: {}", e))
         }
     }
 

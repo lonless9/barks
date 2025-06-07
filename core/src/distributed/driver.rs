@@ -15,13 +15,15 @@ use crate::distributed::task::{PendingTask, Task, TaskScheduler};
 use crate::distributed::types::{
     ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
+
+const MAX_TASK_RETRIES: u32 = 3;
 
 /// Result of a completed task.
 #[derive(Debug, Clone)]
@@ -39,6 +41,8 @@ pub struct DriverServiceImpl {
     task_scheduler: Arc<TaskScheduler>,
     /// Registered executors
     executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
+    /// Tracks which tasks are running on which executor
+    executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
     /// Task statuses
     task_statuses: Arc<Mutex<HashMap<TaskId, TaskState>>>,
     /// Completed task results
@@ -80,6 +84,7 @@ impl DriverServiceImpl {
             driver_id,
             task_scheduler: Arc::new(TaskScheduler::new()),
             executors: Arc::new(Mutex::new(HashMap::new())),
+            executor_tasks: Arc::new(Mutex::new(HashMap::new())),
             task_statuses: Arc::new(Mutex::new(HashMap::new())),
             task_results: Arc::new(Mutex::new(HashMap::new())),
             completion_notifiers: Arc::new(Mutex::new(HashMap::new())),
@@ -101,10 +106,12 @@ impl DriverServiceImpl {
         let executors_for_liveness = Arc::clone(&executors);
         let task_scheduler_for_liveness = Arc::clone(&self.task_scheduler);
         let executor_clients_for_liveness = Arc::clone(&self.executor_clients);
+        let executor_tasks_for_liveness = Arc::clone(&self.executor_tasks);
         tokio::spawn(async move {
             Self::check_executor_liveness(
                 executors_for_liveness,
                 task_scheduler_for_liveness,
+                executor_tasks_for_liveness,
                 executor_clients_for_liveness,
                 30,
             )
@@ -176,6 +183,7 @@ impl DriverServiceImpl {
                     let executor_clone = executor.clone();
                     let executor_clients = self.executor_clients.clone();
                     let task_scheduler_clone = self.task_scheduler.clone();
+                    let executor_tasks_clone = self.executor_tasks.clone();
 
                     // Launch task on executor in the background
                     tokio::spawn(async move {
@@ -183,6 +191,7 @@ impl DriverServiceImpl {
                             executor_clone.clone(),
                             pending_task.clone(),
                             executor_clients,
+                            executor_tasks_clone.clone(),
                         )
                         .await
                         {
@@ -190,9 +199,16 @@ impl DriverServiceImpl {
                                 "Failed to launch task {} on executor {}: {}",
                                 pending_task.task_id, executor_clone.info.executor_id, e
                             );
-                            // Re-queue the task if launch fails
-                            warn!("Re-queueing task {}", pending_task.task_id);
-                            task_scheduler_clone.submit_pending_task(pending_task).await;
+                            // Re-queue the task if launch fails.
+                            let mut requeue_task = pending_task;
+                            if requeue_task.retries < MAX_TASK_RETRIES {
+                                warn!(
+                                    "Re-queueing task {} due to launch failure",
+                                    requeue_task.task_id
+                                );
+                                requeue_task.retries += 1;
+                                task_scheduler_clone.submit_pending_task(requeue_task).await;
+                            }
                         }
                     });
                 } else {
@@ -225,6 +241,7 @@ impl DriverServiceImpl {
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
+        executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
     ) -> Result<(), anyhow::Error> {
         let mut client =
             Self::get_or_create_executor_client_static(&executor, executor_clients).await?;
@@ -234,6 +251,15 @@ impl DriverServiceImpl {
             "Launching task {} on executor {}",
             task_id, executor.info.executor_id
         );
+
+        // Add task to the executor's set of running tasks BEFORE launching
+        {
+            let mut executor_tasks_guard = executor_tasks.lock().await;
+            executor_tasks_guard
+                .entry(executor.info.executor_id.clone())
+                .or_default()
+                .insert(task_id.clone());
+        }
 
         let request = LaunchTaskRequest {
             task_id: task_id.clone(),
@@ -303,6 +329,7 @@ impl DriverServiceImpl {
     async fn check_executor_liveness(
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         task_scheduler: Arc<TaskScheduler>,
+        executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
@@ -338,13 +365,32 @@ impl DriverServiceImpl {
                 warn!("Removing dead executors: {:?}", dead_executors);
                 let mut executors_guard = executors.lock().await;
                 let mut clients_guard = executor_clients.lock().await;
+                let mut executor_tasks_guard = executor_tasks.lock().await;
+
                 for id in &dead_executors {
                     if let Some(executor) = executors_guard.get_mut(id) {
                         executor.status = ExecutorStatus::Failed;
-                        // Unregister from scheduler to prevent new tasks
-                        task_scheduler.unregister_executor(id).await;
-                        // Remove cached client to prevent using stale connections
-                        clients_guard.remove(id);
+                    }
+                    clients_guard.remove(id);
+
+                    // Re-queue tasks that were running on the dead executor
+                    if let Some(tasks_to_requeue) = executor_tasks_guard.remove(id) {
+                        warn!(
+                            "Re-queueing {} tasks from failed executor {}",
+                            tasks_to_requeue.len(),
+                            id
+                        );
+                        for task_id in tasks_to_requeue {
+                            if let Some(mut pending_task) =
+                                task_scheduler.get_pending_task_by_id(&task_id).await
+                            {
+                                if pending_task.retries < MAX_TASK_RETRIES {
+                                    pending_task.retries += 1;
+                                    warn!("Re-queueing task {}", task_id);
+                                    task_scheduler.submit_pending_task(pending_task).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -434,6 +480,10 @@ impl DriverService for DriverServiceImpl {
         // Add to executors map
         {
             let mut executors = self.executors.lock().await;
+            self.executor_tasks
+                .lock()
+                .await
+                .insert(req.executor_id.clone(), HashSet::new());
             executors.insert(req.executor_id.clone(), registered_executor);
         }
 
@@ -508,7 +558,15 @@ impl DriverService for DriverServiceImpl {
 
         let mut statuses = self.task_statuses.lock().await;
         let task_state = Self::convert_task_state(req.state);
-        statuses.insert(req.task_id.clone(), task_state);
+        statuses.insert(req.task_id.clone(), task_state.clone());
+
+        // Remove from the executor's running task set upon completion/failure
+        {
+            let mut executor_tasks_guard = self.executor_tasks.lock().await;
+            if let Some(tasks) = executor_tasks_guard.get_mut(&req.executor_id) {
+                tasks.remove(&req.task_id);
+            }
+        }
 
         let result = match task_state {
             TaskState::Finished => {
@@ -516,8 +574,28 @@ impl DriverService for DriverServiceImpl {
                 TaskResult::Success(req.result)
             }
             TaskState::Failed => {
-                error!("Task {} failed: {}", req.task_id, req.error_message);
-                TaskResult::Failure(req.error_message)
+                error!(
+                    "Task {} failed on executor {}: {}",
+                    req.task_id, req.executor_id, req.error_message
+                );
+                // Re-queue the task for retry if possible
+                let task_scheduler = self.task_scheduler.clone();
+                let task_id = req.task_id.clone();
+                tokio::spawn(async move {
+                    if let Some(mut pending_task) =
+                        task_scheduler.get_pending_task_by_id(&task_id).await
+                    {
+                        if pending_task.retries < MAX_TASK_RETRIES {
+                            pending_task.retries += 1;
+                            warn!(
+                                "Re-queueing task {} for retry (attempt {}/{})",
+                                task_id, pending_task.retries, MAX_TASK_RETRIES
+                            );
+                            task_scheduler.submit_pending_task(pending_task).await;
+                        }
+                    }
+                });
+                TaskResult::Failure(req.error_message.clone())
             }
             TaskState::Killed => {
                 warn!("Task {} was killed", req.task_id);
@@ -604,6 +682,7 @@ impl Driver {
                 partition_index,
                 serialized_task,
                 preferred_executor,
+                retries: 0,
             })
             .await;
 

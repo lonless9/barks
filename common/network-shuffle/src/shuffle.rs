@@ -51,23 +51,48 @@ where
 }
 
 /// In-memory shuffle manager
+#[derive(Default, Clone)]
 pub struct MemoryShuffleManager {
-    shuffles: Arc<RwLock<HashMap<u32, ShuffleInfo>>>,
     blocks: Arc<RwLock<HashMap<ShuffleBlockId, Vec<u8>>>>,
 }
 
 impl MemoryShuffleManager {
     pub fn new() -> Self {
         Self {
-            shuffles: Arc::new(RwLock::new(HashMap::new())),
             blocks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
 
-impl Default for MemoryShuffleManager {
-    fn default() -> Self {
-        Self::new()
+#[async_trait]
+impl ShuffleBlockManager for MemoryShuffleManager {
+    async fn get_block(&self, block_id: &ShuffleBlockId) -> Result<Vec<u8>> {
+        let blocks = self.blocks.read().await;
+        blocks
+            .get(block_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Block not found: {:?}", block_id))
+    }
+
+    async fn put_block(&self, block_id: ShuffleBlockId, data: Vec<u8>) -> Result<()> {
+        let mut blocks = self.blocks.write().await;
+        blocks.insert(block_id, data);
+        Ok(())
+    }
+
+    async fn remove_block(&self, block_id: &ShuffleBlockId) -> Result<()> {
+        let mut blocks = self.blocks.write().await;
+        blocks.remove(block_id);
+        Ok(())
+    }
+
+    async fn contains_block(&self, block_id: &ShuffleBlockId) -> Result<bool> {
+        Ok(self.blocks.read().await.contains_key(block_id))
+    }
+
+    async fn get_block_size(&self, block_id: &ShuffleBlockId) -> Result<u64> {
+        let blocks = self.blocks.read().await;
+        Ok(blocks.get(block_id).map(|d| d.len() as u64).unwrap_or(0))
     }
 }
 
@@ -128,5 +153,74 @@ impl<D: ShuffleData> ShuffleWriter for MemoryShuffleWriter<D> {
 
     fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+}
+
+#[cfg(feature = "server")]
+pub mod server {
+    use super::*;
+    use axum::{
+        Router,
+        extract::{Path, State},
+        http::StatusCode,
+        response::IntoResponse,
+        routing::get,
+    };
+    use std::net::SocketAddr;
+    use tracing::{error, info};
+
+    #[derive(Clone)]
+    struct ShuffleServerState {
+        block_manager: Arc<dyn ShuffleBlockManager>,
+    }
+
+    /// A simple HTTP server to serve shuffle blocks.
+    pub struct ShuffleServer {
+        addr: SocketAddr,
+        block_manager: Arc<dyn ShuffleBlockManager>,
+    }
+
+    impl ShuffleServer {
+        pub fn new(addr: SocketAddr, block_manager: Arc<dyn ShuffleBlockManager>) -> Self {
+            Self {
+                addr,
+                block_manager,
+            }
+        }
+
+        pub async fn start(self) -> Result<()> {
+            let state = ShuffleServerState {
+                block_manager: self.block_manager,
+            };
+            let app = Router::new()
+                .route(
+                    "/shuffle/:shuffle_id/:map_id/:reduce_id",
+                    get(get_shuffle_block),
+                )
+                .with_state(state);
+
+            info!("Shuffle server listening on {}", self.addr);
+            let listener = tokio::net::TcpListener::bind(self.addr).await?;
+            axum::serve(listener, app).await?;
+            Ok(())
+        }
+    }
+
+    async fn get_shuffle_block(
+        State(state): State<ShuffleServerState>,
+        Path((shuffle_id, map_id, reduce_id)): Path<(u32, u32, u32)>,
+    ) -> impl IntoResponse {
+        let block_id = ShuffleBlockId {
+            shuffle_id,
+            map_id,
+            reduce_id,
+        };
+        match state.block_manager.get_block(&block_id).await {
+            Ok(data) => (StatusCode::OK, data).into_response(),
+            Err(e) => {
+                error!("Failed to get shuffle block {:?}: {}", block_id, e);
+                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+            }
+        }
     }
 }
