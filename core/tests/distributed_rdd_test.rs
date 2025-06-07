@@ -3,7 +3,7 @@
 //! These tests verify that the distributed computing framework
 //! correctly executes different RDD operations using the new task system.
 
-use barks_core::distributed::task::{ChainedI32Task, Task};
+use barks_core::distributed::task::{ChainedTask, Task};
 use barks_core::operations::{
     DoubleOperation, EvenPredicate, GreaterThanPredicate, SerializableI32Operation,
 };
@@ -18,10 +18,10 @@ async fn test_map_operation_task() {
         bincode::encode_to_vec(&partition_data, bincode::config::standard()).unwrap();
 
     // Test Map operation
-    let task = ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    };
+    let task = ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    );
 
     // Execute the task directly to test its logic
     let result_bytes = task.execute(0).unwrap();
@@ -44,10 +44,10 @@ async fn test_filter_operation_task() {
         bincode::encode_to_vec(&partition_data, bincode::config::standard()).unwrap();
 
     // Test Filter operation (should keep only even numbers)
-    let task = ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
-    };
+    let task = ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
+    );
 
     // Execute the task
     let result_bytes = task.execute(0).unwrap();
@@ -69,13 +69,13 @@ async fn test_chained_operation_task() {
         bincode::encode_to_vec(&partition_data, bincode::config::standard()).unwrap();
 
     // Test a chain of operations: map(double) -> filter(>10)
-    let task = ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![
+    let task = ChainedTask::<i32>::new(
+        serialized_data,
+        vec![
             SerializableI32Operation::Map(Box::new(DoubleOperation)),
             SerializableI32Operation::Filter(Box::new(GreaterThanPredicate { threshold: 10 })),
         ],
-    };
+    );
 
     let result_bytes = task.execute(0).unwrap();
     let (result_data, _): (Vec<i32>, _) =

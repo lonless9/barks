@@ -35,20 +35,32 @@ pub trait Task: Send + Sync {
     fn execute(&self, partition_index: usize) -> Result<Vec<u8>, String>;
 }
 
-/// A task that executes a chain of serializable operations on i32 data.
-/// This replaces the less flexible I32OperationTask.
-/// This struct is a concrete implementation of the `Task` trait and serves as the primary
+/// A generic task that executes a chain of serializable operations on data of type T.
+/// This struct is a concrete implementation of the Task trait and serves as the primary
 /// model for how to package a stage of computation for an RDD partition.
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ChainedI32Task {
-    /// Serialized partition data as Vec<i32>
+pub struct ChainedTask<T: crate::operations::RddDataType> {
+    /// Serialized partition data as Vec<T>
     pub partition_data: Vec<u8>,
     /// The full chain of operations to apply to the partition data.
-    pub operations: Vec<crate::operations::SerializableI32Operation>,
+    pub operations: Vec<T::SerializableOperation>,
+    /// Phantom data to make the struct generic over T.
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<T>,
 }
 
-#[typetag::serde]
-impl Task for ChainedI32Task {
+impl<T: crate::operations::RddDataType> ChainedTask<T> {
+    pub fn new(partition_data: Vec<u8>, operations: Vec<T::SerializableOperation>) -> Self {
+        Self {
+            partition_data,
+            operations,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[typetag::serde(name = "ChainedTaskI32")]
+impl Task for ChainedTask<i32> {
     fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
         // 1. Deserialize the initial partition data.
         let (mut current_data, _): (Vec<i32>, _) =
@@ -66,6 +78,36 @@ impl Task for ChainedI32Task {
                 crate::operations::SerializableI32Operation::Filter(filter_op) => current_data
                     .par_iter()
                     .filter(|&item| filter_op.test(item))
+                    .cloned()
+                    .collect(),
+            };
+        }
+
+        // 3. Serialize the final result.
+        bincode::encode_to_vec(&current_data, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize result: {}", e))
+    }
+}
+
+// Also implement for String type
+#[typetag::serde(name = "ChainedTaskString")]
+impl Task for ChainedTask<String> {
+    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+        // 1. Deserialize the initial partition data.
+        let (mut current_data, _): (Vec<String>, _) =
+            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
+
+        // 2. Apply each operation in the chain sequentially.
+        for op in &self.operations {
+            current_data = match op {
+                crate::operations::SerializableStringOperation::Map(map_op) => current_data
+                    .par_iter()
+                    .map(|item| map_op.execute(item.clone()))
+                    .collect(),
+                crate::operations::SerializableStringOperation::Filter(filter_op) => current_data
+                    .par_iter()
+                    .filter(|item| filter_op.test(item))
                     .cloned()
                     .collect(),
             };
@@ -302,19 +344,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_chained_i32_task_execution() {
-        // Test the ChainedI32Task with a chain of operations
+        // Test the ChainedTask<i32> with a chain of operations
         let data = vec![1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15];
-        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
-
         let operations = vec![
             SerializableI32Operation::Map(Box::new(DoubleOperation)),
             SerializableI32Operation::Filter(Box::new(GreaterThanPredicate { threshold: 20 })),
         ];
 
-        let task = ChainedI32Task {
-            partition_data: serialized_data,
+        let task = ChainedTask::<i32>::new(
+            bincode::encode_to_vec(&data, bincode::config::standard()).unwrap(),
             operations,
-        };
+        );
 
         let result_bytes = task.execute(0).unwrap();
         let (result, _): (Vec<i32>, _) =
@@ -331,16 +371,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_chained_i32_task_serialization() {
-        // Test that ChainedI32Task can be serialized and deserialized
+        // Test that ChainedTask<i32> can be serialized and deserialized
         let data = vec![1, 2, 3];
-        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
-
         let operations = vec![SerializableI32Operation::Map(Box::new(DoubleOperation))];
 
-        let task = ChainedI32Task {
-            partition_data: serialized_data,
+        let task = ChainedTask::<i32>::new(
+            bincode::encode_to_vec(&data, bincode::config::standard()).unwrap(),
             operations,
-        };
+        );
 
         // Serialize the task as a trait object
         let task_box: Box<dyn Task> = Box::new(task);

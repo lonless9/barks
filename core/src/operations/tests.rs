@@ -6,13 +6,13 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::rdd::DistributedI32Rdd;
+    use crate::rdd::DistributedRdd;
 
     #[test]
     fn test_distributed_rdd_basic_operations() {
         // Test basic RDD creation and collection
         let data = vec![1, 2, 3, 4, 5];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 2);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 2);
 
         let result = rdd.collect().unwrap();
         assert_eq!(result, data);
@@ -22,7 +22,7 @@ mod tests {
     fn test_distributed_rdd_map_operation() {
         // Test map operation with DoubleOperation
         let data = vec![1, 2, 3, 4, 5];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 2);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 2);
         let mapped_rdd = rdd.map(Box::new(DoubleOperation));
 
         let result = mapped_rdd.collect().unwrap();
@@ -34,7 +34,7 @@ mod tests {
     fn test_distributed_rdd_filter_operation() {
         // Test filter operation with EvenPredicate
         let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 3);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 3);
         let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
 
         let result = filtered_rdd.collect().unwrap();
@@ -46,7 +46,7 @@ mod tests {
     fn test_distributed_rdd_chained_operations() {
         // Test chained operations: add constant then filter even
         let data = vec![1, 2, 3, 4, 5];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 2);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 2);
         let chained_rdd = rdd
             .map(Box::new(AddConstantOperation { constant: 10 }))
             .filter(Box::new(EvenPredicate));
@@ -114,7 +114,7 @@ mod tests {
     fn test_rdd_partitioning() {
         // Test that partitioning works correctly
         let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 3);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 3);
 
         assert_eq!(rdd.num_partitions(), 3);
 
@@ -139,7 +139,7 @@ mod tests {
     fn test_rdd_coalesce() {
         // Test coalescing partitions
         let data = vec![1, 2, 3, 4, 5, 6];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 4);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 4);
         assert_eq!(rdd.num_partitions(), 4);
 
         let coalesced_rdd = rdd.coalesce(2);
@@ -153,7 +153,7 @@ mod tests {
     fn test_rdd_repartition() {
         // Test repartitioning
         let data = vec![1, 2, 3, 4];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 2);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 2);
         assert_eq!(rdd.num_partitions(), 2);
 
         let repartitioned_rdd = rdd.repartition(4);
@@ -164,7 +164,7 @@ mod tests {
     fn test_empty_rdd() {
         // Test empty RDD
         let data: Vec<i32> = vec![];
-        let rdd = DistributedI32Rdd::from_vec(data.clone());
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data.clone());
 
         let result = rdd.collect().unwrap();
         assert_eq!(result, data);
@@ -175,7 +175,7 @@ mod tests {
     fn test_single_element_rdd() {
         // Test RDD with single element
         let data = vec![42];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 3);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 3);
 
         let result = rdd.collect().unwrap();
         assert_eq!(result, data);
@@ -185,7 +185,7 @@ mod tests {
     fn test_complex_chained_operations() {
         // Test more complex chained operations
         let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let rdd = DistributedI32Rdd::from_vec_with_partitions(data.clone(), 3);
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 3);
 
         let result_rdd = rdd
             .map(Box::new(SquareOperation)) // Square each number

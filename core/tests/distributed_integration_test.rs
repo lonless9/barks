@@ -6,7 +6,7 @@
 use barks_core::DistributedConfig;
 use barks_core::distributed::{
     Driver, Executor, ExecutorInfo,
-    task::{ChainedI32Task, Task},
+    task::{ChainedTask, Task},
 };
 use barks_core::operations::{DoubleOperation, SerializableI32Operation};
 use std::net::SocketAddr;
@@ -91,10 +91,10 @@ async fn test_task_submission() {
             bincode::encode_to_vec(&partition_data, bincode::config::standard())
                 .expect("Failed to serialize partition data");
 
-        let task: Box<dyn Task> = Box::new(ChainedI32Task {
-            partition_data: serialized_partition_data,
-            operations: vec![], // Empty operations for a simple collect
-        });
+        let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+            serialized_partition_data,
+            vec![], // Empty operations for a simple collect
+        ));
 
         let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
     }
@@ -136,10 +136,7 @@ async fn test_rdd_task_submission() {
         let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
             .expect("Failed to serialize partition data");
 
-        let task: Box<dyn Task> = Box::new(ChainedI32Task {
-            partition_data: serialized_data,
-            operations: ops,
-        });
+        let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(serialized_data, ops));
 
         let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
     }
@@ -215,10 +212,10 @@ fn test_task_serialization() {
     let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
         .expect("Failed to serialize partition data");
 
-    let task: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data.clone(),
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    });
+    let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data.clone(),
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    ));
 
     let serialized_task = serde_json::to_vec(&task).expect("Failed to serialize ChainedI32Task");
 

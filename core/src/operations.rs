@@ -5,7 +5,31 @@
 
 use dyn_clone::DynClone;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{any::Any, fmt::Debug};
+
+/// A helper trait that associates data types with their serializable operations and predicates.
+/// This is the key to implementing generic DistributedRdd<T> while preserving typetag extensibility.
+pub trait RddDataType:
+    Any
+    + Send
+    + Sync
+    + Clone
+    + Debug
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + bincode::Encode
+    + bincode::Decode<()>
+    + 'static
+{
+    /// The Map operation trait object type associated with this data type.
+    type MapOperation: Send + Sync + Debug + DynClone;
+
+    /// The Filter operation trait object type associated with this data type.
+    type FilterPredicate: Send + Sync + Debug + DynClone;
+
+    /// The serializable operation enum containing the above operations.
+    type SerializableOperation: Send + Sync + Clone + Debug + Serialize + for<'de> Deserialize<'de>;
+}
 
 /// Trait for serializable operations on i32 values
 #[typetag::serde(tag = "type")]
@@ -45,6 +69,27 @@ dyn_clone::clone_trait_object!(StringPredicate);
 pub enum SerializableI32Operation {
     Map(Box<dyn I32Operation>),
     Filter(Box<dyn I32Predicate>),
+}
+
+/// Enum to hold different kinds of serializable String operations.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SerializableStringOperation {
+    Map(Box<dyn StringOperation>),
+    Filter(Box<dyn StringPredicate>),
+}
+
+/// Implement RddDataType for i32
+impl RddDataType for i32 {
+    type MapOperation = Box<dyn I32Operation>;
+    type FilterPredicate = Box<dyn I32Predicate>;
+    type SerializableOperation = SerializableI32Operation;
+}
+
+/// Implement RddDataType for String
+impl RddDataType for String {
+    type MapOperation = Box<dyn StringOperation>;
+    type FilterPredicate = Box<dyn StringPredicate>;
+    type SerializableOperation = SerializableStringOperation;
 }
 
 /// Map operation that doubles an integer

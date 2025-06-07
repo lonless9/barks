@@ -85,8 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: Vec<i32> = (1..=20).collect();
     info!("Original data (1..20)");
 
-    // Create a DistributedI32Rdd with 4 partitions using the server driver context
-    let rdd = driver_server_context.parallelize_i32_with_partitions(data, 4);
+    // Create a DistributedRdd with 4 partitions using the server driver context
+    let rdd = driver_server_context.parallelize_distributed(data, 4);
     info!("Created RDD with {} partitions", rdd.num_partitions());
 
     // Chain serializable operations
@@ -94,9 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Box::new(DoubleOperation)) // Double each number
         .filter(Box::new(GreaterThanPredicate { threshold: 20 })); // Keep results > 20
 
-    // The `run_i32` method will analyze the RDD's lineage, serialize the operations,
+    // The `run_distributed` method will analyze the RDD's lineage, serialize the operations,
     // and send them to the driver for distributed execution.
-    let result = driver_server_context.run_i32(transformed_rdd).await?;
+    let result = driver_server_context
+        .run_distributed(transformed_rdd)
+        .await?;
 
     info!("--- Computation finished ---");
     let expected_result = vec![22, 24, 26, 28, 30, 32, 34, 36, 38, 40];

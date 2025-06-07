@@ -3,7 +3,7 @@
 //! This test verifies that the `ChainedI32Task` can be correctly serialized,
 //! deserialized, and executed by a `TaskRunner`.
 
-use barks_core::distributed::task::{ChainedI32Task, Task, TaskExecutionResult, TaskRunner};
+use barks_core::distributed::task::{ChainedTask, Task, TaskExecutionResult, TaskRunner};
 use barks_core::operations::{
     DoubleOperation, EvenPredicate, GreaterThanPredicate, SerializableI32Operation,
 };
@@ -15,10 +15,10 @@ async fn test_task_direct_execution() {
     // Test direct task execution without TaskRunner
     let test_data = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&test_data, bincode::config::standard()).unwrap();
-    let task = ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    };
+    let task = ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    );
     let result = task.execute(0).unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())

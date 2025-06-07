@@ -7,7 +7,7 @@ use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
 
 use crate::distributed::types::*;
-use crate::rdd::{DistributedI32Rdd, SimpleRdd};
+use crate::rdd::{DistributedRdd, SimpleRdd};
 use crate::traits::RddResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -238,18 +238,13 @@ impl DistributedContext {
         self.parallelize_with_partitions(data, self.config.default_parallelism)
     }
 
-    /// Create a distributed RDD from a vector of i32 data with specified partitions
-    pub fn parallelize_i32_with_partitions(
+    /// Create a distributed RDD from a vector with specified partitions
+    pub fn parallelize_distributed<T: crate::operations::RddDataType>(
         &self,
-        data: Vec<i32>,
+        data: Vec<T>,
         num_partitions: usize,
-    ) -> DistributedI32Rdd {
-        DistributedI32Rdd::from_vec_with_partitions(data, num_partitions)
-    }
-
-    /// Create a distributed RDD from a vector of i32 data
-    pub fn parallelize_i32(&self, data: Vec<i32>) -> DistributedI32Rdd {
-        self.parallelize_i32_with_partitions(data, self.config.default_parallelism)
+    ) -> DistributedRdd<T> {
+        DistributedRdd::from_vec_with_partitions(data, num_partitions)
     }
 
     /// Run an RDD computation and collect results
@@ -266,7 +261,7 @@ impl DistributedContext {
             + bincode::Decode<()>,
     {
         match &self.mode {
-            ExecutionMode::Driver => self.run_distributed(rdd).await,
+            ExecutionMode::Driver => self.run_simple_distributed(rdd).await,
             ExecutionMode::Local => {
                 // Fallback to local execution
                 self.run_local(rdd).await
@@ -280,13 +275,18 @@ impl DistributedContext {
         }
     }
 
-    /// Run a distributed i32 RDD computation and collect results
-    pub async fn run_i32(&self, rdd: DistributedI32Rdd) -> RddResult<Vec<i32>> {
+    /// Run a distributed RDD computation and collect results
+    pub async fn run_distributed<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    where
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
+    {
         match &self.mode {
-            ExecutionMode::Driver => self.run_i32_distributed(rdd).await,
+            ExecutionMode::Driver => self.run_distributed_rdd(rdd).await,
             ExecutionMode::Local => {
                 // Fallback to local execution
-                rdd.collect()
+                unimplemented!(
+                    "Local mode for generic DistributedRdd is not implemented yet. Use `run_distributed_generic` in Driver mode."
+                );
             }
             ExecutionMode::Executor => {
                 // Executors don't run RDDs directly, they execute tasks
@@ -298,7 +298,7 @@ impl DistributedContext {
     }
 
     /// Run RDD computation in distributed mode
-    async fn run_distributed<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
+    async fn run_simple_distributed<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
     where
         T: Send
             + Sync
@@ -330,7 +330,7 @@ impl DistributedContext {
                         );
                         return Err(crate::traits::RddError::ContextError(
                             "SimpleRdd with non-serializable closures cannot be executed in distributed mode. \
-                             Please use a distributable RDD like DistributedI32Rdd with serializable operations \
+                             Please use a distributable RDD like DistributedRdd with serializable operations \
                              (e.g., from barks_core::operations) for distributed jobs."
                                 .to_string(),
                         ));
@@ -340,11 +340,11 @@ impl DistributedContext {
                     // This is a transformed RDD with closures. It cannot be distributed.
                     // Instead of silently falling back, we should return an error.
                     error!(
-                        "Attempted to run a transformed SimpleRdd in distributed mode. SimpleRdd uses non-serializable closures. Use a distributed RDD variant like `DistributedI32Rdd` with serializable operations instead."
+                        "Attempted to run a transformed SimpleRdd in distributed mode. SimpleRdd uses non-serializable closures. Use a distributed RDD variant like `DistributedRdd` with serializable operations instead."
                     );
                     return Err(crate::traits::RddError::ContextError(
                         "Cannot run transformed SimpleRdd in distributed mode due to non-serializable closures. \
-                         Use a RDD variant designed for distribution (e.g., DistributedI32Rdd)."
+                         Use a RDD variant designed for distribution (e.g., DistributedRdd)."
                             .to_string(),
                     ));
                 }
@@ -375,17 +375,22 @@ impl DistributedContext {
         rdd.collect()
     }
 
-    /// Run i32 RDD computation in distributed mode
-    async fn run_i32_distributed(&self, rdd: DistributedI32Rdd) -> RddResult<Vec<i32>> {
+    /// Run distributed RDD computation in distributed mode
+    async fn run_distributed_rdd<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    where
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
+    {
         if let Some(driver) = &self.driver {
             // Check if we have any executors
             let executor_count = driver.executor_count().await;
             if executor_count == 0 {
-                warn!("No executors available, falling back to local execution");
-                return rdd.collect();
+                warn!("No executors available, cannot run distributed job");
+                return Err(crate::traits::RddError::ContextError(
+                    "No executors available. Cannot run distributed job.".to_string(),
+                ));
             }
             info!(
-                "Running i32 RDD computation in distributed mode with {} executor(s)",
+                "Running RDD computation in distributed mode with {} executor(s)",
                 executor_count
             );
 
@@ -410,15 +415,44 @@ impl DistributedContext {
                     bincode::encode_to_vec(&chunk, bincode::config::standard())
                         .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
 
-                // Create the new chained task. It contains the data for one partition
+                // Create the new generic chained task. It contains the data for one partition
                 // and the entire sequence of operations to be applied to it.
-                let task: Box<dyn crate::distributed::task::Task> =
-                    Box::new(crate::distributed::task::ChainedI32Task {
-                        partition_data: serialized_partition_data,
-                        // Clone the operation chain for each task. This is efficient
-                        // because the operations themselves are small structs.
-                        operations: operations.clone(),
-                    });
+                let task: Box<dyn crate::distributed::task::Task> = {
+                    // We need to downcast T to create the appropriate task type
+                    let type_id = std::any::TypeId::of::<T>();
+                    if type_id == std::any::TypeId::of::<i32>() {
+                        // Cast operations to i32 operations
+                        let i32_operations: Vec<crate::operations::SerializableI32Operation> = operations
+                            .iter()
+                            .filter_map(|op| {
+                                let op_any = op as &dyn std::any::Any;
+                                op_any.downcast_ref::<crate::operations::SerializableI32Operation>().cloned()
+                            })
+                            .collect();
+                        Box::new(crate::distributed::task::ChainedTask::<i32>::new(
+                            serialized_partition_data,
+                            i32_operations,
+                        ))
+                    } else if type_id == std::any::TypeId::of::<String>() {
+                        // Cast operations to String operations
+                        let string_operations: Vec<crate::operations::SerializableStringOperation> = operations
+                            .iter()
+                            .filter_map(|op| {
+                                let op_any = op as &dyn std::any::Any;
+                                op_any.downcast_ref::<crate::operations::SerializableStringOperation>().cloned()
+                            })
+                            .collect();
+                        Box::new(crate::distributed::task::ChainedTask::<String>::new(
+                            serialized_partition_data,
+                            string_operations,
+                        ))
+                    } else {
+                        return Err(crate::traits::RddError::ContextError(format!(
+                            "Unsupported data type for distributed execution: {:?}",
+                            type_id
+                        )));
+                    }
+                };
 
                 let result_future = driver
                     .submit_task(task_id, stage_id.clone(), i, task, None)
@@ -434,7 +468,7 @@ impl DistributedContext {
             for future in result_futures {
                 match future.await {
                     Ok(crate::distributed::driver::TaskResult::Success(bytes)) => {
-                        let (partition_result, _): (Vec<i32>, _) =
+                        let (partition_result, _): (Vec<T>, _) =
                             bincode::decode_from_slice(&bytes, bincode::config::standard())
                                 .map_err(|e| {
                                     crate::traits::RddError::SerializationError(e.to_string())
