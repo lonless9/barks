@@ -28,7 +28,7 @@ pub trait UnsafeMemory: Send + Sync {
 }
 
 /// Trait for unsafe buffer operations
-pub trait UnsafeBuffer: Send + Sync {
+pub trait UnsafeBuffer {
     /// Get buffer pointer
     fn as_ptr(&self) -> *const u8;
 

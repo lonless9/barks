@@ -537,52 +537,56 @@ impl DriverService for DriverServiceImpl {
         let req = request.into_inner();
         let executor_id = req.executor_id.clone();
 
-        // --- Start: Handle re-registration robustly ---
-        let mut executors_guard = self.executors.lock().await;
-        if let Some(old_executor) = executors_guard.get_mut(&executor_id) {
-            warn!(
-                "Executor {} is re-registering. Decommissioning old instance.",
-                executor_id
-            );
-            old_executor.status = ExecutorStatus::Failed;
+        // --- Start: Handle re-registration robustly by cleaning up all old state ---
+        {
+            let mut executors_guard = self.executors.lock().await;
+            if let Some(old_executor) = executors_guard.get_mut(&executor_id) {
+                warn!(
+                    "Executor {} is re-registering. Decommissioning old instance.",
+                    executor_id
+                );
+                old_executor.status = ExecutorStatus::Failed;
 
-            let mut executor_tasks_guard = self.executor_tasks.lock().await;
-            if let Some(tasks_to_requeue) = executor_tasks_guard.remove(&executor_id) {
-                let task_scheduler = self.task_scheduler.clone();
-                let active_tasks = self.active_tasks.clone();
-                let max_retries = self.config.task_max_retries;
-                let notifiers = self.completion_notifiers.clone();
-                let executor_id_clone = executor_id.clone();
+                // Re-queue tasks from the old instance.
+                let mut executor_tasks_guard = self.executor_tasks.lock().await;
+                if let Some(tasks_to_requeue) = executor_tasks_guard.remove(&executor_id) {
+                    let task_scheduler = self.task_scheduler.clone();
+                    let active_tasks = self.active_tasks.clone();
+                    let max_retries = self.config.task_max_retries;
+                    let notifiers = self.completion_notifiers.clone();
+                    let executor_id_clone = executor_id.clone();
 
-                tokio::spawn(async move {
-                    Self::handle_failed_tasks(
-                        tasks_to_requeue,
-                        &executor_id_clone,
-                        task_scheduler,
-                        active_tasks,
-                        notifiers,
-                        max_retries,
-                    )
-                    .await;
-                });
+                    tokio::spawn(async move {
+                        Self::handle_failed_tasks(
+                            tasks_to_requeue,
+                            &executor_id_clone,
+                            task_scheduler,
+                            active_tasks,
+                            notifiers,
+                            max_retries,
+                        )
+                        .await;
+                    });
+                }
+                // Remove the old executor entry completely to ensure a clean state.
+                executors_guard.remove(&executor_id);
             }
         }
-        // Remove the old entry completely to ensure a clean state for the new registration.
-        // The new executor info will be inserted fresh below.
-        executors_guard.remove(&executor_id);
-        drop(executors_guard);
         // --- End: Handle re-registration ---
 
-        // Invalidate any existing client for this executor ID to force re-connection.
-        // in case the executor is re-registering with a new address.
+        // CRITICAL FIX: Invalidate any existing client for this executor ID.
+        // This forces re-connection if the executor is re-registering with a new address.
+        if self
+            .executor_clients
+            .lock()
+            .await
+            .remove(&executor_id)
+            .is_some()
         {
-            let mut clients = self.executor_clients.lock().await;
-            if clients.remove(&req.executor_id).is_some() {
-                info!(
-                    "Removed stale client for re-registering executor: {}",
-                    req.executor_id
-                );
-            }
+            warn!(
+                "Removed stale client for re-registering executor: {}",
+                executor_id
+            );
         }
 
         info!(

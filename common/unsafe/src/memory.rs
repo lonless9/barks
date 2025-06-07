@@ -93,11 +93,6 @@ impl Drop for UnsafeVecBuffer {
     }
 }
 
-// SAFETY: UnsafeVecBuffer is designed to be used in unsafe contexts
-// where the caller ensures thread safety
-unsafe impl Send for UnsafeVecBuffer {}
-unsafe impl Sync for UnsafeVecBuffer {}
-
 impl UnsafeBuffer for UnsafeVecBuffer {
     fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
