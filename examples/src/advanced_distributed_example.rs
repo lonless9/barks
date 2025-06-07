@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 async fn test_local_execution() -> Result<()> {
     info!("Creating local context for baseline testing...");
 
-    let config = DistributedConfig::default();
+    let _config = DistributedConfig::default();
     let context = DistributedContext::new_local("local-test".to_string());
 
     // Create test data
@@ -248,7 +248,7 @@ async fn performance_comparison() -> Result<()> {
         let data: Vec<i32> = (1..=size).collect();
 
         // Local performance
-        let config = DistributedConfig::default();
+        let _config = DistributedConfig::default();
         let local_context = DistributedContext::new_local("perf-local".to_string());
 
         let start = Instant::now();
@@ -273,26 +273,4 @@ async fn performance_comparison() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Demonstrates the key improvements in the new system
-fn demonstrate_improvements() {
-    info!("\n🎯 Key Improvements in the New System:");
-    info!("1. ✅ Serializable Operations: Operations can be sent across the network");
-    info!("2. ✅ Type Safety: Strong typing for different data types (i32, String, etc.)");
-    info!("3. ✅ Extensibility: Easy to add new operations without changing core code");
-    info!("4. ✅ Distributed Execution: True distributed processing capability");
-    info!("5. ✅ Local Fallback: Graceful degradation when distributed execution fails");
-
-    info!("\n📋 Current Limitations:");
-    info!("1. ✅ Transformed RDDs are now distributed for i32!");
-    info!("2. ⚠️  Limited to specific data types (i32, String)");
-    info!("3. ⚠️  Simple scheduling (no advanced optimizations yet)");
-
-    info!("\n🔮 Future Enhancements:");
-    info!("1. ✅ Full lineage execution in distributed mode (completed for i32)");
-    info!("2. 🚧 Generic operations for any serializable type");
-    info!("3. 🚧 Advanced scheduling and optimization");
-    info!("4. 🚧 Shuffle operations for wide transformations");
-    info!("5. 🚧 Fault tolerance and recovery mechanisms");
 }

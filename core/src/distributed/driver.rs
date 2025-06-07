@@ -219,32 +219,6 @@ impl DriverServiceImpl {
             .collect()
     }
 
-    /// Gets or creates a gRPC client for an executor.
-    async fn get_or_create_executor_client(
-        &self,
-        executor: &RegisteredExecutor,
-    ) -> Result<ExecutorServiceClient<tonic::transport::Channel>, anyhow::Error> {
-        let executor_id = &executor.info.executor_id;
-        // Lock the client cache to prevent race conditions during client creation.
-        let mut clients_guard = self.executor_clients.lock().await;
-
-        // If client already exists, clone and return it.
-        if let Some(client) = clients_guard.get(executor_id) {
-            return Ok(client.clone());
-        }
-
-        // Client not found, create a new one.
-        let executor_addr = format!("http://{}:{}", executor.info.host, executor.info.port);
-        info!(
-            "Connecting to executor {} at {}",
-            executor_id, executor_addr
-        );
-        let client = ExecutorServiceClient::connect(executor_addr).await?;
-        clients_guard.insert(executor_id.clone(), client.clone());
-
-        Ok(client)
-    }
-
     async fn launch_task_on_executor(
         executor: RegisteredExecutor,
         pending_task: PendingTask,
@@ -395,18 +369,6 @@ impl DriverServiceImpl {
             4 => ExecutorStatus::Stopping,
             5 => ExecutorStatus::Failed,
             _ => ExecutorStatus::Failed,
-        }
-    }
-
-    /// Convert internal ExecutorStatus to protobuf
-    fn convert_to_proto_status(status: ExecutorStatus) -> i32 {
-        match status {
-            ExecutorStatus::Starting => 0,
-            ExecutorStatus::Running => 1,
-            ExecutorStatus::Idle => 2,
-            ExecutorStatus::Busy => 3,
-            ExecutorStatus::Stopping => 4,
-            ExecutorStatus::Failed => 5,
         }
     }
 
