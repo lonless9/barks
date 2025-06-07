@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package barks.executor;
 
+import "driver.proto";
+
 // Executor service for receiving and executing tasks
 service ExecutorService {
     // Launch a task on this executor
@@ -53,7 +55,7 @@ message GetStatusRequest {
 
 // Get status response
 message GetStatusResponse {
-    ExecutorStatus status = 1;
+    barks.driver.ExecutorStatus status = 1;
     ExecutorInfo info = 2;
     ExecutorMetrics metrics = 3;
     repeated TaskInfo running_tasks = 4;
@@ -70,15 +72,7 @@ message ShutdownResponse {
     string message = 2;
 }
 
-// Executor status
-enum ExecutorStatus {
-    STARTING = 0;
-    RUNNING = 1;
-    IDLE = 2;
-    BUSY = 3;
-    STOPPING = 4;
-    FAILED = 5;
-}
+
 
 // Executor information
 message ExecutorInfo {
@@ -112,14 +106,5 @@ message TaskInfo {
     string stage_id = 2;
     uint32 partition_index = 3;
     uint64 start_time = 4;
-    TaskState status = 5;
-}
-
-// Task state (matches driver.proto)
-enum TaskState {
-    TASK_PENDING = 0;
-    TASK_RUNNING = 1;
-    TASK_FINISHED = 2;
-    TASK_FAILED = 3;
-    TASK_KILLED = 4;
+    barks.driver.TaskState status = 5;
 }

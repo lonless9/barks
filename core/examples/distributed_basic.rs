@@ -105,7 +105,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Final collected result: {:?}", result);
     info!("Expected result:      {:?}", expected_result);
 
-    assert_eq!(result, expected_result);
+    // Sort both vectors to ensure order-independent comparison
+    // In distributed computing, partition results may arrive in different orders
+    let mut sorted_result = result.clone();
+    let mut sorted_expected = expected_result.clone();
+    sorted_result.sort();
+    sorted_expected.sort();
+
+    assert_eq!(
+        sorted_result, sorted_expected,
+        "Results don't match after sorting. Got: {:?}, Expected: {:?}",
+        sorted_result, sorted_expected
+    );
 
     // --- 5. Shutdown ---
     info!("Example finished successfully. Shutting down.");
