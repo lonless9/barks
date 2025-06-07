@@ -17,11 +17,13 @@ use crate::distributed::proto::executor::{
 };
 use crate::distributed::task::TaskRunner;
 use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, TaskId};
+use barks_network_shuffle::{shuffle::server::ShuffleServer, FileShuffleBlockManager};
 use barks_utils::current_timestamp_secs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tonic::{transport::Server, Request, Response, Status};
@@ -501,7 +503,28 @@ impl Executor {
 
     /// Start the executor service
     pub async fn start(&self, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+        // Start the main executor gRPC service
         let service = Arc::clone(&self.service);
+
+        // Start the Shuffle Service on a different port
+        let shuffle_port = addr.port() + 1000;
+        let shuffle_addr_str = format!("{}:{}", addr.ip(), shuffle_port);
+        let shuffle_addr: SocketAddr = shuffle_addr_str.parse()?;
+
+        // Each executor needs its own root directory for shuffle files.
+        // In a real deployment, this would be a configured path.
+        let temp_dir = tempdir()?;
+        let shuffle_root_dir = temp_dir.keep();
+        info!("Shuffle root directory: {:?}", shuffle_root_dir);
+        let block_manager = Arc::new(FileShuffleBlockManager::new(shuffle_root_dir)?);
+        let shuffle_server = ShuffleServer::new(shuffle_addr, block_manager);
+
+        tokio::spawn(async move {
+            if let Err(e) = shuffle_server.start().await {
+                error!("Shuffle server failed to start: {}", e);
+            }
+        });
+
         service.start(addr).await
     }
 

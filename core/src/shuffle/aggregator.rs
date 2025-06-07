@@ -51,3 +51,44 @@ where
         (self.reduce_func)(c1, c2)
     }
 }
+
+/// A generic aggregator for combine_by_key operations
+#[derive(Clone, Debug)]
+pub struct CombineAggregator<V, C> {
+    create_combiner: fn(V) -> C,
+    merge_value: fn(C, V) -> C,
+    merge_combiners: fn(C, C) -> C,
+}
+
+impl<V, C> CombineAggregator<V, C> {
+    pub fn new(
+        create_combiner: fn(V) -> C,
+        merge_value: fn(C, V) -> C,
+        merge_combiners: fn(C, C) -> C,
+    ) -> Self {
+        Self {
+            create_combiner,
+            merge_value,
+            merge_combiners,
+        }
+    }
+}
+
+impl<K, V, C> Aggregator<K, V, C> for CombineAggregator<V, C>
+where
+    K: Send + Sync + Clone + Debug + 'static,
+    V: Send + Sync + Clone + Debug + 'static,
+    C: Send + Sync + Clone + Debug + 'static,
+{
+    fn create_combiner(&self, v: V) -> C {
+        (self.create_combiner)(v)
+    }
+
+    fn merge_value(&self, c: C, v: V) -> C {
+        (self.merge_value)(c, v)
+    }
+
+    fn merge_combiners(&self, c1: C, c2: C) -> C {
+        (self.merge_combiners)(c1, c2)
+    }
+}

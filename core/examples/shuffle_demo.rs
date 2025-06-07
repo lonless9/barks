@@ -33,7 +33,10 @@ fn main() {
     let partitioner = Arc::new(HashPartitioner::new(2));
 
     // Perform reduceByKey operation (sum values for each key)
-    let reduced_rdd = rdd.clone().reduce_by_key(|a, b| a + b, partitioner);
+    fn add_i32(a: i32, b: i32) -> i32 {
+        a + b
+    }
+    let reduced_rdd = rdd.clone().reduce_by_key(add_i32, partitioner);
     println!("   Created shuffled RDD for reduceByKey operation");
     println!(
         "   Shuffled RDD has {} partitions",

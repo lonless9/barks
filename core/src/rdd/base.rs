@@ -313,20 +313,19 @@ pub trait PairRdd<K: Data, V: Data>: Rdd<(K, V)>
 where
     Self: Sized,
 {
+    /// Groups values by key and applies a reduction function.
+    /// This is a wide transformation that triggers a shuffle.
     fn reduce_by_key(
         self,
         reduce_func: fn(V, V) -> V,
         partitioner: Arc<dyn crate::shuffle::Partitioner>,
     ) -> crate::rdd::ShuffledRdd<K, V, V> {
         let aggregator = Arc::new(crate::shuffle::ReduceAggregator::new(reduce_func));
-        crate::rdd::ShuffledRdd::new(
-            0,
-            Arc::new(self) as Arc<dyn RddBase>,
-            aggregator,
-            partitioner,
-        )
+        crate::rdd::ShuffledRdd::new(0, Arc::new(self), aggregator, partitioner)
     }
 
+    /// Groups all values for a key into a single sequence.
+    /// This is a wide transformation that triggers a shuffle.
     fn group_by_key(
         self,
         partitioner: Arc<dyn crate::shuffle::Partitioner>,
@@ -350,7 +349,7 @@ where
 
         crate::rdd::ShuffledRdd::new(
             0,
-            Arc::new(self) as Arc<dyn RddBase>,
+            Arc::new(self),
             Arc::new(GroupByAggregator(std::marker::PhantomData)),
             partitioner,
         )

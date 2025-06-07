@@ -469,14 +469,40 @@ where
 // Specific implementations for concrete types
 #[typetag::serde(name = "ShuffleMapTaskStringI32")]
 impl Task for ShuffleMapTask<String, i32> {
-    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, String> {
+        // In a real executor, the block manager would be injected/retrieved from context.
+        // For this task, we assume a local temp directory for shuffle files.
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| format!("Failed to create temp dir for shuffle: {}", e))?;
+        let block_manager = Arc::new(
+            barks_network_shuffle::FileShuffleBlockManager::new(temp_dir.path())
+                .map_err(|e| format!("Failed to create FileShuffleBlockManager: {}", e))?,
+        );
+
         // 1. Deserialize the partition data
         let (data, _): (Vec<(String, i32)>, _) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
                 .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
 
-        // 2. Partition the data by key using a simple hash partitioner
-        let mut partitioned_data: HashMap<u32, Vec<(String, i32)>> = HashMap::new();
+        // 2. Create a shuffle writer
+        let partitioner = Arc::new(crate::shuffle::HashPartitioner::new(
+            self.num_reduce_partitions,
+        ));
+        let _writer: barks_network_shuffle::BytewaxShuffleWriter<String, i32> =
+            barks_network_shuffle::BytewaxShuffleWriter::new(
+                self.shuffle_id,
+                partition_index as u32,
+                partitioner,
+                block_manager,
+            );
+
+        // 3. For now, we'll simulate the shuffle write operation without async
+        // In a real implementation, this would use the actual shuffle writer
+        // but we need to avoid creating nested runtimes
+
+        // Simulate partitioning the data
+        let mut partitioned_data: std::collections::HashMap<u32, Vec<(String, i32)>> =
+            std::collections::HashMap::new();
 
         for (key, value) in data {
             // Simple hash partitioning
@@ -493,11 +519,9 @@ impl Task for ShuffleMapTask<String, i32> {
                 .push((key, value));
         }
 
-        // 3. For now, we'll return the partitioned data as the result
-        // In a real implementation, this would write shuffle blocks to disk/network
-        // and return a MapStatus indicating where the blocks are stored
+        // 4. Create MapStatus with block sizes
         let map_status = MapStatus::new({
-            let mut block_sizes = HashMap::new();
+            let mut block_sizes = std::collections::HashMap::new();
             for (partition_id, partition_data) in &partitioned_data {
                 let serialized_size =
                     bincode::encode_to_vec(partition_data, bincode::config::standard())
@@ -508,7 +532,7 @@ impl Task for ShuffleMapTask<String, i32> {
             block_sizes
         });
 
-        // 4. Serialize and return the MapStatus
+        // 5. Serialize and return the MapStatus
         bincode::encode_to_vec(&map_status, bincode::config::standard())
             .map_err(|e| format!("Failed to serialize MapStatus: {}", e))
     }

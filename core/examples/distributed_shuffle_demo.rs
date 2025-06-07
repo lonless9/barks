@@ -70,10 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let original_partitions = rdd.num_partitions();
     let original_dependencies = rdd.dependencies().len();
 
-    let shuffled_rdd = rdd.reduce_by_key(
-        |a, b| format!("{},{}", a, b), // Concatenate strings
-        partitioner.clone(),
-    );
+    fn concat_strings(a: String, b: String) -> String {
+        format!("{},{}", a, b)
+    }
+    let shuffled_rdd = rdd.reduce_by_key(concat_strings, partitioner.clone());
 
     println!("   Original RDD: {} partitions", original_partitions);
     println!(

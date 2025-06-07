@@ -385,7 +385,7 @@ pub mod server {
             };
             let app = Router::new()
                 .route(
-                    "/shuffle/:shuffle_id/:map_id/:reduce_id",
+                    "/shuffle/{shuffle_id}/{map_id}/{reduce_id}",
                     get(get_shuffle_block),
                 )
                 .with_state(state);

@@ -74,3 +74,6 @@ uuid = { version = "1.0", features = ["v4"] }
 
 # CPU count detection
 num_cpus = "1.0"
+
+# temporary files
+tempfile = "3.0"
