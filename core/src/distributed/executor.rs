@@ -455,8 +455,8 @@ impl Executor {
 
     /// Start heartbeat loop
     pub async fn start_heartbeat(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let driver_client_clone = self.service.driver_client.lock().await.clone();
-        if let Some(client) = driver_client_clone {
+        if self.service.driver_client.lock().await.is_some() {
+            let driver_client_arc = Arc::clone(&self.service.driver_client);
             let executor_id = self.service.executor_info.executor_id.clone();
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);
@@ -466,7 +466,6 @@ impl Executor {
 
             tokio::spawn(async move {
                 let mut interval = interval(heartbeat_interval);
-                let mut client = client;
 
                 loop {
                     interval.tick().await;
@@ -495,21 +494,26 @@ impl Executor {
                         }),
                     };
 
-                    match client.heartbeat(heartbeat_request).await {
-                        Ok(response) => {
-                            let resp = response.into_inner();
-                            if !resp.success {
-                                warn!("Heartbeat failed: {}", resp.message);
-                                if resp.should_reregister {
-                                    error!("Driver requested re-registration");
-                                    // TODO: Handle re-registration
+                    let mut driver_client_guard = driver_client_arc.lock().await;
+                    if let Some(client) = driver_client_guard.as_mut() {
+                        match client.heartbeat(heartbeat_request).await {
+                            Ok(response) => {
+                                let resp = response.into_inner();
+                                if !resp.success {
+                                    warn!("Heartbeat failed: {}", resp.message);
+                                    if resp.should_reregister {
+                                        error!("Driver requested re-registration");
+                                        // TODO: Handle re-registration
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                error!("Failed to send heartbeat: {}", e);
+                                // TODO: Handle connection failure
+                            }
                         }
-                        Err(e) => {
-                            error!("Failed to send heartbeat: {}", e);
-                            // TODO: Handle connection failure
-                        }
+                    } else {
+                        warn!("No driver client available for heartbeat, skipping.");
                     }
                 }
             });
