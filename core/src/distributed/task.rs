@@ -303,6 +303,11 @@ impl TaskScheduler {
         }
     }
 
+    /// Get a list of all registered executor IDs.
+    pub async fn list_executor_ids(&self) -> Vec<ExecutorId> {
+        self.executors.lock().await.keys().cloned().collect()
+    }
+
     /// Get the number of registered executors
     pub async fn executor_count(&self) -> usize {
         self.executors.lock().await.len()

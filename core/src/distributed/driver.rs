@@ -540,12 +540,11 @@ impl DriverService for DriverServiceImpl {
         // --- Start: Handle re-registration robustly by cleaning up all old state ---
         {
             let mut executors_guard = self.executors.lock().await;
-            if let Some(old_executor) = executors_guard.get_mut(&executor_id) {
+            if executors_guard.contains_key(&executor_id) {
                 warn!(
                     "Executor {} is re-registering. Decommissioning old instance.",
                     executor_id
                 );
-                old_executor.status = ExecutorStatus::Failed;
 
                 // Re-queue tasks from the old instance.
                 let mut executor_tasks_guard = self.executor_tasks.lock().await;
@@ -859,6 +858,11 @@ impl Driver {
     /// Get the number of registered executors
     pub async fn executor_count(&self) -> usize {
         self.task_scheduler.executor_count().await
+    }
+
+    /// Get IDs of all registered executors
+    pub async fn get_executor_ids(&self) -> Vec<ExecutorId> {
+        self.task_scheduler.list_executor_ids().await
     }
 
     /// Get the number of pending tasks

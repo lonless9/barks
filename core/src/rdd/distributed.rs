@@ -201,15 +201,29 @@ impl<T: RddDataType> DistributedRdd<T> {
 
     /// Collect all elements of the RDD into a vector by executing locally.
     pub fn collect(&self) -> crate::traits::RddResult<Vec<T>> {
+        use rayon::prelude::*;
         let partitions = self.partitions();
-        let mut result = Vec::new();
 
-        for partition in partitions {
-            let partition_data = self.compute(partition.as_ref())?;
-            result.extend(partition_data);
+        if partitions.len() <= 1 {
+            // Single partition: use sequential execution
+            let mut result = Vec::new();
+            for partition in partitions {
+                let partition_data = self.compute(partition.as_ref())?;
+                result.extend(partition_data);
+            }
+            Ok(result)
+        } else {
+            // Multiple partitions: use parallel execution with rayon
+            let results: crate::traits::RddResult<Vec<Vec<T>>> = partitions
+                .into_par_iter()
+                .map(|p| self.compute(p.as_ref()))
+                .collect();
+            let mut result = Vec::new();
+            for partition_data in results? {
+                result.extend(partition_data);
+            }
+            Ok(result)
         }
-
-        Ok(result)
     }
 }
 

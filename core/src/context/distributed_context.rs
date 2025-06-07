@@ -366,6 +366,12 @@ impl DistributedContext {
                 operations.len()
             );
 
+            // Get available executor IDs for locality-aware scheduling (round-robin for now)
+            let executor_ids = driver.get_executor_ids().await;
+            if executor_ids.is_empty() {
+                warn!("No executors available to assign preferred location.");
+            }
+
             // 2. Partition the base data for distribution.
             let stage_id = format!("stage-{}", uuid::Uuid::new_v4());
             let chunks = barks_utils::partition_evenly(base_data.as_ref().clone(), num_partitions);
@@ -385,8 +391,15 @@ impl DistributedContext {
                 let task: Box<dyn crate::distributed::task::Task> =
                     Self::create_task_for_type::<T>(serialized_partition_data, operations.clone())?;
 
+                // Assign a preferred executor in a round-robin fashion to test locality
+                let preferred_executor = if !executor_ids.is_empty() {
+                    executor_ids.get(i % executor_ids.len()).cloned()
+                } else {
+                    None
+                };
+
                 let result_future = driver
-                    .submit_task(task_id, stage_id.clone(), i, task, None)
+                    .submit_task(task_id, stage_id.clone(), i, task, preferred_executor)
                     .await
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
                 result_futures.push(result_future);
