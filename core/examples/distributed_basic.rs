@@ -5,8 +5,8 @@
 //! them communicate over TCP, and runs a true distributed RDD computation using
 //! serializable operations.
 
-use barks_core::distributed::context::{DistributedConfig, DistributedContext};
 use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
+use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

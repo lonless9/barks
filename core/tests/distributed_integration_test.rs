@@ -3,8 +3,9 @@
 //! These tests verify that the Driver and Executor services can communicate
 //! properly and execute tasks in a distributed manner.
 
+use barks_core::DistributedConfig;
 use barks_core::distributed::{
-    DistributedConfig, Driver, Executor, ExecutorInfo,
+    Driver, Executor, ExecutorInfo,
     task::{ChainedI32Task, Task},
 };
 use barks_core::operations::{DoubleOperation, SerializableI32Operation};

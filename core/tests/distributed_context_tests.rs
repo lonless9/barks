@@ -2,14 +2,12 @@
 //!
 //! These tests verify the fixes implemented for the distributed computing framework
 
-use barks_core::SimpleRdd;
-use barks_core::distributed::{DistributedConfig, DistributedContext, ExecutionMode};
+use barks_core::{DistributedConfig, DistributedContext, ExecutionMode, SimpleRdd};
 
 #[tokio::test]
 async fn test_distributed_context_rejects_transformed_rdds() {
-    // Note: This test demonstrates the current limitation where transformed RDDs
-    // fall back to local execution when no executors are available.
-    // In a real scenario with executors, the error would be triggered.
+    // This test verifies that transformed RDDs are properly rejected in distributed mode
+    // instead of silently falling back to local execution.
 
     // Create a distributed context in driver mode
     let config = DistributedConfig::default();
@@ -21,14 +19,17 @@ async fn test_distributed_context_rejects_transformed_rdds() {
     let transformed_rdd = base_rdd.map(|x| x * 2);
 
     // Try to run the transformed RDD in distributed mode
-    // Since there are no executors, this will fall back to local execution
-    // and succeed, but with a warning about no executors
+    // This should now return an error instead of falling back to local execution
     let result = context.run(transformed_rdd).await;
 
-    // The result should succeed because it falls back to local execution
-    assert!(result.is_ok());
-    let collected = result.unwrap();
-    assert_eq!(collected, vec![2, 4, 6, 8, 10]); // Transformed data
+    // The result should be an error because transformed SimpleRdds cannot be distributed
+    assert!(result.is_err());
+    if let Err(error) = result {
+        // Verify the error message mentions non-serializable closures
+        let error_msg = error.to_string();
+        assert!(error_msg.contains("non-serializable closures"));
+        assert!(error_msg.contains("DistributedI32Rdd"));
+    }
 }
 
 #[tokio::test]

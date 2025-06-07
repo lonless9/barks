@@ -3,7 +3,7 @@
 //! The Driver is responsible for coordinating executors, scheduling tasks,
 //! and managing the overall distributed computation.
 
-use crate::distributed::context::DistributedConfig;
+use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest, RegisterExecutorResponse,
     TaskStatusRequest, TaskStatusResponse,
@@ -643,65 +643,78 @@ impl DriverService for DriverServiceImpl {
             }
         }
 
-        let result = match task_state {
+        match task_state {
             TaskState::Finished => {
                 info!("Task {} completed successfully", req.task_id);
-                TaskResult::Success(req.result)
+                let result = TaskResult::Success(req.result);
+
+                // Remove from active tasks on success.
+                self.active_tasks.lock().await.remove(&req.task_id);
+                self.task_results
+                    .lock()
+                    .await
+                    .insert(req.task_id.clone(), result.clone());
+
+                // Notify any waiters.
+                if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id)
+                {
+                    let _ = notifier.send(result);
+                }
             }
+
             TaskState::Failed => {
                 error!(
                     "Task {} failed on executor {}: {}",
                     req.task_id, req.executor_id, req.error_message
                 );
-                // Re-queue the task for retry if possible
+
                 let task_scheduler = self.task_scheduler.clone();
                 let active_tasks = self.active_tasks.clone();
                 let task_id = req.task_id.clone();
                 let max_retries = self.config.task_max_retries;
-                tokio::spawn(async move {
-                    if let Some(mut pending_task) = active_tasks.lock().await.get(&task_id).cloned()
-                    {
-                        if pending_task.retries < max_retries {
-                            pending_task.retries += 1;
-                            warn!(
-                                "Re-queueing task {} for retry (attempt {}/{})",
-                                task_id, pending_task.retries, max_retries
-                            );
-                            task_scheduler.submit_pending_task(pending_task).await;
-                        } else {
-                            // Task has exhausted retries, remove from active map
-                            active_tasks.lock().await.remove(&task_id);
+                let notifiers = self.completion_notifiers.clone();
+                let error_message = req.error_message.clone();
+
+                if let Some(mut pending_task) = active_tasks.lock().await.get(&task_id).cloned() {
+                    if pending_task.retries < max_retries {
+                        pending_task.retries += 1;
+                        warn!(
+                            "Re-queueing task {} for retry (attempt {}/{})",
+                            task_id, pending_task.retries, max_retries
+                        );
+                        // IMPORTANT: Update the active task map with the new retry count
+                        active_tasks
+                            .lock()
+                            .await
+                            .insert(task_id.clone(), pending_task.clone());
+                        task_scheduler.submit_pending_task(pending_task).await;
+                    } else {
+                        // Task has exhausted retries, notify of final failure.
+                        warn!("Task {} failed after all retries.", task_id);
+                        active_tasks.lock().await.remove(&task_id);
+                        let result = TaskResult::Failure(error_message);
+                        if let Some(notifier) = notifiers.lock().await.remove(&task_id) {
+                            let _ = notifier.send(result);
                         }
                     }
-                });
-                TaskResult::Failure(req.error_message.clone())
+                }
             }
+
             TaskState::Killed => {
                 warn!("Task {} was killed", req.task_id);
                 self.active_tasks.lock().await.remove(&req.task_id);
-                TaskResult::Failure("Task was killed".to_string())
+                let result = TaskResult::Failure("Task was killed".to_string());
+                if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id)
+                {
+                    let _ = notifier.send(result);
+                }
             }
+
+            // For Pending/Running, just update status and do nothing else.
             _ => {
                 debug!("Task {} state updated to {:?}", req.task_id, task_state);
-                return Ok(Response::new(TaskStatusResponse {
-                    success: true,
-                    message: "Status updated".to_string(),
-                }));
             }
         };
-
-        // Store result and notify any waiters
-        if task_state == TaskState::Finished {
-            // Remove from active tasks only on success. Failures are handled in the retry logic.
-            self.active_tasks.lock().await.remove(&req.task_id);
-        }
-        self.task_results
-            .lock()
-            .await
-            .insert(req.task_id.clone(), result.clone());
-        if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id) {
-            let _ = notifier.send(result);
-        }
 
         let response = TaskStatusResponse {
             success: true,

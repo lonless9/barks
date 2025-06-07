@@ -3,7 +3,7 @@
 //! The Executor receives tasks from the Driver, executes them using
 //! rayon thread pools, and reports results back.
 
-use crate::distributed::context::DistributedConfig;
+use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     HeartbeatRequest, RegisterExecutorRequest, TaskMetrics as ProtoTaskMetrics,
     TaskStatusRequest as DriverTaskStatusRequest, driver_service_client::DriverServiceClient,

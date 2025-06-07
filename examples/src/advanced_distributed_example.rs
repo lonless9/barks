@@ -7,10 +7,10 @@
 //! 4. Comparing performance and results
 
 use anyhow::Result;
-use barks_core::distributed::context::{DistributedConfig, DistributedContext};
 use barks_core::operations::{
     AddConstantOperation, DoubleOperation, EvenPredicate, GreaterThanPredicate, SquareOperation,
 };
+use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
 use std::time::Instant;
 use tokio::time::{Duration, sleep};

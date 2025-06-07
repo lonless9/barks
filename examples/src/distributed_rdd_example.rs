@@ -4,10 +4,10 @@
 //! serializable operations instead of closures, enabling true distributed execution.
 
 use anyhow::Result;
-use barks_core::distributed::context::{DistributedConfig, DistributedContext};
 use barks_core::operations::{
     AddConstantOperation, DoubleOperation, EvenPredicate, GreaterThanPredicate,
 };
+use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};

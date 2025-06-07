@@ -3,13 +3,11 @@
 //! This module provides the distributed architecture implementation
 //! with Driver-Executor model using gRPC for communication.
 
-pub mod context;
 pub mod driver;
 pub mod executor;
 pub mod task;
 pub mod types;
 
-pub use context::*;
 pub use driver::*;
 pub use executor::*;
 pub use task::*;

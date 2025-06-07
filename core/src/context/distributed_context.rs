@@ -15,7 +15,7 @@ use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Distributed context for managing RDD operations across a cluster
@@ -311,42 +311,45 @@ impl DistributedContext {
             + bincode::Decode<()>,
     {
         if let Some(driver) = &self.driver {
-            // Check if we have any executors
-            let executor_count = driver.executor_count().await;
-            if executor_count == 0 {
-                warn!("No executors available, falling back to local execution");
-                return self.run_local(rdd).await;
-            }
-            info!(
-                "Running RDD computation in distributed mode with {} executor(s)",
-                executor_count
-            );
-
+            // First, check if this is a transformed RDD regardless of executor availability
             // SimpleRdd contains non-serializable closures, making it unsuitable for
             // true distributed execution of transformed RDDs. This path is limited
             // to distributing only the base data of a VecRdd.
             // For true distributed computation, use `DistributedI32Rdd` and `run_i32`.
             if let SimpleRdd::Vec {
-                data,
-                num_partitions,
+                data: _,
+                num_partitions: _,
             } = rdd
             {
+                // This is a base RDD, check if we have executors
+                let executor_count = driver.executor_count().await;
+                if executor_count == 0 {
+                    warn!(
+                        "No executors available for base SimpleRdd, falling back to local execution"
+                    );
+                    return self.run_local(rdd).await;
+                }
+                info!(
+                    "Running base SimpleRdd computation in distributed mode with {} executor(s)",
+                    executor_count
+                );
                 warn!(
-                    "Distributing a base SimpleRdd. Transformations will not be distributed. Falling back to local execution."
+                    "Distributing a base SimpleRdd with no transformations. Transformations will not be distributed. Falling back to local execution."
                 );
                 // In a future implementation, one could distribute the base data
                 // for a simple collect operation. For now, we fall back to local.
-                return self
-                    .run_local(SimpleRdd::Vec {
-                        data,
-                        num_partitions,
-                    })
-                    .await;
-            } else {
-                warn!(
-                    "Transformed SimpleRdd contains non-serializable closures and cannot be run in distributed mode. Falling back to local execution."
-                );
                 return self.run_local(rdd).await;
+            } else {
+                // This is a transformed RDD with closures. It cannot be distributed.
+                // Instead of silently falling back, we should return an error.
+                error!(
+                    "Attempted to run a transformed SimpleRdd in distributed mode. SimpleRdd uses closures which are not serializable. Use a distributed RDD variant like `DistributedI32Rdd` with serializable operations instead."
+                );
+                return Err(crate::traits::RddError::ContextError(
+                    "Cannot run transformed SimpleRdd in distributed mode due to non-serializable closures. \
+                     Use a RDD variant designed for distribution (e.g., DistributedI32Rdd)."
+                        .to_string(),
+                ));
             }
         } else {
             Err(crate::traits::RddError::ContextError(
