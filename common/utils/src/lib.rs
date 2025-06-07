@@ -6,11 +6,13 @@
 pub mod collections;
 pub mod io;
 pub mod serialization;
+pub mod time;
 pub mod traits;
 
 pub use collections::*;
 pub use io::*;
 pub use serialization::*;
+pub use time::*;
 pub use traits::*;
 
 // Re-export commonly used functions for convenience

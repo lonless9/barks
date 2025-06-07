@@ -14,10 +14,11 @@ use crate::distributed::proto::executor::{
 };
 use crate::distributed::task::{PendingTask, Task, TaskScheduler};
 use crate::distributed::types::{ExecutorId, ExecutorInfo, ExecutorMetrics, StageId, TaskId};
+use barks_utils::current_timestamp_secs;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::{debug, error, info, warn};
@@ -460,10 +461,7 @@ impl DriverServiceImpl {
 
     /// Get current timestamp
     fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        current_timestamp_secs()
     }
 
     /// Convert protobuf ExecutorStatus to internal type

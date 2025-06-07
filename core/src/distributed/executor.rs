@@ -17,10 +17,11 @@ use crate::distributed::proto::executor::{
 };
 use crate::distributed::task::TaskRunner;
 use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, TaskId};
+use barks_utils::current_timestamp_secs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tonic::{transport::Server, Request, Response, Status};
@@ -100,10 +101,7 @@ impl ExecutorServiceImpl {
 
     /// Get current timestamp
     fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        current_timestamp_secs()
     }
 }
 
@@ -417,34 +415,86 @@ impl Executor {
         Self { service, config }
     }
 
-    /// Register with the driver
+    /// Register with the driver with retry logic and backoff strategy
+    ///
+    /// This method implements a robust connection strategy that retries
+    /// connection attempts with exponential backoff, making the system
+    /// more resilient to timing issues during cluster startup.
     pub async fn register_with_driver(
         &self,
         driver_addr: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Connecting to driver at: {}", driver_addr);
+        let mut attempts = 0;
+        let max_attempts = 5;
+        let base_retry_delay = Duration::from_secs(2);
 
-        let mut client = DriverServiceClient::connect(driver_addr).await?;
+        loop {
+            info!(
+                "Connecting to driver at: {} (attempt {}/{})",
+                driver_addr,
+                attempts + 1,
+                max_attempts
+            );
 
-        let request = RegisterExecutorRequest {
-            executor_id: self.service.executor_info.executor_id.clone(),
-            host: self.service.executor_info.host.clone(),
-            port: self.service.executor_info.port as u32,
-            cores: self.service.executor_info.cores,
-            memory_mb: self.service.executor_info.memory_mb,
-            max_concurrent_tasks: self.service.executor_info.max_concurrent_tasks,
-            attributes: self.service.executor_info.attributes.clone(),
-        };
+            match DriverServiceClient::connect(driver_addr.clone()).await {
+                Ok(mut client) => {
+                    let request = RegisterExecutorRequest {
+                        executor_id: self.service.executor_info.executor_id.clone(),
+                        host: self.service.executor_info.host.clone(),
+                        port: self.service.executor_info.port as u32,
+                        cores: self.service.executor_info.cores,
+                        memory_mb: self.service.executor_info.memory_mb,
+                        max_concurrent_tasks: self.service.executor_info.max_concurrent_tasks,
+                        attributes: self.service.executor_info.attributes.clone(),
+                    };
 
-        let response = client.register_executor(request).await?;
-        let resp = response.into_inner();
+                    match client.register_executor(request).await {
+                        Ok(response) => {
+                            let resp = response.into_inner();
+                            if resp.success {
+                                info!("Successfully registered with driver: {}", resp.driver_id);
+                                *self.service.driver_client.lock().await = Some(client);
+                                return Ok(());
+                            } else {
+                                return Err(format!(
+                                    "Failed to register with driver: {}",
+                                    resp.message
+                                )
+                                .into());
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Registration request failed: {}", e);
+                            attempts += 1;
+                            if attempts >= max_attempts {
+                                error!(
+                                    "Failed to register with driver after {} attempts: {}",
+                                    max_attempts, e
+                                );
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        error!(
+                            "Failed to connect to driver after {} attempts: {}",
+                            max_attempts, e
+                        );
+                        return Err(e.into());
+                    }
 
-        if resp.success {
-            info!("Successfully registered with driver: {}", resp.driver_id);
-            *self.service.driver_client.lock().await = Some(client);
-            Ok(())
-        } else {
-            Err(format!("Failed to register with driver: {}", resp.message).into())
+                    // Exponential backoff: 2s, 4s, 8s, 16s
+                    let retry_delay = base_retry_delay * 2_u32.pow(attempts - 1);
+                    warn!(
+                        "Failed to connect to driver, will retry in {:?}: {}",
+                        retry_delay, e
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
         }
     }
 
@@ -529,9 +579,6 @@ impl Executor {
 impl Executor {
     // Helper for getting current timestamp, moved from service to be accessible here
     fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        current_timestamp_secs()
     }
 }
