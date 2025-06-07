@@ -417,42 +417,8 @@ impl DistributedContext {
 
                 // Create the new generic chained task. It contains the data for one partition
                 // and the entire sequence of operations to be applied to it.
-                let task: Box<dyn crate::distributed::task::Task> = {
-                    // We need to downcast T to create the appropriate task type
-                    let type_id = std::any::TypeId::of::<T>();
-                    if type_id == std::any::TypeId::of::<i32>() {
-                        // Cast operations to i32 operations
-                        let i32_operations: Vec<crate::operations::SerializableI32Operation> = operations
-                            .iter()
-                            .filter_map(|op| {
-                                let op_any = op as &dyn std::any::Any;
-                                op_any.downcast_ref::<crate::operations::SerializableI32Operation>().cloned()
-                            })
-                            .collect();
-                        Box::new(crate::distributed::task::ChainedTask::<i32>::new(
-                            serialized_partition_data,
-                            i32_operations,
-                        ))
-                    } else if type_id == std::any::TypeId::of::<String>() {
-                        // Cast operations to String operations
-                        let string_operations: Vec<crate::operations::SerializableStringOperation> = operations
-                            .iter()
-                            .filter_map(|op| {
-                                let op_any = op as &dyn std::any::Any;
-                                op_any.downcast_ref::<crate::operations::SerializableStringOperation>().cloned()
-                            })
-                            .collect();
-                        Box::new(crate::distributed::task::ChainedTask::<String>::new(
-                            serialized_partition_data,
-                            string_operations,
-                        ))
-                    } else {
-                        return Err(crate::traits::RddError::ContextError(format!(
-                            "Unsupported data type for distributed execution: {:?}",
-                            type_id
-                        )));
-                    }
-                };
+                let task: Box<dyn crate::distributed::task::Task> =
+                    Self::create_task_for_type::<T>(serialized_partition_data, operations.clone())?;
 
                 let result_future = driver
                     .submit_task(task_id, stage_id.clone(), i, task, None)
@@ -505,6 +471,19 @@ impl DistributedContext {
         } else {
             None
         }
+    }
+
+    /// Create a task for the given type T using a trait-based approach
+    /// This eliminates hardcoded type checks by leveraging the RddDataType trait
+    fn create_task_for_type<T>(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<T::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>>
+    where
+        T: crate::operations::RddDataType + 'static,
+    {
+        // Use a trait-based approach to create tasks
+        T::create_chained_task(serialized_partition_data, operations)
     }
 }
 

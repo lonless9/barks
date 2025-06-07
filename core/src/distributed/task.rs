@@ -59,6 +59,10 @@ impl<T: crate::operations::RddDataType> ChainedTask<T> {
     }
 }
 
+// Generic implementation for any type that implements RddDataType
+// Note: We can't use #[typetag::serde] with generic implementations,
+// so we need specific implementations for each concrete type.
+
 #[typetag::serde(name = "ChainedTaskI32")]
 impl Task for ChainedTask<i32> {
     fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
@@ -79,7 +83,6 @@ impl Task for ChainedTask<i32> {
     }
 }
 
-// Also implement for String type
 #[typetag::serde(name = "ChainedTaskString")]
 impl Task for ChainedTask<String> {
     fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {

@@ -40,6 +40,12 @@ pub trait RddDataType:
 
     /// Applies a serializable operation to a vector of data.
     fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self>;
+
+    /// Creates a chained task for distributed execution
+    fn create_chained_task(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<Self::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>>;
 }
 
 /// Trait for serializable operations on i32 values
@@ -131,6 +137,16 @@ impl RddDataType for i32 {
                 .collect(),
         }
     }
+
+    fn create_chained_task(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<Self::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
+        Ok(Box::new(crate::distributed::task::ChainedTask::<i32>::new(
+            serialized_partition_data,
+            operations,
+        )))
+    }
 }
 
 /// Implement RddDataType for String
@@ -151,6 +167,18 @@ impl RddDataType for String {
                 .cloned()
                 .collect(),
         }
+    }
+
+    fn create_chained_task(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<Self::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
+        Ok(Box::new(
+            crate::distributed::task::ChainedTask::<String>::new(
+                serialized_partition_data,
+                operations,
+            ),
+        ))
     }
 }
 
