@@ -1,6 +1,6 @@
 //! Test for the new Task trait system
 //!
-//! This test verifies that the `ChainedI32Task` can be correctly serialized,
+//! This test verifies that the `ChainedTask<i32>` can be correctly serialized,
 //! deserialized, and executed by a `TaskRunner`.
 
 use barks_core::distributed::task::{ChainedTask, Task, TaskExecutionResult, TaskRunner};
@@ -27,14 +27,14 @@ async fn test_task_direct_execution() {
 
     assert_eq!(result_data, vec![2, 4, 6, 8, 10]);
 
-    // Test ChainedI32Task with filter
+    // Test ChainedTask<i32> with filter
     let test_data2 = vec![1, 2, 3, 4, 5, 6];
     let serialized_data2 =
         bincode::encode_to_vec(&test_data2, bincode::config::standard()).unwrap();
-    let task = ChainedI32Task {
-        partition_data: serialized_data2,
-        operations: vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
-    };
+    let task = ChainedTask::<i32>::new(
+        serialized_data2,
+        vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
+    );
     let result = task.execute(0).unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
@@ -49,13 +49,13 @@ async fn test_task_direct_execution() {
 async fn test_task_runner_with_chained_i32_task() {
     let task_runner = TaskRunner::new(4);
 
-    // Create a ChainedI32Task
+    // Create a ChainedTask<i32>
     let test_data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let serialized_data = bincode::encode_to_vec(&test_data, bincode::config::standard()).unwrap();
-    let task: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    });
+    let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    ));
 
     let serialized_task = serde_json::to_vec(&task).unwrap();
 
@@ -65,10 +65,10 @@ async fn test_task_runner_with_chained_i32_task() {
 
     // Test filter operation
     let serialized_data = bincode::encode_to_vec(&test_data, bincode::config::standard()).unwrap();
-    let task: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
-    });
+    let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
+    ));
     let serialized_task = serde_json::to_vec(&task).unwrap();
     let result = task_runner.submit_task(0, serialized_task).await;
     let result_data = extract_result(result);
@@ -76,13 +76,13 @@ async fn test_task_runner_with_chained_i32_task() {
 
     // Test chained operations
     let serialized_data = bincode::encode_to_vec(&test_data, bincode::config::standard()).unwrap();
-    let task: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![
+    let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data,
+        vec![
             SerializableI32Operation::Map(Box::new(DoubleOperation)),
             SerializableI32Operation::Filter(Box::new(GreaterThanPredicate { threshold: 10 })),
         ],
-    });
+    ));
     let serialized_task = serde_json::to_vec(&task).unwrap();
     let result = task_runner.submit_task(0, serialized_task).await;
     let result_data = extract_result(result);
@@ -105,13 +105,13 @@ fn extract_result(result: TaskExecutionResult) -> Vec<i32> {
 async fn test_task_serialization_deserialization() {
     // Test that tasks can be properly serialized and deserialized
 
-    // Test ChainedI32Task serialization
+    // Test ChainedTask<i32> serialization
     let test_data = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&test_data, bincode::config::standard()).unwrap();
-    let task1: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data,
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    });
+    let task1: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data,
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    ));
     let serialized = serde_json::to_vec(&task1).unwrap();
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 
@@ -122,14 +122,14 @@ async fn test_task_serialization_deserialization() {
         .0;
     assert_eq!(result_data, vec![2, 4, 6, 8, 10]);
 
-    // Test another ChainedI32Task
+    // Test another ChainedTask<i32>
     let test_data2 = vec![10, 20, 30];
     let serialized_data2 =
         bincode::encode_to_vec(&test_data2, bincode::config::standard()).unwrap();
-    let task2: Box<dyn Task> = Box::new(ChainedI32Task {
-        partition_data: serialized_data2,
-        operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
-    });
+    let task2: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(
+        serialized_data2,
+        vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
+    ));
     let serialized = serde_json::to_vec(&task2).unwrap();
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 

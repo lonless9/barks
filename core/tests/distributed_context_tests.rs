@@ -28,7 +28,7 @@ async fn test_distributed_context_rejects_transformed_rdds() {
         // Verify the error message mentions non-serializable closures
         let error_msg = error.to_string();
         assert!(error_msg.contains("non-serializable closures"));
-        assert!(error_msg.contains("DistributedI32Rdd"));
+        assert!(error_msg.contains("DistributedRdd"));
     }
 }
 

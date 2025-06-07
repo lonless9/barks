@@ -7,9 +7,7 @@
 //! 4. Comparing performance and results
 
 use anyhow::Result;
-use barks_core::operations::{
-    AddConstantOperation, DoubleOperation, EvenPredicate, GreaterThanPredicate, SquareOperation,
-};
+use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
 use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -54,7 +52,7 @@ async fn test_local_execution() -> Result<()> {
 
     // Test 1: Basic collection
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
+    let rdd = context.parallelize_with_partitions(data.clone(), 4);
     let result = rdd.collect()?;
     let duration = start.elapsed();
 
@@ -67,8 +65,8 @@ async fn test_local_execution() -> Result<()> {
 
     // Test 2: Map operation
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
-    let mapped_rdd = rdd.map(Box::new(DoubleOperation));
+    let rdd = context.parallelize_with_partitions(data.clone(), 4);
+    let mapped_rdd = rdd.map(|x| x * 2); // Use closure for SimpleRdd
     let result = mapped_rdd.collect()?;
     let duration = start.elapsed();
 
@@ -82,8 +80,8 @@ async fn test_local_execution() -> Result<()> {
 
     // Test 3: Filter operation
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
-    let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
+    let rdd = context.parallelize_with_partitions(data.clone(), 4);
+    let filtered_rdd = rdd.filter(|&x| x % 2 == 0); // Use closure for SimpleRdd
     let result = filtered_rdd.collect()?;
     let duration = start.elapsed();
 
@@ -96,11 +94,11 @@ async fn test_local_execution() -> Result<()> {
 
     // Test 4: Complex chained operations
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
+    let rdd = context.parallelize_with_partitions(data.clone(), 4);
     let complex_rdd = rdd
-        .map(Box::new(SquareOperation))
-        .filter(Box::new(GreaterThanPredicate { threshold: 100 }))
-        .map(Box::new(AddConstantOperation { constant: 1 }));
+        .map(|x| x * x) // Square operation using closure
+        .filter(|&x| x > 100) // Filter using closure
+        .map(|x| x + 1); // Add constant using closure
     let result = complex_rdd.collect()?;
     let duration = start.elapsed();
 
@@ -169,9 +167,9 @@ async fn test_distributed_execution() -> Result<()> {
 
     // Test 1: Basic distributed collection
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 3);
+    let rdd = context.parallelize_distributed(data.clone(), 3);
 
-    match context.run_i32(rdd).await {
+    match context.run_distributed(rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(
@@ -188,9 +186,9 @@ async fn test_distributed_execution() -> Result<()> {
 
     // Test 2: Multiple partitions
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 5);
+    let rdd = context.parallelize_distributed(data.clone(), 5);
 
-    match context.run_i32(rdd).await {
+    match context.run_distributed(rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(
@@ -207,12 +205,12 @@ async fn test_distributed_execution() -> Result<()> {
     // Test 3: Distributed execution of a transformed RDD
     info!("Testing distributed execution of a transformed RDD (map -> filter)");
     let start = Instant::now();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 3);
+    let rdd = context.parallelize_distributed(data.clone(), 3);
     let transformed_rdd = rdd
         .map(Box::new(DoubleOperation))
         .filter(Box::new(GreaterThanPredicate { threshold: 50 }));
 
-    match context.run_i32(transformed_rdd).await {
+    match context.run_distributed(transformed_rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(
@@ -252,7 +250,7 @@ async fn performance_comparison() -> Result<()> {
         let local_context = DistributedContext::new_local("perf-local".to_string());
 
         let start = Instant::now();
-        let rdd = local_context.parallelize_i32_with_partitions(data.clone(), 4);
+        let rdd = local_context.parallelize_with_partitions(data.clone(), 4);
         let _result = rdd.collect()?;
         let local_duration = start.elapsed();
 

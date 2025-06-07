@@ -109,9 +109,9 @@ async fn run_rdd_computations() -> Result<()> {
     // Test 1: Basic distributed RDD collection
     info!("Test 1: Basic distributed RDD collection");
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 3);
+    let rdd = context.parallelize_distributed(data.clone(), 3);
 
-    match context.run_i32(rdd).await {
+    match context.run_distributed(rdd).await {
         Ok(result) => {
             info!("Collected result: {:?}", result);
             // Note: Order might be different due to distributed execution
@@ -125,11 +125,11 @@ async fn run_rdd_computations() -> Result<()> {
     // Test 2: RDD with map operation (using serializable operations)
     info!("Test 2: RDD with map operation (double each element) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
+    let rdd = context.parallelize_distributed(data.clone(), 2);
     let mapped_rdd = rdd.map(Box::new(DoubleOperation));
 
-    // Use the new run_i32 method for true distributed execution
-    match context.run_i32(mapped_rdd).await {
+    // Use the new run_distributed method for true distributed execution
+    match context.run_distributed(mapped_rdd).await {
         Ok(result) => {
             info!("Mapped result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().map(|x| x * 2).collect();
@@ -147,10 +147,10 @@ async fn run_rdd_computations() -> Result<()> {
     // Test 3: RDD with filter operation
     info!("Test 3: RDD with filter operation (even numbers only) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
+    let rdd = context.parallelize_distributed(data.clone(), 2);
     let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
 
-    match context.run_i32(filtered_rdd).await {
+    match context.run_distributed(filtered_rdd).await {
         Ok(result) => {
             info!("Filtered result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().filter(|&x| x % 2 == 0).cloned().collect();
@@ -168,14 +168,14 @@ async fn run_rdd_computations() -> Result<()> {
     // Test 4: Chained operations - This demonstrates the power of the new system!
     info!("Test 4: Chained operations (add 10, then filter even) - DISTRIBUTED");
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 2);
+    let rdd = context.parallelize_distributed(data.clone(), 2);
     let chained_rdd = rdd
         .map(Box::new(AddConstantOperation { constant: 10 }))
         .filter(Box::new(EvenPredicate));
 
-    // This will analyze the lineage, create ChainedI32Tasks with the full operation chain,
+    // This will analyze the lineage, create ChainedTask<i32> with the full operation chain,
     // and send them to executors for distributed execution!
-    match context.run_i32(chained_rdd).await {
+    match context.run_distributed(chained_rdd).await {
         Ok(result) => {
             info!("Chained result (distributed): {:?}", result);
             let expected: Vec<i32> = data
@@ -197,14 +197,14 @@ async fn run_rdd_computations() -> Result<()> {
     // Test 5: Complex chained operations (from TODO example)
     info!("Test 5: Complex chain (double, then filter > 20) - DISTRIBUTED");
     let data: Vec<i32> = (1..=20).collect();
-    let rdd = context.parallelize_i32_with_partitions(data.clone(), 4);
+    let rdd = context.parallelize_distributed(data.clone(), 4);
     let complex_rdd = rdd
         .map(Box::new(DoubleOperation)) // Double each number
         .filter(Box::new(GreaterThanPredicate { threshold: 20 })); // Keep results > 20
 
     // This demonstrates the full end-to-end distributed computation flow
     // as described in the TODO document
-    match context.run_i32(complex_rdd).await {
+    match context.run_distributed(complex_rdd).await {
         Ok(result) => {
             info!("Complex chained result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().map(|x| x * 2).filter(|&x| x > 20).collect();
