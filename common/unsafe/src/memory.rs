@@ -2,8 +2,8 @@
 
 use crate::traits::*;
 use anyhow::Result;
-use std::alloc::{Layout, alloc, dealloc, realloc};
-use std::ptr::{NonNull, copy_nonoverlapping, write_bytes};
+use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::ptr::{copy_nonoverlapping, write_bytes, NonNull};
 
 /// Standard unsafe memory allocator
 pub struct StandardUnsafeMemory;

@@ -164,11 +164,11 @@ impl<D: ShuffleData> ShuffleWriter for MemoryShuffleWriter<D> {
 pub mod server {
     use super::*;
     use axum::{
-        Router,
         extract::{Path, State},
         http::StatusCode,
         response::IntoResponse,
         routing::get,
+        Router,
     };
     use std::net::SocketAddr;
     use tracing::{error, info};

@@ -5,12 +5,12 @@
 
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
+    driver_service_server::{DriverService, DriverServiceServer},
     HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest, RegisterExecutorResponse,
     TaskStatusRequest, TaskStatusResponse,
-    driver_service_server::{DriverService, DriverServiceServer},
 };
 use crate::distributed::proto::executor::{
-    LaunchTaskRequest, executor_service_client::ExecutorServiceClient,
+    executor_service_client::ExecutorServiceClient, LaunchTaskRequest,
 };
 use crate::distributed::task::{PendingTask, Task, TaskScheduler};
 use crate::distributed::types::{
@@ -20,8 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, mpsc, oneshot};
-use tonic::{Request, Response, Status, transport::Server};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tonic::{transport::Server, Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
 /// Result of a completed task.
@@ -209,12 +209,22 @@ impl DriverServiceImpl {
 
                     // Launch task on executor in the background
                     tokio::spawn(async move {
+                        // Add task to active and executor-specific maps BEFORE launching.
+                        active_tasks_clone
+                            .lock()
+                            .await
+                            .insert(pending_task.task_id.clone(), pending_task.clone());
+                        executor_tasks_clone
+                            .lock()
+                            .await
+                            .entry(executor_clone.info.executor_id.clone())
+                            .or_default()
+                            .insert(pending_task.task_id.clone());
+
                         if let Err(e) = Self::launch_task_on_executor(
                             executor_clone.clone(),
                             pending_task.clone(),
                             executor_clients,
-                            active_tasks_clone.clone(),
-                            executor_tasks_clone.clone(),
                             max_result_size,
                         )
                         .await
@@ -223,12 +233,17 @@ impl DriverServiceImpl {
                                 "Failed to launch task {} on executor {}: {}",
                                 pending_task.task_id, executor_clone.info.executor_id, e
                             );
-                            // IMPORTANT: If launch fails, remove from active tasks map
-                            // to prevent it from being a "ghost" task.
+                            // IMPORTANT: If launch fails, clean up state from both active tasks
+                            // and the executor's task set to prevent ghost tasks.
                             active_tasks_clone
                                 .lock()
                                 .await
                                 .remove(&pending_task.task_id);
+                            executor_tasks_clone
+                                .lock()
+                                .await
+                                .get_mut(&executor_clone.info.executor_id)
+                                .map(|tasks| tasks.remove(&pending_task.task_id));
 
                             // Re-queue the task if launch fails.
                             let mut requeue_task = pending_task;
@@ -288,8 +303,6 @@ impl DriverServiceImpl {
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
-        active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
-        executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
         max_result_size: usize,
     ) -> Result<(), anyhow::Error> {
         let mut client =
@@ -300,21 +313,6 @@ impl DriverServiceImpl {
             "Launching task {} on executor {}",
             task_id, executor.info.executor_id
         );
-
-        // Add to active tasks map BEFORE launching
-        active_tasks
-            .lock()
-            .await
-            .insert(task_id.clone(), pending_task.clone());
-
-        // Add task to the executor's set of running tasks BEFORE launching
-        {
-            let mut executor_tasks_guard = executor_tasks.lock().await;
-            executor_tasks_guard
-                .entry(executor.info.executor_id.clone())
-                .or_default()
-                .insert(task_id.clone());
-        }
 
         let request = LaunchTaskRequest {
             task_id: task_id.clone(),

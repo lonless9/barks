@@ -9,7 +9,7 @@ use barks_core::operations::{
 };
 use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 use tracing::{error, info};
 
 #[tokio::main]

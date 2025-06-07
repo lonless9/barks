@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{Level, info};
+use tracing::{info, Level};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

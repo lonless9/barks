@@ -11,7 +11,7 @@ use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
 use barks_core::{DistributedConfig, DistributedContext};
 use std::net::SocketAddr;
 use std::time::Instant;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 #[tokio::main]

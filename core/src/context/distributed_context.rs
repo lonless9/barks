@@ -261,7 +261,31 @@ impl DistributedContext {
             + bincode::Decode<()>,
     {
         match &self.mode {
-            ExecutionMode::Driver => self.run_simple_distributed(rdd).await,
+            ExecutionMode::Driver => {
+                if let Some(driver) = &self.driver {
+                    let executor_count = driver.executor_count().await;
+                    // If we have executors and the RDD has non-serializable transformations, it's an error.
+                    if executor_count > 0 && rdd.is_transformed() {
+                        error!("Attempted to run a transformed SimpleRdd in a distributed context with active executors.");
+                        return Err(crate::traits::RddError::ContextError(
+                            "SimpleRdd with non-serializable closures cannot be executed in distributed mode. \
+                             Use DistributedRdd with context.run_distributed() instead.".to_string(),
+                        ));
+                    } else {
+                        // Otherwise, run locally. This covers:
+                        // 1. Base SimpleRdd (Vec) which is always local to the driver.
+                        // 2. No executors are available, so we fall back to local execution.
+                        if executor_count == 0 {
+                            warn!("No executors available. Running SimpleRdd job locally on the driver.");
+                        }
+                        self.run_local(rdd).await
+                    }
+                } else {
+                    Err(crate::traits::RddError::ContextError(
+                        "Driver mode selected, but no driver instance available.".to_string(),
+                    ))
+                }
+            }
             ExecutionMode::Local => {
                 // Fallback to local execution
                 self.run_local(rdd).await
@@ -294,65 +318,6 @@ impl DistributedContext {
                     "Executors cannot run RDDs directly".to_string(),
                 ))
             }
-        }
-    }
-
-    /// Run RDD computation in distributed mode
-    async fn run_simple_distributed<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
-    where
-        T: Send
-            + Sync
-            + Clone
-            + Serialize
-            + for<'de> Deserialize<'de>
-            + Debug
-            + 'static
-            + bincode::Encode
-            + bincode::Decode<()>,
-    {
-        if let Some(driver) = &self.driver {
-            // Check if this is a base RDD (Vec variant) or a transformed RDD with closures
-            match &rdd {
-                SimpleRdd::Vec { .. } => {
-                    // This is a base RDD, check if we have executors
-                    let executor_count = driver.executor_count().await;
-                    if executor_count == 0 {
-                        warn!(
-                            "No executors available for base SimpleRdd, falling back to local execution"
-                        );
-                        return self.run_local(rdd).await;
-                    } else {
-                        // If executors are available, we must not silently fall back to local mode.
-                        // This would be misleading. Instead, we return an error guiding the user
-                        // to the correct RDD type for distributed computation.
-                        error!(
-                            "Attempted to run a SimpleRdd in a distributed context with active executors."
-                        );
-                        return Err(crate::traits::RddError::ContextError(
-                            "SimpleRdd with non-serializable closures cannot be executed in distributed mode. \
-                             Please use a distributable RDD like DistributedRdd with serializable operations \
-                             (e.g., from barks_core::operations) for distributed jobs."
-                                .to_string(),
-                        ));
-                    }
-                }
-                SimpleRdd::Map { .. } | SimpleRdd::Filter { .. } => {
-                    // This is a transformed RDD with closures. It cannot be distributed.
-                    // Instead of silently falling back, we should return an error.
-                    error!(
-                        "Attempted to run a transformed SimpleRdd in distributed mode. SimpleRdd uses non-serializable closures. Use a distributed RDD variant like `DistributedRdd` with serializable operations instead."
-                    );
-                    return Err(crate::traits::RddError::ContextError(
-                        "Cannot run transformed SimpleRdd in distributed mode due to non-serializable closures. \
-                         Use a RDD variant designed for distribution (e.g., DistributedRdd)."
-                            .to_string(),
-                    ));
-                }
-            }
-        } else {
-            Err(crate::traits::RddError::ContextError(
-                "No driver instance available".to_string(),
-            ))
         }
     }
 

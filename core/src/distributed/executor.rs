@@ -5,14 +5,14 @@
 
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
-    HeartbeatRequest, RegisterExecutorRequest, TaskMetrics as ProtoTaskMetrics,
-    TaskStatusRequest as DriverTaskStatusRequest, driver_service_client::DriverServiceClient,
+    driver_service_client::DriverServiceClient, HeartbeatRequest, RegisterExecutorRequest,
+    TaskMetrics as ProtoTaskMetrics, TaskStatusRequest as DriverTaskStatusRequest,
 };
 use crate::distributed::proto::executor::{
+    executor_service_server::{ExecutorService, ExecutorServiceServer},
     ExecutorInfo as ProtoExecutorInfo, ExecutorMetrics as ProtoExecutorMetrics, GetStatusRequest,
     GetStatusResponse, KillTaskRequest, KillTaskResponse, LaunchTaskRequest, LaunchTaskResponse,
     ShutdownRequest, ShutdownResponse, TaskInfo as ProtoTaskInfo,
-    executor_service_server::{ExecutorService, ExecutorServiceServer},
 };
 use crate::distributed::task::TaskRunner;
 use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, ExecutorStatus, TaskId, TaskState};
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use tonic::{Request, Response, Status, transport::Server};
+use tonic::{transport::Server, Request, Response, Status};
 use tracing::{error, info, warn};
 
 /// Task information for tracking running tasks

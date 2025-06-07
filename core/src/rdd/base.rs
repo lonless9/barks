@@ -234,6 +234,14 @@ where
         }
     }
 
+    /// Check if the RDD has transformations applied to it
+    pub fn is_transformed(&self) -> bool {
+        match self {
+            SimpleRdd::Vec { .. } => false,
+            SimpleRdd::Map { .. } | SimpleRdd::Filter { .. } => true,
+        }
+    }
+
     /// Get the number of partitions
     pub fn num_partitions(&self) -> usize {
         self.partitions().len()
