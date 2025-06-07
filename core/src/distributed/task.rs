@@ -242,6 +242,30 @@ impl TaskScheduler {
         pending_tasks.pop_front()
     }
 
+    /// Get the next task from the queue for an executor
+    /// It prioritizes tasks that have a preference for the given executor.
+    pub async fn get_next_task_for_executor(
+        &self,
+        executor_id: &ExecutorId,
+    ) -> Option<PendingTask> {
+        let mut pending_tasks = self.pending_tasks.lock().await;
+        if pending_tasks.is_empty() {
+            return None;
+        }
+
+        // Pass 1: Find a task with a matching locality preference.
+        // We search from the front to maintain FIFO for local tasks.
+        if let Some(pos) = pending_tasks
+            .iter()
+            .position(|t| t.preferred_executor.as_ref() == Some(executor_id))
+        {
+            return pending_tasks.remove(pos);
+        }
+
+        // Pass 2: If no local task is found, return the next task from the front of the queue.
+        pending_tasks.pop_front()
+    }
+
     /// Finds and removes a pending task by its ID.
     /// This is not very efficient but is needed for the simple re-queueing logic.
     /// A better implementation would use a HashMap for quick lookups inside the Driver.

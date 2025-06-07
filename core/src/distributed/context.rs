@@ -54,8 +54,12 @@ pub struct DistributedConfig {
     pub default_parallelism: usize,
     /// Maximum result size in bytes
     pub max_result_size: usize,
-    /// Heartbeat interval in seconds
-    pub heartbeat_interval_secs: u64,
+    /// Executor heartbeat interval in seconds
+    pub executor_heartbeat_interval_secs: u64,
+    /// Seconds driver waits for heartbeat before marking executor as failed
+    pub executor_liveness_timeout_secs: u64,
+    /// Maximum number of times a task will be retried on failure
+    pub task_max_retries: u32,
 }
 
 /// Executor configuration
@@ -77,8 +81,10 @@ impl Default for DistributedConfig {
             driver_addr: None,
             executor_config: ExecutorConfig::default(),
             default_parallelism: num_cpus::get(),
-            max_result_size: 1024 * 1024 * 128, // 128MB
-            heartbeat_interval_secs: 10,
+            max_result_size: 1024 * 1024 * 128,   // 128MB
+            executor_heartbeat_interval_secs: 10, // 10 seconds
+            executor_liveness_timeout_secs: 30,   // 30 seconds
+            task_max_retries: 3,
         }
     }
 }
@@ -98,7 +104,7 @@ impl DistributedContext {
     /// Create a new distributed context in driver mode
     pub fn new_driver(app_name: String, config: DistributedConfig) -> Self {
         let driver_id = format!("{}-driver-{}", app_name, Uuid::new_v4());
-        let driver = Arc::new(Driver::new(driver_id));
+        let driver = Arc::new(Driver::new(driver_id, config.clone()));
 
         Self {
             app_name,
@@ -130,6 +136,7 @@ impl DistributedContext {
         let executor = Arc::new(Mutex::new(Executor::new(
             executor_info,
             config.executor_config.max_concurrent_tasks,
+            config.clone(),
         )));
 
         Self {

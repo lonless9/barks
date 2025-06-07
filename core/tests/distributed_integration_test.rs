@@ -4,7 +4,7 @@
 //! properly and execute tasks in a distributed manner.
 
 use barks_core::distributed::{
-    Driver, Executor, ExecutorInfo,
+    DistributedConfig, Driver, Executor, ExecutorInfo,
     task::{ChainedI32Task, Task},
 };
 use barks_core::operations::{DoubleOperation, SerializableI32Operation};
@@ -19,7 +19,8 @@ use tracing_test::traced_test;
 async fn test_driver_executor_registration() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50061".parse().unwrap();
-    let driver = Driver::new("test-driver-001".to_string());
+    let config = DistributedConfig::default();
+    let driver = Driver::new("test-driver-001".to_string(), config);
 
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
@@ -41,7 +42,7 @@ async fn test_driver_executor_registration() {
         4096, // 4GB memory
     );
 
-    let executor = Executor::new(executor_info, 2);
+    let executor = Executor::new(executor_info, 2, DistributedConfig::default());
 
     // Register with driver
     let driver_url = format!("http://{}", driver_addr);
@@ -67,7 +68,7 @@ async fn test_driver_executor_registration() {
 async fn test_task_submission() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50063".parse().unwrap();
-    let driver = Driver::new("test-driver-002".to_string());
+    let driver = Driver::new("test-driver-002".to_string(), DistributedConfig::default());
 
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
@@ -109,7 +110,7 @@ async fn test_task_submission() {
 async fn test_rdd_task_submission() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50064".parse().unwrap();
-    let driver = Driver::new("test-driver-003".to_string());
+    let driver = Driver::new("test-driver-003".to_string(), DistributedConfig::default());
 
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
@@ -154,7 +155,7 @@ async fn test_rdd_task_submission() {
 async fn test_multiple_executors() {
     // Start driver
     let driver_addr: SocketAddr = "127.0.0.1:50065".parse().unwrap();
-    let driver = Driver::new("test-driver-004".to_string());
+    let driver = Driver::new("test-driver-004".to_string(), DistributedConfig::default());
 
     let _driver_handle = tokio::spawn({
         let driver = driver.clone();
@@ -181,7 +182,7 @@ async fn test_multiple_executors() {
             2048, // 2GB memory
         );
 
-        let executor = Executor::new(executor_info, 2);
+        let executor = Executor::new(executor_info, 2, DistributedConfig::default());
 
         // Register with driver
         let driver_url = format!("http://{}", driver_addr);

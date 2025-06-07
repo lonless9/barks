@@ -3,6 +3,7 @@
 //! The Driver is responsible for coordinating executors, scheduling tasks,
 //! and managing the overall distributed computation.
 
+use crate::distributed::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest, RegisterExecutorResponse,
     TaskStatusRequest, TaskStatusResponse,
@@ -23,8 +24,6 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
 
-const MAX_TASK_RETRIES: u32 = 3;
-
 /// Result of a completed task.
 #[derive(Debug, Clone)]
 pub enum TaskResult {
@@ -37,6 +36,8 @@ pub enum TaskResult {
 pub struct DriverServiceImpl {
     /// Unique driver identifier
     driver_id: String,
+    /// Distributed configuration
+    config: DistributedConfig,
     /// Task scheduler for distributing work
     task_scheduler: Arc<TaskScheduler>,
     /// Registered executors
@@ -77,11 +78,12 @@ struct HeartbeatInfo {
 
 impl DriverServiceImpl {
     /// Create a new driver service
-    pub fn new(driver_id: String) -> Self {
+    pub fn new(driver_id: String, config: DistributedConfig) -> Self {
         let (heartbeat_sender, heartbeat_receiver) = mpsc::unbounded_channel();
 
         Self {
             driver_id,
+            config,
             task_scheduler: Arc::new(TaskScheduler::new()),
             executors: Arc::new(Mutex::new(HashMap::new())),
             executor_tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -107,13 +109,16 @@ impl DriverServiceImpl {
         let task_scheduler_for_liveness = Arc::clone(&self.task_scheduler);
         let executor_clients_for_liveness = Arc::clone(&self.executor_clients);
         let executor_tasks_for_liveness = Arc::clone(&self.executor_tasks);
+        let liveness_timeout = self.config.executor_liveness_timeout_secs;
+        let max_retries = self.config.task_max_retries;
         tokio::spawn(async move {
             Self::check_executor_liveness(
                 executors_for_liveness,
                 task_scheduler_for_liveness,
                 executor_tasks_for_liveness,
                 executor_clients_for_liveness,
-                30,
+                liveness_timeout,
+                max_retries,
             )
             .await;
         });
@@ -173,7 +178,12 @@ impl DriverServiceImpl {
                 .saturating_sub(executor.metrics.active_tasks);
 
             for _ in 0..available_slots {
-                if let Some(pending_task) = self.task_scheduler.get_next_task().await {
+                // Ask the scheduler for a task, preferring one local to this executor
+                if let Some(pending_task) = self
+                    .task_scheduler
+                    .get_next_task_for_executor(&executor.info.executor_id)
+                    .await
+                {
                     info!(
                         "Scheduling task {} to executor {}",
                         pending_task.task_id,
@@ -184,6 +194,8 @@ impl DriverServiceImpl {
                     let executor_clients = self.executor_clients.clone();
                     let task_scheduler_clone = self.task_scheduler.clone();
                     let executor_tasks_clone = self.executor_tasks.clone();
+                    let max_retries = self.config.task_max_retries;
+                    let max_result_size = self.config.max_result_size;
 
                     // Launch task on executor in the background
                     tokio::spawn(async move {
@@ -192,6 +204,7 @@ impl DriverServiceImpl {
                             pending_task.clone(),
                             executor_clients,
                             executor_tasks_clone.clone(),
+                            max_result_size,
                         )
                         .await
                         {
@@ -201,7 +214,7 @@ impl DriverServiceImpl {
                             );
                             // Re-queue the task if launch fails.
                             let mut requeue_task = pending_task;
-                            if requeue_task.retries < MAX_TASK_RETRIES {
+                            if requeue_task.retries < max_retries {
                                 warn!(
                                     "Re-queueing task {} due to launch failure",
                                     requeue_task.task_id
@@ -242,6 +255,7 @@ impl DriverServiceImpl {
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
         executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
+        max_result_size: usize,
     ) -> Result<(), anyhow::Error> {
         let mut client =
             Self::get_or_create_executor_client_static(&executor, executor_clients).await?;
@@ -267,7 +281,7 @@ impl DriverServiceImpl {
             partition_index: pending_task.partition_index as u32,
             serialized_task: pending_task.serialized_task,
             properties: HashMap::new(),
-            max_result_size_bytes: 1024 * 1024 * 128, // 128MB default limit
+            max_result_size_bytes: max_result_size as u64,
         };
 
         client
@@ -334,6 +348,7 @@ impl DriverServiceImpl {
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
         >,
         timeout_secs: u64,
+        max_retries: u32,
     ) {
         let mut interval = tokio::time::interval(Duration::from_secs(timeout_secs / 2));
         info!(
@@ -384,7 +399,7 @@ impl DriverServiceImpl {
                             if let Some(mut pending_task) =
                                 task_scheduler.get_pending_task_by_id(&task_id).await
                             {
-                                if pending_task.retries < MAX_TASK_RETRIES {
+                                if pending_task.retries < max_retries {
                                     pending_task.retries += 1;
                                     warn!("Re-queueing task {}", task_id);
                                     task_scheduler.submit_pending_task(pending_task).await;
@@ -581,15 +596,16 @@ impl DriverService for DriverServiceImpl {
                 // Re-queue the task for retry if possible
                 let task_scheduler = self.task_scheduler.clone();
                 let task_id = req.task_id.clone();
+                let max_retries = self.config.task_max_retries;
                 tokio::spawn(async move {
                     if let Some(mut pending_task) =
                         task_scheduler.get_pending_task_by_id(&task_id).await
                     {
-                        if pending_task.retries < MAX_TASK_RETRIES {
+                        if pending_task.retries < max_retries {
                             pending_task.retries += 1;
                             warn!(
                                 "Re-queueing task {} for retry (attempt {}/{})",
-                                task_id, pending_task.retries, MAX_TASK_RETRIES
+                                task_id, pending_task.retries, max_retries
                             );
                             task_scheduler.submit_pending_task(pending_task).await;
                         }
@@ -637,8 +653,8 @@ pub struct Driver {
 
 impl Driver {
     /// Create a new driver
-    pub fn new(driver_id: String) -> Self {
-        let service = Arc::new(DriverServiceImpl::new(driver_id));
+    pub fn new(driver_id: String, config: DistributedConfig) -> Self {
+        let service = Arc::new(DriverServiceImpl::new(driver_id, config));
         let task_scheduler = Arc::clone(&service.task_scheduler);
 
         Self {

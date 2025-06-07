@@ -3,6 +3,7 @@
 //! The Executor receives tasks from the Driver, executes them using
 //! rayon thread pools, and reports results back.
 
+use crate::distributed::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     HeartbeatRequest, RegisterExecutorRequest, TaskMetrics as ProtoTaskMetrics,
     TaskStatusRequest as DriverTaskStatusRequest, driver_service_client::DriverServiceClient,
@@ -120,6 +121,7 @@ impl ExecutorService for ExecutorServiceImpl {
         let stage_id = req.stage_id.clone();
         let partition_index = req.partition_index;
         let serialized_task = req.serialized_task;
+        let max_result_size = req.max_result_size_bytes;
 
         // Clone necessary Arcs to move into the spawned task
         let status_arc = Arc::clone(&self.status);
@@ -158,21 +160,38 @@ impl ExecutorService for ExecutorServiceImpl {
                 .submit_task(partition_index as usize, serialized_task)
                 .await;
 
+            let mut final_task_result = task_result;
+            // Check if result size exceeds the limit
+            if let Some(ref result_bytes) = final_task_result.result {
+                if result_bytes.len() as u64 > max_result_size {
+                    let error_msg = format!(
+                        "Task {} result size ({} bytes) exceeds limit ({} bytes)",
+                        task_id,
+                        result_bytes.len(),
+                        max_result_size
+                    );
+                    warn!("{}", error_msg);
+                    final_task_result.state = TaskState::Failed;
+                    final_task_result.result = None;
+                    final_task_result.error_message = Some(error_msg);
+                }
+            }
+
             info!(
                 "Task {} completed with state: {:?}",
-                task_id, task_result.state
+                task_id, final_task_result.state
             );
 
             // Update internal metrics
             {
                 let mut metrics = metrics_arc.lock().await;
                 metrics.total_tasks += 1;
-                if task_result.state == TaskState::Finished {
+                if final_task_result.state == TaskState::Finished {
                     metrics.succeeded_tasks += 1;
                 } else {
                     metrics.failed_tasks += 1;
                 }
-                metrics.total_duration_ms += task_result.metrics.executor_run_time_ms;
+                metrics.total_duration_ms += final_task_result.metrics.executor_run_time_ms;
             }
 
             // Atomically update running tasks map and executor status
@@ -190,24 +209,24 @@ impl ExecutorService for ExecutorServiceImpl {
                 let status_request = DriverTaskStatusRequest {
                     executor_id: executor_id,
                     task_id: task_id.clone(),
-                    state: task_result.state as i32,
-                    result: task_result.result.unwrap_or_default(),
-                    error_message: task_result.error_message.unwrap_or_default(),
+                    state: final_task_result.state as i32,
+                    result: final_task_result.result.unwrap_or_default(),
+                    error_message: final_task_result.error_message.unwrap_or_default(),
                     task_metrics: Some(ProtoTaskMetrics {
-                        executor_deserialize_time_ms: task_result
+                        executor_deserialize_time_ms: final_task_result
                             .metrics
                             .executor_deserialize_time_ms,
                         executor_deserialize_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                        executor_run_time_ms: task_result.metrics.executor_run_time_ms,
+                        executor_run_time_ms: final_task_result.metrics.executor_run_time_ms,
                         executor_cpu_time_ms: 0, // TODO: Implement CPU time tracking
-                        result_size_bytes: task_result.metrics.result_size_bytes,
-                        jvm_gc_time_ms: task_result.metrics.jvm_gc_time_ms,
-                        result_serialization_time_ms: task_result
+                        result_size_bytes: final_task_result.metrics.result_size_bytes,
+                        jvm_gc_time_ms: final_task_result.metrics.jvm_gc_time_ms,
+                        result_serialization_time_ms: final_task_result
                             .metrics
                             .result_serialization_time_ms,
-                        memory_bytes_spilled: task_result.metrics.memory_bytes_spilled,
-                        disk_bytes_spilled: task_result.metrics.disk_bytes_spilled,
-                        peak_execution_memory_bytes: task_result
+                        memory_bytes_spilled: final_task_result.metrics.memory_bytes_spilled,
+                        disk_bytes_spilled: final_task_result.metrics.disk_bytes_spilled,
+                        peak_execution_memory_bytes: final_task_result
                             .metrics
                             .peak_execution_memory_bytes,
                         input_bytes_read: 0,     // TODO: Implement input tracking
@@ -377,12 +396,16 @@ impl ExecutorServiceImpl {
 #[derive(Clone)]
 pub struct Executor {
     service: Arc<ExecutorServiceImpl>,
-    heartbeat_interval: Duration,
+    config: DistributedConfig,
 }
 
 impl Executor {
     /// Create a new executor
-    pub fn new(executor_info: ExecutorInfo, max_concurrent_tasks: usize) -> Self {
+    pub fn new(
+        executor_info: ExecutorInfo,
+        max_concurrent_tasks: usize,
+        config: DistributedConfig,
+    ) -> Self {
         let driver_client = Arc::new(Mutex::new(None));
         let service = Arc::new(ExecutorServiceImpl::new(
             executor_info.clone(),
@@ -390,10 +413,7 @@ impl Executor {
             driver_client,
         ));
 
-        Self {
-            service,
-            heartbeat_interval: Duration::from_secs(10), // 10 second heartbeat interval
-        }
+        Self { service, config }
     }
 
     /// Register with the driver
@@ -441,7 +461,8 @@ impl Executor {
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);
             let running_tasks = Arc::clone(&self.service.running_tasks);
-            let heartbeat_interval = self.heartbeat_interval;
+            let heartbeat_interval =
+                Duration::from_secs(self.config.executor_heartbeat_interval_secs);
 
             tokio::spawn(async move {
                 let mut interval = interval(heartbeat_interval);
