@@ -6,16 +6,14 @@
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     driver_service_server::{DriverService, DriverServiceServer},
-    HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest, RegisterExecutorResponse,
-    TaskStatusRequest, TaskStatusResponse,
+    ExecutorStatus, HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest,
+    RegisterExecutorResponse, TaskState, TaskStatusRequest, TaskStatusResponse,
 };
 use crate::distributed::proto::executor::{
     executor_service_client::ExecutorServiceClient, LaunchTaskRequest,
 };
 use crate::distributed::task::{PendingTask, Task, TaskScheduler};
-use crate::distributed::types::{
-    ExecutorId, ExecutorInfo, ExecutorMetrics, ExecutorStatus, StageId, TaskId, TaskState,
-};
+use crate::distributed::types::{ExecutorId, ExecutorInfo, ExecutorMetrics, StageId, TaskId};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -148,9 +146,6 @@ impl DriverServiceImpl {
             }
         });
 
-        // Give the server a moment to start
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
         Ok(())
     }
 
@@ -184,7 +179,12 @@ impl DriverServiceImpl {
                 .max_concurrent_tasks
                 .saturating_sub(executor.metrics.active_tasks);
 
+            let mut executor_failed = false;
             for _ in 0..available_slots {
+                if executor_failed {
+                    break; // Skip remaining slots for this executor
+                }
+
                 // Ask the scheduler for a task, preferring one local to this executor
                 if let Some(pending_task) = self
                     .task_scheduler
@@ -197,82 +197,57 @@ impl DriverServiceImpl {
                         executor.info.executor_id.clone()
                     );
 
-                    let executor_clone = executor.clone();
-                    let executor_clients = self.executor_clients.clone();
-                    let task_scheduler_clone = self.task_scheduler.clone();
-                    let executor_tasks_clone = self.executor_tasks.clone();
-                    let max_retries = self.config.task_max_retries;
-                    let max_result_size = self.config.max_result_size;
-                    let active_tasks_clone = self.active_tasks.clone();
-
-                    let completion_notifiers_clone = self.completion_notifiers.clone();
-
-                    // Launch task on executor in the background
-                    tokio::spawn(async move {
-                        // Add task to active and executor-specific maps BEFORE launching.
-                        active_tasks_clone
-                            .lock()
-                            .await
-                            .insert(pending_task.task_id.clone(), pending_task.clone());
-                        executor_tasks_clone
-                            .lock()
-                            .await
-                            .entry(executor_clone.info.executor_id.clone())
-                            .or_default()
-                            .insert(pending_task.task_id.clone());
-
-                        if let Err(e) = Self::launch_task_on_executor(
-                            executor_clone.clone(),
-                            pending_task.clone(),
-                            executor_clients,
-                            max_result_size,
-                        )
+                    // Add task to active and executor-specific maps BEFORE launching.
+                    self.active_tasks
+                        .lock()
                         .await
-                        {
+                        .insert(pending_task.task_id.clone(), pending_task.clone());
+                    self.executor_tasks
+                        .lock()
+                        .await
+                        .entry(executor.info.executor_id.clone())
+                        .or_default()
+                        .insert(pending_task.task_id.clone());
+
+                    match Self::launch_task_on_executor(
+                        executor.clone(),
+                        pending_task.clone(),
+                        self.executor_clients.clone(),
+                        self.config.max_result_size,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            // Successfully launched, continue to next slot.
+                        }
+                        Err(e) => {
                             error!(
                                 "Failed to launch task {} on executor {}: {}",
-                                pending_task.task_id, executor_clone.info.executor_id, e
+                                pending_task.task_id, executor.info.executor_id, e
                             );
                             // IMPORTANT: If launch fails, clean up state from both active tasks
                             // and the executor's task set to prevent ghost tasks.
-                            active_tasks_clone
+                            self.active_tasks.lock().await.remove(&pending_task.task_id);
+                            self.executor_tasks
                                 .lock()
                                 .await
-                                .remove(&pending_task.task_id);
-                            executor_tasks_clone
-                                .lock()
-                                .await
-                                .get_mut(&executor_clone.info.executor_id)
+                                .get_mut(&executor.info.executor_id)
                                 .map(|tasks| tasks.remove(&pending_task.task_id));
 
                             // Re-queue the task if launch fails.
-                            let mut requeue_task = pending_task;
-                            if requeue_task.retries < max_retries {
-                                warn!(
-                                    "Re-queueing task {} due to launch failure",
-                                    requeue_task.task_id
-                                );
-                                requeue_task.retries += 1;
-                                task_scheduler_clone.submit_pending_task(requeue_task).await;
-                            } else {
-                                error!(
-                                    "Task {} failed to launch after all retries.",
-                                    requeue_task.task_id
-                                );
-                                let result = TaskResult::Failure(format!(
-                                    "Failed to launch task on any executor after {} retries",
-                                    max_retries
-                                ));
-                                if let Some(notifier) = completion_notifiers_clone
-                                    .lock()
-                                    .await
-                                    .remove(&requeue_task.task_id)
-                                {
-                                    let _ = notifier.send(result);
-                                }
-                            }
+                            Self::requeue_or_fail_task(
+                                pending_task,
+                                self.config.task_max_retries,
+                                self.task_scheduler.clone(),
+                                self.completion_notifiers.clone(),
+                                "launch failure",
+                            )
+                            .await;
+
+                            // Mark executor as failed for this scheduling round
+                            executor_failed = true;
                         }
-                    });
+                    }
                 } else {
                     // No more pending tasks, break from inner loop
                     break;
@@ -281,6 +256,36 @@ impl DriverServiceImpl {
         }
 
         Ok(())
+    }
+
+    /// Helper to requeue a task or mark it as terminally failed.
+    async fn requeue_or_fail_task(
+        mut task: PendingTask,
+        max_retries: u32,
+        scheduler: Arc<TaskScheduler>,
+        notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+        failure_reason: &str,
+    ) {
+        if task.retries < max_retries {
+            warn!(
+                "Re-queueing task {} due to {}",
+                task.task_id, failure_reason
+            );
+            task.retries += 1;
+            scheduler.submit_pending_task(task).await;
+        } else {
+            error!(
+                "Task {} failed after all retries due to {}.",
+                task.task_id, failure_reason
+            );
+            let result = TaskResult::Failure(format!(
+                "Failed to complete task after {} retries",
+                max_retries
+            ));
+            if let Some(notifier) = notifiers.lock().await.remove(&task.task_id) {
+                let _ = notifier.send(result);
+            }
+        }
     }
 
     /// Finds executors that have capacity to run more tasks.
@@ -463,27 +468,12 @@ impl DriverServiceImpl {
 
     /// Convert protobuf ExecutorStatus to internal type
     fn convert_executor_status(status: i32) -> ExecutorStatus {
-        match status {
-            0 => ExecutorStatus::Starting,
-            1 => ExecutorStatus::Running,
-            2 => ExecutorStatus::Idle,
-            3 => ExecutorStatus::Busy,
-            4 => ExecutorStatus::Stopping,
-            5 => ExecutorStatus::Failed,
-            _ => ExecutorStatus::Failed,
-        }
+        ExecutorStatus::try_from(status).unwrap_or(ExecutorStatus::Failed)
     }
 
     /// Convert protobuf TaskState to internal type
     fn convert_task_state(state: i32) -> TaskState {
-        match state {
-            0 /* TASK_PENDING */ => TaskState::Pending,
-            1 /* TASK_RUNNING */ => TaskState::Running,
-            2 /* TASK_FINISHED */ => TaskState::Finished,
-            3 /* TASK_FAILED */ => TaskState::Failed,
-            4 /* TASK_KILLED */ => TaskState::Killed,
-            _ => TaskState::Failed,
-        }
+        TaskState::try_from(state).unwrap_or(TaskState::TaskFailed)
     }
 
     /// Helper function to handle failed tasks - used by both liveness check and re-registration
@@ -706,7 +696,7 @@ impl DriverService for DriverServiceImpl {
         }
 
         match task_state {
-            TaskState::Finished => {
+            TaskState::TaskFinished => {
                 info!("Task {} completed successfully", req.task_id);
                 let result = TaskResult::Success(req.result);
 
@@ -724,7 +714,7 @@ impl DriverService for DriverServiceImpl {
                 }
             }
 
-            TaskState::Failed => {
+            TaskState::TaskFailed => {
                 error!(
                     "Task {} failed on executor {}: {}",
                     req.task_id, req.executor_id, req.error_message
@@ -769,7 +759,7 @@ impl DriverService for DriverServiceImpl {
                 }
             }
 
-            TaskState::Killed => {
+            TaskState::TaskKilled => {
                 warn!("Task {} was killed", req.task_id);
                 self.active_tasks.lock().await.remove(&req.task_id);
                 let result = TaskResult::Failure("Task was killed".to_string());

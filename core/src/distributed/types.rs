@@ -114,41 +114,6 @@ impl Default for ExecutorMetrics {
     }
 }
 
-/// Executor status enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(i32)]
-pub enum ExecutorStatus {
-    Starting = 0,
-    Running = 1, // Service is up
-    Idle = 2,    // Service is up and waiting for tasks
-    Busy = 3,    // Service is up and executing tasks
-    Stopping = 4,
-    Failed = 5,
-}
-
-impl Default for ExecutorStatus {
-    fn default() -> Self {
-        Self::Starting
-    }
-}
-
-/// Task state enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(i32)]
-pub enum TaskState {
-    Pending = 0,
-    Running = 1,
-    Finished = 2,
-    Failed = 3,
-    Killed = 4,
-}
-
-impl Default for TaskState {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
 /// Serialization utilities for distributed tasks
 pub mod serialization {
     use super::*;

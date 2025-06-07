@@ -3,6 +3,7 @@
 //! This module provides task execution capabilities for the distributed
 //! computing framework. It defines a generic, serializable `Task` trait
 //! that allows arbitrary computations to be executed by the Executor.
+use crate::distributed::proto::driver::TaskState;
 use crate::distributed::types::*;
 use crate::operations::RddDataType;
 use anyhow::Result;
@@ -158,13 +159,13 @@ impl TaskRunner {
 
         match execution_result {
             Ok((result_bytes, task_metrics)) => TaskExecutionResult {
-                state: TaskState::Finished,
+                state: TaskState::TaskFinished,
                 result: Some(result_bytes),
                 error_message: None,
                 metrics: task_metrics,
             },
             Err(e) => TaskExecutionResult {
-                state: TaskState::Failed,
+                state: TaskState::TaskFailed,
                 result: None,
                 error_message: Some(e.to_string()),
                 metrics: TaskMetrics::default(),

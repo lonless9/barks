@@ -5,8 +5,9 @@
 
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
-    driver_service_client::DriverServiceClient, HeartbeatRequest, RegisterExecutorRequest,
-    TaskMetrics as ProtoTaskMetrics, TaskStatusRequest as DriverTaskStatusRequest,
+    driver_service_client::DriverServiceClient, ExecutorStatus, HeartbeatRequest,
+    RegisterExecutorRequest, TaskMetrics as ProtoTaskMetrics, TaskState,
+    TaskStatusRequest as DriverTaskStatusRequest,
 };
 use crate::distributed::proto::executor::{
     executor_service_server::{ExecutorService, ExecutorServiceServer},
@@ -15,7 +16,7 @@ use crate::distributed::proto::executor::{
     ShutdownRequest, ShutdownResponse, TaskInfo as ProtoTaskInfo,
 };
 use crate::distributed::task::TaskRunner;
-use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, ExecutorStatus, TaskId, TaskState};
+use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, TaskId};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -147,7 +148,7 @@ impl ExecutorService for ExecutorServiceImpl {
                 stage_id: stage_id.clone(),
                 partition_index,
                 start_time: Self::current_timestamp(),
-                status: TaskState::Running,
+                status: TaskState::TaskRunning,
             };
             running_tasks.insert(task_id_clone.clone(), task_info);
         }
@@ -171,7 +172,7 @@ impl ExecutorService for ExecutorServiceImpl {
                         max_result_size
                     );
                     warn!("{}", error_msg);
-                    final_task_result.state = TaskState::Failed;
+                    final_task_result.state = TaskState::TaskFailed;
                     final_task_result.result = None;
                     final_task_result.error_message = Some(error_msg);
                 }
@@ -186,7 +187,7 @@ impl ExecutorService for ExecutorServiceImpl {
             {
                 let mut metrics = metrics_arc.lock().await;
                 metrics.total_tasks += 1;
-                if final_task_result.state == TaskState::Finished {
+                if final_task_result.state == TaskState::TaskFinished {
                     metrics.succeeded_tasks += 1;
                 } else {
                     metrics.failed_tasks += 1;
