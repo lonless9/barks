@@ -18,36 +18,6 @@ impl<T: Clone> EfficientClone for T {
     }
 }
 
-/// Trait for types that can be partitioned
-pub trait Partitionable {
-    type Item;
-
-    /// Partition the data into the specified number of partitions
-    fn partition(self, num_partitions: usize) -> Vec<Vec<Self::Item>>;
-}
-
-/// Implement Partitionable for Vec
-impl<T> Partitionable for Vec<T> {
-    type Item = T;
-
-    fn partition(mut self, num_partitions: usize) -> Vec<Vec<T>> {
-        if num_partitions == 0 || self.is_empty() {
-            return vec![self];
-        }
-
-        let chunk_size = (self.len() + num_partitions - 1) / num_partitions;
-        let mut result = Vec::with_capacity(num_partitions);
-
-        while !self.is_empty() {
-            let take = std::cmp::min(chunk_size, self.len());
-            let chunk = self.drain(..take).collect();
-            result.push(chunk);
-        }
-
-        result
-    }
-}
-
 /// Trait for types that can be merged
 pub trait Mergeable {
     /// Merge with another instance of the same type
@@ -188,17 +158,6 @@ impl<T: Hash> ConsistentHash for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_partitionable() {
-        let vec = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let partitions = vec.partition(3);
-
-        assert_eq!(partitions.len(), 3);
-        assert_eq!(partitions[0], vec![1, 2, 3, 4]);
-        assert_eq!(partitions[1], vec![5, 6, 7, 8]);
-        assert_eq!(partitions[2], vec![9, 10]);
-    }
 
     #[test]
     fn test_mergeable() {

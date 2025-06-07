@@ -85,7 +85,10 @@ impl Drop for UnsafeVecBuffer {
     fn drop(&mut self) {
         let allocator = StandardUnsafeMemory;
         unsafe {
-            let _ = allocator.deallocate(self.ptr, self.capacity, 1);
+            if let Err(e) = allocator.deallocate(self.ptr, self.capacity, 1) {
+                // In a drop implementation, we cannot panic. Logging is the best we can do.
+                eprintln!("ERROR: Failed to deallocate UnsafeVecBuffer: {}", e);
+            }
         }
     }
 }

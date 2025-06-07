@@ -205,6 +205,8 @@ impl DriverServiceImpl {
                     let max_result_size = self.config.max_result_size;
                     let active_tasks_clone = self.active_tasks.clone();
 
+                    let completion_notifiers_clone = self.completion_notifiers.clone();
+
                     // Launch task on executor in the background
                     tokio::spawn(async move {
                         if let Err(e) = Self::launch_task_on_executor(
@@ -227,6 +229,7 @@ impl DriverServiceImpl {
                                 .lock()
                                 .await
                                 .remove(&pending_task.task_id);
+
                             // Re-queue the task if launch fails.
                             let mut requeue_task = pending_task;
                             if requeue_task.retries < max_retries {
@@ -236,6 +239,22 @@ impl DriverServiceImpl {
                                 );
                                 requeue_task.retries += 1;
                                 task_scheduler_clone.submit_pending_task(requeue_task).await;
+                            } else {
+                                error!(
+                                    "Task {} failed to launch after all retries.",
+                                    requeue_task.task_id
+                                );
+                                let result = TaskResult::Failure(format!(
+                                    "Failed to launch task on any executor after {} retries",
+                                    max_retries
+                                ));
+                                if let Some(notifier) = completion_notifiers_clone
+                                    .lock()
+                                    .await
+                                    .remove(&requeue_task.task_id)
+                                {
+                                    let _ = notifier.send(result);
+                                }
                             }
                         }
                     });
@@ -414,40 +433,22 @@ impl DriverServiceImpl {
 
                     // Re-queue tasks that were running on the dead executor
                     if let Some(tasks_to_requeue) = executor_tasks_guard.remove(id) {
-                        warn!(
-                            "Re-queueing {} tasks from failed executor {}",
-                            tasks_to_requeue.len(),
-                            id
-                        );
-                        for task_id in tasks_to_requeue {
-                            // IMPORTANT: Remove task from active map before re-queueing to prevent duplicates.
-                            if let Some(mut pending_task) =
-                                active_tasks.lock().await.remove(&task_id)
-                            {
-                                if pending_task.retries < max_retries {
-                                    pending_task.retries += 1;
-                                    warn!(
-                                        "Re-queueing task {} (attempt {}/{})",
-                                        task_id, pending_task.retries, max_retries
-                                    );
-                                    task_scheduler.submit_pending_task(pending_task).await;
-                                } else {
-                                    error!(
-                                        "Task {} on dead executor {} failed after all retries.",
-                                        task_id, id
-                                    );
-                                    let result = TaskResult::Failure(format!(
-                                        "Task failed on dead executor after {} retries",
-                                        max_retries
-                                    ));
-                                    if let Some(notifier) =
-                                        completion_notifiers.lock().await.remove(&task_id)
-                                    {
-                                        let _ = notifier.send(result);
-                                    }
-                                }
-                            }
-                        }
+                        let task_scheduler_clone = task_scheduler.clone();
+                        let active_tasks_clone = active_tasks.clone();
+                        let completion_notifiers_clone = completion_notifiers.clone();
+                        let executor_id_clone = id.clone();
+
+                        tokio::spawn(async move {
+                            Self::handle_failed_tasks(
+                                tasks_to_requeue,
+                                &executor_id_clone,
+                                task_scheduler_clone,
+                                active_tasks_clone,
+                                completion_notifiers_clone,
+                                max_retries,
+                            )
+                            .await;
+                        });
                     }
                 }
             }
@@ -486,6 +487,46 @@ impl DriverServiceImpl {
             _ => TaskState::Failed,
         }
     }
+
+    /// Helper function to handle failed tasks - used by both liveness check and re-registration
+    async fn handle_failed_tasks(
+        tasks_to_requeue: HashSet<TaskId>,
+        executor_id: &ExecutorId,
+        task_scheduler: Arc<TaskScheduler>,
+        active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
+        completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+        max_retries: u32,
+    ) {
+        warn!(
+            "Re-queueing {} tasks from failed/stale executor {}",
+            tasks_to_requeue.len(),
+            executor_id
+        );
+        for task_id in tasks_to_requeue {
+            if let Some(mut pending_task) = active_tasks.lock().await.remove(&task_id) {
+                if pending_task.retries < max_retries {
+                    pending_task.retries += 1;
+                    warn!(
+                        "Re-queueing task {} (attempt {}/{})",
+                        task_id, pending_task.retries, max_retries
+                    );
+                    task_scheduler.submit_pending_task(pending_task).await;
+                } else {
+                    error!(
+                        "Task {} on executor {} failed after all retries.",
+                        task_id, executor_id
+                    );
+                    let result = TaskResult::Failure(format!(
+                        "Task failed on executor {} after {} retries",
+                        executor_id, max_retries
+                    ));
+                    if let Some(notifier) = completion_notifiers.lock().await.remove(&task_id) {
+                        let _ = notifier.send(result);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -499,51 +540,39 @@ impl DriverService for DriverServiceImpl {
         let executor_id = req.executor_id.clone();
 
         // --- Start: Handle re-registration robustly ---
-        let mut executors = self.executors.lock().await;
-        if let Some(old_executor) = executors.get_mut(&executor_id) {
+        let mut executors_guard = self.executors.lock().await;
+        if let Some(old_executor) = executors_guard.get_mut(&executor_id) {
             warn!(
-                "Executor {} is re-registering. Marking old instance as failed and re-queueing its tasks.",
+                "Executor {} is re-registering. Decommissioning old instance.",
                 executor_id
             );
             old_executor.status = ExecutorStatus::Failed;
 
-            // Re-queue tasks from the old instance
             let mut executor_tasks_guard = self.executor_tasks.lock().await;
             if let Some(tasks_to_requeue) = executor_tasks_guard.remove(&executor_id) {
                 let task_scheduler = self.task_scheduler.clone();
                 let active_tasks = self.active_tasks.clone();
                 let max_retries = self.config.task_max_retries;
-
+                let notifiers = self.completion_notifiers.clone();
                 let executor_id_clone = executor_id.clone();
 
                 tokio::spawn(async move {
-                    for task_id in tasks_to_requeue {
-                        if let Some(mut pending_task) = active_tasks.lock().await.remove(&task_id) {
-                            if pending_task.retries < max_retries {
-                                pending_task.retries += 1;
-                                warn!("Re-queueing task {} from re-registered executor", task_id);
-                                task_scheduler.submit_pending_task(pending_task).await;
-                            } else {
-                                error!(
-                                    "Task {} on re-registered executor {} failed after all retries.",
-                                    task_id, executor_id_clone
-                                );
-                                // Ideally, we would notify waiters of failure here, but for simplicity
-                                // in this context, we will just drop the task. The client will eventually
-                                // time out. A more robust implementation would pass notifiers here.
-                            }
-                        } else {
-                            // Task was not in the active map, likely already completed.
-                            debug!(
-                                "Task {} from re-registered executor was not active.",
-                                task_id
-                            );
-                        }
-                    }
+                    Self::handle_failed_tasks(
+                        tasks_to_requeue,
+                        &executor_id_clone,
+                        task_scheduler,
+                        active_tasks,
+                        notifiers,
+                        max_retries,
+                    )
+                    .await;
                 });
             }
         }
-        drop(executors);
+        // Remove the old entry completely to ensure a clean state for the new registration.
+        // The new executor info will be inserted fresh below.
+        executors_guard.remove(&executor_id);
+        drop(executors_guard);
         // --- End: Handle re-registration ---
 
         // Invalidate any existing client for this executor ID to force re-connection.
@@ -584,15 +613,15 @@ impl DriverService for DriverServiceImpl {
         self.task_scheduler.register_executor(executor_info).await;
 
         // Add to executors map
-        {
-            let mut executors = self.executors.lock().await;
-            self.executor_tasks
-                .lock()
-                .await
-                .entry(req.executor_id.clone())
-                .or_default(); // Use entry to avoid overwriting if re-registering
-            executors.insert(req.executor_id.clone(), registered_executor);
-        }
+        self.executors
+            .lock()
+            .await
+            .insert(req.executor_id.clone(), registered_executor);
+        self.executor_tasks
+            .lock()
+            .await
+            .entry(req.executor_id.clone())
+            .or_default();
 
         let response = RegisterExecutorResponse {
             success: true,

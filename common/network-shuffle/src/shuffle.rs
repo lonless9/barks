@@ -3,13 +3,14 @@
 use crate::traits::*;
 use anyhow::Result;
 use async_trait::async_trait;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Basic shuffle data implementation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct BasicShuffleData<K, V> {
     key: K,
     value: V,
@@ -27,8 +28,8 @@ where
 
 impl<K, V> ShuffleData for BasicShuffleData<K, V>
 where
-    K: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de>,
-    V: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de>,
+    K: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Encode + Decode<()>,
+    V: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Encode + Decode<()>,
 {
     type Key = K;
     type Value = V;
@@ -42,11 +43,14 @@ where
     }
 
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(self)?)
+        bincode::encode_to_vec(self, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("Bincode serialization failed: {}", e))
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
-        Ok(serde_json::from_slice(data)?)
+        bincode::decode_from_slice(data, bincode::config::standard())
+            .map(|(res, _)| res)
+            .map_err(|e| anyhow::anyhow!("Bincode deserialization failed: {}", e))
     }
 }
 
