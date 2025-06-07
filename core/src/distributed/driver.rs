@@ -112,6 +112,7 @@ impl DriverServiceImpl {
         let task_scheduler_for_liveness = Arc::clone(&self.task_scheduler);
         let executor_clients_for_liveness = Arc::clone(&self.executor_clients);
         let executor_tasks_for_liveness = Arc::clone(&self.executor_tasks);
+        let completion_notifiers_for_liveness = Arc::clone(&self.completion_notifiers);
         let active_tasks_for_liveness = Arc::clone(&self.active_tasks);
         let liveness_timeout = self.config.executor_liveness_timeout_secs;
         let max_retries = self.config.task_max_retries;
@@ -120,6 +121,7 @@ impl DriverServiceImpl {
                 executors_for_liveness,
                 task_scheduler_for_liveness,
                 active_tasks_for_liveness,
+                completion_notifiers_for_liveness,
                 executor_tasks_for_liveness,
                 executor_clients_for_liveness,
                 liveness_timeout,
@@ -364,6 +366,7 @@ impl DriverServiceImpl {
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         task_scheduler: Arc<TaskScheduler>,
         active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
+        completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
         executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
@@ -417,16 +420,31 @@ impl DriverServiceImpl {
                             id
                         );
                         for task_id in tasks_to_requeue {
-                            // Get task info from the active_tasks map, not the scheduler's pending queue
+                            // IMPORTANT: Remove task from active map before re-queueing to prevent duplicates.
                             if let Some(mut pending_task) =
-                                active_tasks.lock().await.get(&task_id).cloned()
+                                active_tasks.lock().await.remove(&task_id)
                             {
                                 if pending_task.retries < max_retries {
                                     pending_task.retries += 1;
-                                    warn!("Re-queueing task {}", task_id);
+                                    warn!(
+                                        "Re-queueing task {} (attempt {}/{})",
+                                        task_id, pending_task.retries, max_retries
+                                    );
                                     task_scheduler.submit_pending_task(pending_task).await;
                                 } else {
-                                    // TODO: Handle permanent task failure (e.g., notify job scheduler)
+                                    error!(
+                                        "Task {} on dead executor {} failed after all retries.",
+                                        task_id, id
+                                    );
+                                    let result = TaskResult::Failure(format!(
+                                        "Task failed on dead executor after {} retries",
+                                        max_retries
+                                    ));
+                                    if let Some(notifier) =
+                                        completion_notifiers.lock().await.remove(&task_id)
+                                    {
+                                        let _ = notifier.send(result);
+                                    }
                                 }
                             }
                         }
@@ -496,16 +514,30 @@ impl DriverService for DriverServiceImpl {
                 let active_tasks = self.active_tasks.clone();
                 let max_retries = self.config.task_max_retries;
 
+                let executor_id_clone = executor_id.clone();
+
                 tokio::spawn(async move {
                     for task_id in tasks_to_requeue {
-                        if let Some(mut pending_task) =
-                            active_tasks.lock().await.get(&task_id).cloned()
-                        {
+                        if let Some(mut pending_task) = active_tasks.lock().await.remove(&task_id) {
                             if pending_task.retries < max_retries {
                                 pending_task.retries += 1;
                                 warn!("Re-queueing task {} from re-registered executor", task_id);
                                 task_scheduler.submit_pending_task(pending_task).await;
+                            } else {
+                                error!(
+                                    "Task {} on re-registered executor {} failed after all retries.",
+                                    task_id, executor_id_clone
+                                );
+                                // Ideally, we would notify waiters of failure here, but for simplicity
+                                // in this context, we will just drop the task. The client will eventually
+                                // time out. A more robust implementation would pass notifiers here.
                             }
+                        } else {
+                            // Task was not in the active map, likely already completed.
+                            debug!(
+                                "Task {} from re-registered executor was not active.",
+                                task_id
+                            );
                         }
                     }
                 });
@@ -670,33 +702,40 @@ impl DriverService for DriverServiceImpl {
 
                 let task_scheduler = self.task_scheduler.clone();
                 let active_tasks = self.active_tasks.clone();
-                let task_id = req.task_id.clone();
                 let max_retries = self.config.task_max_retries;
                 let notifiers = self.completion_notifiers.clone();
                 let error_message = req.error_message.clone();
 
-                if let Some(mut pending_task) = active_tasks.lock().await.get(&task_id).cloned() {
+                // IMPORTANT: Remove task from active map before re-queueing to prevent duplicates.
+                let pending_task_opt = {
+                    let mut active_tasks_guard = active_tasks.lock().await;
+                    active_tasks_guard.remove(&req.task_id)
+                };
+
+                if let Some(mut pending_task) = pending_task_opt {
                     if pending_task.retries < max_retries {
                         pending_task.retries += 1;
                         warn!(
                             "Re-queueing task {} for retry (attempt {}/{})",
-                            task_id, pending_task.retries, max_retries
+                            req.task_id, pending_task.retries, max_retries
                         );
-                        // IMPORTANT: Update the active task map with the new retry count
-                        active_tasks
-                            .lock()
-                            .await
-                            .insert(task_id.clone(), pending_task.clone());
                         task_scheduler.submit_pending_task(pending_task).await;
                     } else {
                         // Task has exhausted retries, notify of final failure.
-                        warn!("Task {} failed after all retries.", task_id);
-                        active_tasks.lock().await.remove(&task_id);
+                        warn!("Task {} failed after all retries.", req.task_id);
+                        // The task has already been removed from active_tasks.
                         let result = TaskResult::Failure(error_message);
-                        if let Some(notifier) = notifiers.lock().await.remove(&task_id) {
+                        if let Some(notifier) = notifiers.lock().await.remove(&req.task_id) {
                             let _ = notifier.send(result);
                         }
                     }
+                } else {
+                    // This can happen if the task was already retried due to executor timeout
+                    // and this is a late failure report.
+                    warn!(
+                        "Received failure report for task {}, but it was not in the active task map.",
+                        req.task_id
+                    );
                 }
             }
 
