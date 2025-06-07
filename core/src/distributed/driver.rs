@@ -433,6 +433,8 @@ impl DriverServiceImpl {
                     if let Some(executor) = executors_guard.get_mut(id) {
                         executor.status = ExecutorStatus::Failed;
                     }
+                    // Unregister from scheduler to prevent future scheduling attempts
+                    task_scheduler.unregister_executor(id).await;
                     clients_guard.remove(id);
 
                     // Re-queue tasks that were running on the dead executor

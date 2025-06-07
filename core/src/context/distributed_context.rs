@@ -373,13 +373,25 @@ impl DistributedContext {
             }
 
             // 2. Partition the base data for distribution.
+            // Iterate through partitions and clone only the necessary slice for each task.
             let stage_id = format!("stage-{}", uuid::Uuid::new_v4());
-            let chunks = barks_utils::partition_evenly(base_data.as_ref().clone(), num_partitions);
+            let data_slice = base_data.as_ref();
+            let num_items = data_slice.len();
+            let effective_num_partitions = std::cmp::min(num_partitions, num_items.max(1));
+            let partition_size =
+                (num_items + effective_num_partitions - 1) / effective_num_partitions;
 
             let mut result_futures = Vec::new();
 
             // 3. For each partition, create a task with the data and the *full* operation chain.
-            for (i, chunk) in chunks.into_iter().enumerate() {
+            for i in 0..effective_num_partitions {
+                let start = i * partition_size;
+                let end = std::cmp::min(start + partition_size, num_items);
+                if start >= end {
+                    continue;
+                }
+
+                let chunk = data_slice[start..end].to_vec();
                 let task_id = format!("task-{}-{}", stage_id, i);
 
                 let serialized_partition_data =
