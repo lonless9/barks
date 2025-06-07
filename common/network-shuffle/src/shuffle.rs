@@ -6,7 +6,10 @@ use async_trait::async_trait;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 /// Basic shuffle data implementation
@@ -97,6 +100,81 @@ impl ShuffleBlockManager for MemoryShuffleManager {
     async fn get_block_size(&self, block_id: &ShuffleBlockId) -> Result<u64> {
         let blocks = self.blocks.read().await;
         Ok(blocks.get(block_id).map(|d| d.len() as u64).unwrap_or(0))
+    }
+}
+
+/// File-based shuffle block manager
+#[derive(Debug, Clone)]
+pub struct FileShuffleBlockManager {
+    root_dir: PathBuf,
+}
+
+impl FileShuffleBlockManager {
+    pub fn new<P: AsRef<Path>>(root_dir: P) -> Result<Self> {
+        let path = root_dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { root_dir: path })
+    }
+
+    fn get_block_path(&self, block_id: &ShuffleBlockId) -> PathBuf {
+        self.root_dir
+            .join(block_id.shuffle_id.to_string())
+            .join(format!("{}_{}", block_id.map_id, block_id.reduce_id))
+    }
+}
+
+#[async_trait]
+impl ShuffleBlockManager for FileShuffleBlockManager {
+    async fn get_block(&self, block_id: &ShuffleBlockId) -> Result<Vec<u8>> {
+        let path = self.get_block_path(block_id);
+        fs::read(&path).await.map_err(|e| {
+            anyhow::anyhow!("Failed to read block {:?} from {:?}: {}", block_id, path, e)
+        })
+    }
+
+    async fn put_block(&self, block_id: ShuffleBlockId, data: Vec<u8>) -> Result<()> {
+        let path = self.get_block_path(&block_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let mut file = File::create(&path).await?;
+        file.write_all(&data).await?;
+        Ok(())
+    }
+
+    async fn remove_block(&self, block_id: &ShuffleBlockId) -> Result<()> {
+        let path = self.get_block_path(block_id);
+        if fs::try_exists(&path).await? {
+            fs::remove_file(&path).await?;
+        }
+        Ok(())
+    }
+
+    async fn contains_block(&self, block_id: &ShuffleBlockId) -> Result<bool> {
+        fs::try_exists(&self.get_block_path(block_id))
+            .await
+            .map_err(|e| e.into())
+    }
+
+    async fn get_block_size(&self, block_id: &ShuffleBlockId) -> Result<u64> {
+        let path = self.get_block_path(block_id);
+        match fs::metadata(&path).await {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+impl FileShuffleBlockManager {
+    /// Removes all files and directories associated with a given shuffle_id.
+    /// This is useful for cleaning up after a job is finished.
+    pub async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
+        let shuffle_dir = self.root_dir.join(shuffle_id.to_string());
+        if fs::try_exists(&shuffle_dir).await? {
+            fs::remove_dir_all(&shuffle_dir).await?;
+        }
+        Ok(())
     }
 }
 
@@ -226,5 +304,66 @@ pub mod server {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_file_shuffle_block_manager() {
+        let dir = tempdir().unwrap();
+        let manager = FileShuffleBlockManager::new(dir.path()).unwrap();
+
+        let block_id1 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 0,
+        };
+        let data1 = b"hello".to_vec();
+
+        let block_id2 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 1,
+        };
+        let data2 = b"world".to_vec();
+
+        // Test put and contains
+        assert!(!manager.contains_block(&block_id1).await.unwrap());
+        manager
+            .put_block(block_id1.clone(), data1.clone())
+            .await
+            .unwrap();
+        assert!(manager.contains_block(&block_id1).await.unwrap());
+
+        manager
+            .put_block(block_id2.clone(), data2.clone())
+            .await
+            .unwrap();
+
+        // Test get
+        let retrieved_data1 = manager.get_block(&block_id1).await.unwrap();
+        assert_eq!(retrieved_data1, data1);
+
+        // Test get_block_size
+        let size1 = manager.get_block_size(&block_id1).await.unwrap();
+        assert_eq!(size1, data1.len() as u64);
+
+        // Test remove
+        manager.remove_block(&block_id1).await.unwrap();
+        assert!(!manager.contains_block(&block_id1).await.unwrap());
+        assert_eq!(manager.get_block_size(&block_id1).await.unwrap(), 0);
+        assert!(manager.get_block(&block_id1).await.is_err());
+
+        // Test remove_shuffle
+        assert!(manager.contains_block(&block_id2).await.unwrap());
+        manager.remove_shuffle(1).await.unwrap();
+        assert!(!manager.contains_block(&block_id2).await.unwrap());
+
+        // Check that the shuffle directory is gone
+        assert!(!dir.path().join("1").exists());
     }
 }
