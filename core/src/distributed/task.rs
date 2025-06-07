@@ -4,8 +4,8 @@
 //! computing framework. It defines a generic, serializable `Task` trait
 //! that allows arbitrary computations to be executed by the Executor.
 use crate::distributed::types::*;
+use crate::operations::RddDataType;
 use anyhow::Result;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,17 +70,7 @@ impl Task for ChainedTask<i32> {
         // 2. Apply each operation in the chain sequentially. The output of one
         //    operation becomes the input for the next.
         for op in &self.operations {
-            current_data = match op {
-                crate::operations::SerializableI32Operation::Map(map_op) => current_data
-                    .par_iter()
-                    .map(|item| map_op.execute(*item))
-                    .collect(),
-                crate::operations::SerializableI32Operation::Filter(filter_op) => current_data
-                    .par_iter()
-                    .filter(|&item| filter_op.test(item))
-                    .cloned()
-                    .collect(),
-            };
+            current_data = i32::apply_operation(op, current_data);
         }
 
         // 3. Serialize the final result.
@@ -100,17 +90,7 @@ impl Task for ChainedTask<String> {
 
         // 2. Apply each operation in the chain sequentially.
         for op in &self.operations {
-            current_data = match op {
-                crate::operations::SerializableStringOperation::Map(map_op) => current_data
-                    .par_iter()
-                    .map(|item| map_op.execute(item.clone()))
-                    .collect(),
-                crate::operations::SerializableStringOperation::Filter(filter_op) => current_data
-                    .par_iter()
-                    .filter(|item| filter_op.test(item))
-                    .cloned()
-                    .collect(),
-            };
+            current_data = String::apply_operation(op, current_data);
         }
 
         // 3. Serialize the final result.

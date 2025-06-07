@@ -4,6 +4,7 @@
 //! closures in RDD transformations, enabling distributed execution.
 
 use dyn_clone::DynClone;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{any::Any, fmt::Debug};
 
@@ -22,13 +23,23 @@ pub trait RddDataType:
     + 'static
 {
     /// The Map operation trait object type associated with this data type.
-    type MapOperation: Send + Sync + Debug + DynClone;
+    type MapOperation: Send + Sync + Debug + DynClone + Clone;
 
     /// The Filter operation trait object type associated with this data type.
-    type FilterPredicate: Send + Sync + Debug + DynClone;
+    type FilterPredicate: Send + Sync + Debug + DynClone + Clone;
 
     /// The serializable operation enum containing the above operations.
-    type SerializableOperation: Send + Sync + Clone + Debug + Serialize + for<'de> Deserialize<'de>;
+    type SerializableOperation: Send
+        + Sync
+        + Clone
+        + Debug
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + From<Self::MapOperation>
+        + From<Self::FilterPredicate>;
+
+    /// Applies a serializable operation to a vector of data.
+    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self>;
 }
 
 /// Trait for serializable operations on i32 values
@@ -71,6 +82,18 @@ pub enum SerializableI32Operation {
     Filter(Box<dyn I32Predicate>),
 }
 
+impl From<Box<dyn I32Operation>> for SerializableI32Operation {
+    fn from(op: Box<dyn I32Operation>) -> Self {
+        SerializableI32Operation::Map(op)
+    }
+}
+
+impl From<Box<dyn I32Predicate>> for SerializableI32Operation {
+    fn from(pred: Box<dyn I32Predicate>) -> Self {
+        SerializableI32Operation::Filter(pred)
+    }
+}
+
 /// Enum to hold different kinds of serializable String operations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerializableStringOperation {
@@ -78,11 +101,36 @@ pub enum SerializableStringOperation {
     Filter(Box<dyn StringPredicate>),
 }
 
+impl From<Box<dyn StringOperation>> for SerializableStringOperation {
+    fn from(op: Box<dyn StringOperation>) -> Self {
+        SerializableStringOperation::Map(op)
+    }
+}
+
+impl From<Box<dyn StringPredicate>> for SerializableStringOperation {
+    fn from(pred: Box<dyn StringPredicate>) -> Self {
+        SerializableStringOperation::Filter(pred)
+    }
+}
+
 /// Implement RddDataType for i32
 impl RddDataType for i32 {
     type MapOperation = Box<dyn I32Operation>;
     type FilterPredicate = Box<dyn I32Predicate>;
     type SerializableOperation = SerializableI32Operation;
+
+    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self> {
+        match op {
+            SerializableI32Operation::Map(map_op) => {
+                data.par_iter().map(|item| map_op.execute(*item)).collect()
+            }
+            SerializableI32Operation::Filter(filter_op) => data
+                .par_iter()
+                .filter(|&item| filter_op.test(item))
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// Implement RddDataType for String
@@ -90,6 +138,20 @@ impl RddDataType for String {
     type MapOperation = Box<dyn StringOperation>;
     type FilterPredicate = Box<dyn StringPredicate>;
     type SerializableOperation = SerializableStringOperation;
+
+    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self> {
+        match op {
+            SerializableStringOperation::Map(map_op) => data
+                .par_iter()
+                .map(|item| map_op.execute(item.clone()))
+                .collect(),
+            SerializableStringOperation::Filter(filter_op) => data
+                .par_iter()
+                .filter(|item| filter_op.test(item))
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// Map operation that doubles an integer

@@ -133,54 +133,11 @@ impl<T: RddDataType> DistributedRdd<T> {
                     num_partitions,
                 } => break (data, num_partitions),
                 Self::Map { parent, operation } => {
-                    // This part is tricky. We need to convert from T::MapOperation to T::SerializableOperation
-                    // We do this by downcasting the data type T.
-                    let op_any = &operation as &dyn std::any::Any;
-                    if let Some(i32_op) =
-                        op_any.downcast_ref::<Box<dyn crate::operations::I32Operation>>()
-                    {
-                        let serializable_op =
-                            crate::operations::SerializableI32Operation::Map(i32_op.clone());
-                        // We need to cast this to T::SerializableOperation
-                        let op_any = &serializable_op as &dyn std::any::Any;
-                        if let Some(typed_op) = op_any.downcast_ref::<T::SerializableOperation>() {
-                            operations.push(typed_op.clone());
-                        }
-                    } else if let Some(str_op) =
-                        op_any.downcast_ref::<Box<dyn crate::operations::StringOperation>>()
-                    {
-                        let serializable_op =
-                            crate::operations::SerializableStringOperation::Map(str_op.clone());
-                        let op_any = &serializable_op as &dyn std::any::Any;
-                        if let Some(typed_op) = op_any.downcast_ref::<T::SerializableOperation>() {
-                            operations.push(typed_op.clone());
-                        }
-                    }
+                    operations.push(operation.into());
                     current_rdd = *parent;
                 }
                 Self::Filter { parent, predicate } => {
-                    let pred_any = &predicate as &dyn std::any::Any;
-                    if let Some(i32_pred) =
-                        pred_any.downcast_ref::<Box<dyn crate::operations::I32Predicate>>()
-                    {
-                        let serializable_op =
-                            crate::operations::SerializableI32Operation::Filter(i32_pred.clone());
-                        let op_any = &serializable_op as &dyn std::any::Any;
-                        if let Some(typed_op) = op_any.downcast_ref::<T::SerializableOperation>() {
-                            operations.push(typed_op.clone());
-                        }
-                    } else if let Some(str_pred) =
-                        pred_any.downcast_ref::<Box<dyn crate::operations::StringPredicate>>()
-                    {
-                        let serializable_op =
-                            crate::operations::SerializableStringOperation::Filter(
-                                str_pred.clone(),
-                            );
-                        let op_any = &serializable_op as &dyn std::any::Any;
-                        if let Some(typed_op) = op_any.downcast_ref::<T::SerializableOperation>() {
-                            operations.push(typed_op.clone());
-                        }
-                    }
+                    operations.push(predicate.into());
                     current_rdd = *parent;
                 }
             }
@@ -203,12 +160,11 @@ impl<T: RddDataType> DistributedRdd<T> {
     pub fn num_partitions(&self) -> usize {
         self.partitions().len()
     }
-}
 
-// Specific implementations for i32
-impl DistributedRdd<i32> {
-    /// Compute the elements of this RDD for the given partition (for i32)
-    pub fn compute(&self, partition: &dyn Partition) -> crate::traits::RddResult<Vec<i32>> {
+    /// Compute the elements of this RDD for the given partition.
+    /// This method is for local execution (e.g., in tests or local mode fallback).
+    /// The primary distributed execution path is via `DistributedContext::run_distributed`.
+    pub fn compute(&self, partition: &dyn Partition) -> crate::traits::RddResult<Vec<T>> {
         match self {
             Self::Vec {
                 data,
@@ -232,23 +188,19 @@ impl DistributedRdd<i32> {
             }
             Self::Map { parent, operation } => {
                 let parent_data = parent.compute(partition)?;
-                Ok(parent_data
-                    .into_iter()
-                    .map(|item| operation.execute(item))
-                    .collect())
+                let serializable_op: T::SerializableOperation = (*operation).clone().into();
+                Ok(T::apply_operation(&serializable_op, parent_data))
             }
             Self::Filter { parent, predicate } => {
                 let parent_data = parent.compute(partition)?;
-                Ok(parent_data
-                    .into_iter()
-                    .filter(|item| predicate.test(item))
-                    .collect())
+                let serializable_op: T::SerializableOperation = (*predicate).clone().into();
+                Ok(T::apply_operation(&serializable_op, parent_data))
             }
         }
     }
 
-    /// Collect all elements from all partitions (for i32)
-    pub fn collect(&self) -> crate::traits::RddResult<Vec<i32>> {
+    /// Collect all elements of the RDD into a vector by executing locally.
+    pub fn collect(&self) -> crate::traits::RddResult<Vec<T>> {
         let partitions = self.partitions();
         let mut result = Vec::new();
 
@@ -328,5 +280,25 @@ mod tests {
         assert_eq!(*base_data, data);
         assert_eq!(num_partitions, 3);
         assert_eq!(operations.len(), 0);
+    }
+
+    #[test]
+    fn test_generic_compute_and_collect() {
+        // Test the new generic compute and collect methods
+        let data = vec![1, 2, 3, 4, 5];
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 2);
+
+        // Test collect
+        let collected = rdd.collect().unwrap();
+        assert_eq!(collected, data);
+
+        // Test with transformations
+        let transformed_rdd = rdd
+            .map(Box::new(DoubleOperation))
+            .filter(Box::new(GreaterThanPredicate { threshold: 5 }));
+
+        let result = transformed_rdd.collect().unwrap();
+        let expected: Vec<i32> = data.iter().map(|x| x * 2).filter(|&x| x > 5).collect();
+        assert_eq!(result, expected);
     }
 }
