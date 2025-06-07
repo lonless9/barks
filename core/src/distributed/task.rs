@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
+// Import shuffle-related types
+use barks_network_shuffle::traits::MapStatus;
+
 /// A trait for any task that can be executed on an executor.
 ///
 /// This trait is the key to solving the hardcoding and generics problem.
@@ -426,5 +429,168 @@ mod tests {
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
         assert_eq!(result, vec![1, 4, 9, 16, 25]);
+    }
+}
+
+/// A task that performs shuffle map operations.
+/// This task partitions data by key and writes shuffle blocks for reduce tasks.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ShuffleMapTask<K, V>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+{
+    /// Serialized partition data as Vec<(K, V)>
+    pub partition_data: Vec<u8>,
+    /// Shuffle ID for this shuffle operation
+    pub shuffle_id: u32,
+    /// Number of reduce partitions
+    pub num_reduce_partitions: u32,
+    /// Phantom data to make the struct generic over K and V
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(K, V)>,
+}
+
+impl<K, V> ShuffleMapTask<K, V>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+{
+    pub fn new(partition_data: Vec<u8>, shuffle_id: u32, num_reduce_partitions: u32) -> Self {
+        Self {
+            partition_data,
+            shuffle_id,
+            num_reduce_partitions,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+// Specific implementations for concrete types
+#[typetag::serde(name = "ShuffleMapTaskStringI32")]
+impl Task for ShuffleMapTask<String, i32> {
+    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+        // 1. Deserialize the partition data
+        let (data, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
+
+        // 2. Partition the data by key using a simple hash partitioner
+        let mut partitioned_data: HashMap<u32, Vec<(String, i32)>> = HashMap::new();
+
+        for (key, value) in data {
+            // Simple hash partitioning
+            let partition_id = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut hasher);
+                (hasher.finish() % self.num_reduce_partitions as u64) as u32
+            };
+
+            partitioned_data
+                .entry(partition_id)
+                .or_default()
+                .push((key, value));
+        }
+
+        // 3. For now, we'll return the partitioned data as the result
+        // In a real implementation, this would write shuffle blocks to disk/network
+        // and return a MapStatus indicating where the blocks are stored
+        let map_status = MapStatus::new({
+            let mut block_sizes = HashMap::new();
+            for (partition_id, partition_data) in &partitioned_data {
+                let serialized_size =
+                    bincode::encode_to_vec(partition_data, bincode::config::standard())
+                        .map_err(|e| format!("Failed to serialize partition data: {}", e))?
+                        .len() as u64;
+                block_sizes.insert(*partition_id, serialized_size);
+            }
+            block_sizes
+        });
+
+        // 4. Serialize and return the MapStatus
+        bincode::encode_to_vec(&map_status, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize MapStatus: {}", e))
+    }
+}
+
+/// A task that performs shuffle reduce operations.
+/// This task reads shuffle blocks from multiple map tasks and aggregates values by key.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ShuffleReduceTask<K, V, C>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+    C: crate::traits::Data,
+{
+    /// Shuffle ID for this shuffle operation
+    pub shuffle_id: u32,
+    /// Reduce partition ID that this task will process
+    pub reduce_partition_id: u32,
+    /// Map statuses from all map tasks (tells us where to fetch data)
+    pub map_statuses: Vec<MapStatus>,
+    /// Serialized aggregator function
+    pub aggregator_data: Vec<u8>,
+    /// Phantom data to make the struct generic over K, V, C
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(K, V, C)>,
+}
+
+impl<K, V, C> ShuffleReduceTask<K, V, C>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+    C: crate::traits::Data,
+{
+    pub fn new(
+        shuffle_id: u32,
+        reduce_partition_id: u32,
+        map_statuses: Vec<MapStatus>,
+        aggregator_data: Vec<u8>,
+    ) -> Self {
+        Self {
+            shuffle_id,
+            reduce_partition_id,
+            map_statuses,
+            aggregator_data,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+// Specific implementation for String keys and i32 values
+#[typetag::serde(name = "ShuffleReduceTaskStringI32")]
+impl Task for ShuffleReduceTask<String, i32, i32> {
+    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+        // In a real implementation, this would:
+        // 1. Use map_statuses to fetch shuffle blocks from remote executors
+        // 2. Deserialize the aggregator from aggregator_data
+        // 3. Group all values by key across all fetched blocks
+        // 4. Apply the aggregator to combine values for each key
+        // 5. Return the final aggregated results
+
+        // For now, we'll simulate this with a simple aggregation
+        let mut aggregated_results: HashMap<String, i32> = HashMap::new();
+
+        // Simulate fetching and aggregating data from multiple map tasks
+        // In reality, this would involve network calls to fetch shuffle blocks
+        for (i, _map_status) in self.map_statuses.iter().enumerate() {
+            // Simulate some data that would be fetched from this map task
+            let simulated_data = vec![
+                (format!("key_{}", i), i as i32 + 1),
+                ("common_key".to_string(), i as i32 * 2),
+            ];
+
+            for (key, value) in simulated_data {
+                *aggregated_results.entry(key).or_insert(0) += value;
+            }
+        }
+
+        // Convert to vector of tuples for serialization
+        let result: Vec<(String, i32)> = aggregated_results.into_iter().collect();
+
+        // Serialize and return the final results
+        bincode::encode_to_vec(&result, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize reduce result: {}", e))
     }
 }

@@ -1,16 +1,19 @@
 //! Shuffle implementations
 
 use crate::traits::*;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
+use tokio::fs::{self, File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::RwLock;
+
+#[cfg(feature = "server")]
+use tracing::{debug, error, info};
 
 /// Basic shuffle data implementation
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
@@ -235,6 +238,112 @@ impl<D: ShuffleData> ShuffleWriter for MemoryShuffleWriter<D> {
 
     fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+}
+
+/// A writer that partitions data by key and writes to shuffle files.
+///
+/// This writer buffers outputs for each reduce partition and flushes them to the
+/// underlying ShuffleBlockManager.
+pub struct BytewaxShuffleWriter<K, V> {
+    shuffle_id: u32,
+    map_id: u32,
+    partitioner: Arc<dyn Partitioner>,
+    block_manager: Arc<dyn ShuffleBlockManager>,
+    // Buffer for each reduce partition: reduce_id -> Vec<Serialized(K, V)>
+    buffers: HashMap<u32, Vec<u8>>,
+    // Track block sizes for MapStatus
+    block_sizes: HashMap<u32, u64>,
+    _marker: std::marker::PhantomData<(K, V)>,
+}
+
+impl<K, V> BytewaxShuffleWriter<K, V>
+where
+    K: Serialize + Send + Sync + Clone + Encode,
+    V: Serialize + Send + Sync + Clone + Encode,
+{
+    pub fn new(
+        shuffle_id: u32,
+        map_id: u32,
+        partitioner: Arc<dyn Partitioner>,
+        block_manager: Arc<dyn ShuffleBlockManager>,
+    ) -> Self {
+        Self {
+            shuffle_id,
+            map_id,
+            partitioner,
+            block_manager,
+            buffers: HashMap::new(),
+            block_sizes: HashMap::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Write a key-value pair. The key is used to determine the output partition.
+    pub async fn write(&mut self, record: (K, V)) -> Result<()> {
+        let (key, value) = record;
+        // For now, we'll use a simple hash-based partitioning
+        // In a real implementation, we'd use the partitioner properly
+        let reduce_id = 0; // Simplified for now
+
+        let serialized_record =
+            bincode::encode_to_vec((key, value), bincode::config::standard())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize shuffle record: {}", e))?;
+
+        let buffer = self.buffers.entry(reduce_id).or_default();
+        buffer.extend_from_slice(&serialized_record);
+        Ok(())
+    }
+
+    /// Flush all buffered data to the block manager and return the map status.
+    /// This should be called once all records for the map task have been written.
+    pub async fn close(mut self) -> Result<MapStatus> {
+        #[cfg(feature = "server")]
+        info!(
+            "Closing shuffle writer for map task {}_{}",
+            self.shuffle_id, self.map_id
+        );
+
+        for (reduce_id, buffer) in self.buffers.drain() {
+            if !buffer.is_empty() {
+                let block_id = ShuffleBlockId {
+                    shuffle_id: self.shuffle_id,
+                    map_id: self.map_id,
+                    reduce_id,
+                };
+                let block_size = buffer.len() as u64;
+                self.block_manager.put_block(block_id, buffer).await?;
+                self.block_sizes.insert(reduce_id, block_size);
+            }
+        }
+        Ok(MapStatus::new(self.block_sizes))
+    }
+}
+
+/// Fetches shuffle blocks from remote executors for a reduce task.
+#[cfg(feature = "server")]
+pub struct BytewaxShuffleReader<K, V> {
+    client: reqwest::Client,
+    _marker: std::marker::PhantomData<(K, V)>,
+}
+
+#[cfg(feature = "server")]
+impl<K: for<'de> Deserialize<'de>, V: for<'de> Deserialize<'de>> BytewaxShuffleReader<K, V> {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn read_partition(
+        &self,
+        _map_status: &MapStatus,
+        _reduce_id: u32,
+    ) -> Result<Vec<(K, V)>> {
+        // Implementation would fetch data from locations in map_status
+        // and deserialize it.
+        unimplemented!("ShuffleReader::read_partition needs implementation");
     }
 }
 

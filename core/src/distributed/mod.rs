@@ -5,11 +5,13 @@
 
 pub mod driver;
 pub mod executor;
+pub mod stage;
 pub mod task;
 pub mod types;
 
 pub use driver::*;
 pub use executor::*;
+pub use stage::*;
 pub use task::*;
 pub use types::*;
 

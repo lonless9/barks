@@ -8,6 +8,7 @@ pub mod distributed;
 pub mod operations;
 pub mod rdd;
 pub mod scheduler;
+pub mod shuffle;
 pub mod traits;
 
 pub use context::*;

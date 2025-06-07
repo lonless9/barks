@@ -23,6 +23,7 @@ message RegisterExecutorRequest {
     uint64 memory_mb = 5;
     map<string, string> attributes = 6;
     uint32 max_concurrent_tasks = 7;
+    uint32 shuffle_port = 8;
 }
 
 // Response to executor registration

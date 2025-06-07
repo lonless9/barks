@@ -446,6 +446,7 @@ impl Executor {
                         memory_mb: self.service.executor_info.memory_mb,
                         max_concurrent_tasks: self.service.executor_info.max_concurrent_tasks,
                         attributes: self.service.executor_info.attributes.clone(),
+                        shuffle_port: (self.service.executor_info.port + 1000) as u32, // Use port + 1000 for shuffle service
                     };
 
                     match client.register_executor(request).await {

@@ -23,7 +23,9 @@ typetag.workspace = true
 async-trait.workspace = true
 dyn-clone = "1.0"
 num_cpus.workspace = true
+barks-network-shuffle = { path = "../common/network-shuffle", features = ["server"] }
 barks-utils = { path = "../common/utils" }
+reqwest.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

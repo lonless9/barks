@@ -1,7 +1,8 @@
 //! Base RDD implementations
 //!
-//! This module contains the fundamental RDD types for Phase 0 implementation.
-//! Uses a simplified concrete approach for single-threaded execution.
+//! This module contains the fundamental RDD types.
+// Import traits for the new RDD implementations
+use crate::traits::{Data, Dependency, Rdd, RddBase};
 
 use crate::traits::{BasicPartition, Partition, RddError, RddResult};
 use serde::{Deserialize, Serialize};
@@ -247,3 +248,113 @@ where
         self.partitions().len()
     }
 }
+
+/// The most basic RDD, created from an in-memory collection.
+#[derive(Clone, Debug)]
+pub struct VecRdd<T: Data> {
+    data: Arc<Vec<T>>,
+    num_partitions: usize,
+    id: usize,
+}
+
+impl<T: Data> VecRdd<T> {
+    pub fn new(id: usize, data: Vec<T>, num_partitions: usize) -> Self {
+        let num_partitions = if num_partitions == 0 {
+            1
+        } else {
+            num_partitions
+        };
+        Self {
+            id,
+            data: Arc::new(data),
+            num_partitions,
+        }
+    }
+}
+
+impl<T: Data> RddBase for VecRdd<T> {
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.num_partitions
+    }
+
+    fn dependencies(&self) -> Vec<Dependency> {
+        vec![]
+    }
+}
+
+impl<T: Data> Rdd<T> for VecRdd<T> {
+    fn compute(&self, partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = T>>> {
+        let partition_index = partition.index();
+        if partition_index >= self.num_partitions {
+            return Err(RddError::InvalidPartition(partition_index));
+        }
+
+        let data_len = self.data.len();
+        let partition_size = (data_len + self.num_partitions - 1) / self.num_partitions;
+        let start = partition_index * partition_size;
+        let end = std::cmp::min(start + partition_size, data_len);
+
+        let data_slice = if start >= data_len {
+            Vec::new()
+        } else {
+            self.data[start..end].to_vec()
+        };
+
+        Ok(Box::new(data_slice.into_iter()))
+    }
+}
+
+/// An extension trait for RDDs of key-value pairs.
+pub trait PairRdd<K: Data, V: Data>: Rdd<(K, V)>
+where
+    Self: Sized,
+{
+    fn reduce_by_key(
+        self,
+        reduce_func: fn(V, V) -> V,
+        partitioner: Arc<dyn crate::shuffle::Partitioner>,
+    ) -> crate::rdd::ShuffledRdd<K, V, V> {
+        let aggregator = Arc::new(crate::shuffle::ReduceAggregator::new(reduce_func));
+        crate::rdd::ShuffledRdd::new(
+            0,
+            Arc::new(self) as Arc<dyn RddBase>,
+            aggregator,
+            partitioner,
+        )
+    }
+
+    fn group_by_key(
+        self,
+        partitioner: Arc<dyn crate::shuffle::Partitioner>,
+    ) -> crate::rdd::ShuffledRdd<K, V, Vec<V>> {
+        #[derive(Clone, Debug)]
+        struct GroupByAggregator<V: Data>(std::marker::PhantomData<V>);
+
+        impl<K: Data, V: Data> crate::shuffle::Aggregator<K, V, Vec<V>> for GroupByAggregator<V> {
+            fn create_combiner(&self, v: V) -> Vec<V> {
+                vec![v]
+            }
+            fn merge_value(&self, mut c: Vec<V>, v: V) -> Vec<V> {
+                c.push(v);
+                c
+            }
+            fn merge_combiners(&self, mut c1: Vec<V>, mut c2: Vec<V>) -> Vec<V> {
+                c1.append(&mut c2);
+                c1
+            }
+        }
+
+        crate::rdd::ShuffledRdd::new(
+            0,
+            Arc::new(self) as Arc<dyn RddBase>,
+            Arc::new(GroupByAggregator(std::marker::PhantomData)),
+            partitioner,
+        )
+    }
+}
+
+impl<K: Data, V: Data, R: Rdd<(K, V)>> PairRdd<K, V> for R {}

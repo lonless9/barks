@@ -116,3 +116,31 @@ pub struct ShuffleBlockId {
     pub map_id: u32,
     pub reduce_id: u32,
 }
+
+/// Trait for a partitioner, which defines how keys are mapped to reduce partitions.
+/// Note: We'll implement specific partitioners for concrete types rather than using generics
+/// to work around typetag limitations with generic traits.
+pub trait Partitioner: Send + Sync + std::fmt::Debug {
+    /// Get the number of partitions.
+    fn num_partitions(&self) -> u32;
+}
+
+/// The status of a completed map task, sent back to the driver.
+/// It contains the locations and sizes of the shuffle blocks written by the task.
+#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+pub struct MapStatus {
+    // For now, location is implicit (the executor that ran the task).
+    // A full implementation would have a `BlockManagerId`.
+    // The map contains reduce_id -> block_size.
+    block_sizes: HashMap<u32, u64>,
+}
+
+impl MapStatus {
+    pub fn new(block_sizes: HashMap<u32, u64>) -> Self {
+        Self { block_sizes }
+    }
+
+    pub fn get_block_sizes(&self) -> &HashMap<u32, u64> {
+        &self.block_sizes
+    }
+}
