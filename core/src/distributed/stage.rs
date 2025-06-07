@@ -190,10 +190,22 @@ impl StageManager {
                 ..
             } => {
                 // Create a single reduce task for this partition
-                let task = ShuffleReduceTask::<String, i32, i32>::new(
+                // Convert map_statuses to map_output_locations (placeholder implementation)
+                let map_output_locations: Vec<(String, u32)> = map_statuses
+                    .iter()
+                    .enumerate()
+                    .map(|(map_id, _)| ("localhost:8001".to_string(), map_id as u32))
+                    .collect();
+
+                let task = ShuffleReduceTask::<
+                    String,
+                    i32,
+                    i32,
+                    crate::shuffle::ReduceAggregator<i32>,
+                >::new(
                     *shuffle_id,
                     *reduce_partition_id,
-                    map_statuses.clone(),
+                    map_output_locations,
                     Vec::new(), // Placeholder aggregator data
                 );
 

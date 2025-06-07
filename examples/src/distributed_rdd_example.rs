@@ -111,7 +111,7 @@ async fn run_rdd_computations() -> Result<()> {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let rdd = context.parallelize_distributed(data.clone(), 3);
 
-    match context.run_distributed(rdd).await {
+    match context.run_distributed_simple(rdd).await {
         Ok(result) => {
             info!("Collected result: {:?}", result);
             // Note: Order might be different due to distributed execution
@@ -129,7 +129,7 @@ async fn run_rdd_computations() -> Result<()> {
     let mapped_rdd = rdd.map(Box::new(DoubleOperation));
 
     // Use the new run_distributed method for true distributed execution
-    match context.run_distributed(mapped_rdd).await {
+    match context.run_distributed_simple(mapped_rdd).await {
         Ok(result) => {
             info!("Mapped result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().map(|x| x * 2).collect();
@@ -150,7 +150,7 @@ async fn run_rdd_computations() -> Result<()> {
     let rdd = context.parallelize_distributed(data.clone(), 2);
     let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
 
-    match context.run_distributed(filtered_rdd).await {
+    match context.run_distributed_simple(filtered_rdd).await {
         Ok(result) => {
             info!("Filtered result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().filter(|&x| x % 2 == 0).cloned().collect();
@@ -175,7 +175,7 @@ async fn run_rdd_computations() -> Result<()> {
 
     // This will analyze the lineage, create ChainedTask<i32> with the full operation chain,
     // and send them to executors for distributed execution!
-    match context.run_distributed(chained_rdd).await {
+    match context.run_distributed_simple(chained_rdd).await {
         Ok(result) => {
             info!("Chained result (distributed): {:?}", result);
             let expected: Vec<i32> = data
@@ -204,7 +204,7 @@ async fn run_rdd_computations() -> Result<()> {
 
     // This demonstrates the full end-to-end distributed computation flow
     // as described in the TODO document
-    match context.run_distributed(complex_rdd).await {
+    match context.run_distributed_simple(complex_rdd).await {
         Ok(result) => {
             info!("Complex chained result (distributed): {:?}", result);
             let expected: Vec<i32> = data.iter().map(|x| x * 2).filter(|&x| x > 20).collect();

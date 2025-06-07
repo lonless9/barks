@@ -8,12 +8,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "server")]
-use tracing::{debug, error, info};
+use tracing::{debug, info};
+
+#[cfg(feature = "server")]
+use futures;
 
 /// Basic shuffle data implementation
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
@@ -328,7 +331,11 @@ pub struct BytewaxShuffleReader<K, V> {
 }
 
 #[cfg(feature = "server")]
-impl<K: for<'de> Deserialize<'de>, V: for<'de> Deserialize<'de>> BytewaxShuffleReader<K, V> {
+impl<K, V> BytewaxShuffleReader<K, V>
+where
+    K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
+    V: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
+{
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -336,14 +343,56 @@ impl<K: for<'de> Deserialize<'de>, V: for<'de> Deserialize<'de>> BytewaxShuffleR
         }
     }
 
+    /// Fetches and deserializes all shuffle blocks for a given reduce partition from multiple executors.
+    ///
+    /// # Arguments
+    /// * `shuffle_id` - The ID of the shuffle operation.
+    /// * `reduce_id` - The ID of the reduce partition to fetch.
+    /// * `map_output_locations` - A slice containing `(executor_address, map_id)` for each map task.
     pub async fn read_partition(
         &self,
-        _map_status: &MapStatus,
-        _reduce_id: u32,
-    ) -> Result<Vec<(K, V)>> {
-        // Implementation would fetch data from locations in map_status
-        // and deserialize it.
-        unimplemented!("ShuffleReader::read_partition needs implementation");
+        shuffle_id: u32,
+        reduce_id: u32,
+        map_output_locations: &[(String, u32)],
+    ) -> Result<Vec<Vec<(K, V)>>> {
+        let mut futures = Vec::new();
+
+        for (executor_addr, map_id) in map_output_locations {
+            let url = format!(
+                "http://{}/shuffle/{}/{}/{}",
+                executor_addr, shuffle_id, map_id, reduce_id
+            );
+            let client = self.client.clone();
+            debug!("Fetching shuffle block from {}", url);
+
+            futures.push(tokio::spawn(async move {
+                let resp = client.get(&url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(anyhow!(
+                        "Failed to fetch shuffle block from {}: {}",
+                        url,
+                        resp.status()
+                    ));
+                }
+                let block_bytes = resp.bytes().await?;
+                let records: Vec<(K, V)> =
+                    bincode::decode_from_slice(&block_bytes, bincode::config::standard())
+                        .map_err(|e| {
+                            anyhow!("Failed to deserialize shuffle block from {}: {}", url, e)
+                        })?
+                        .0;
+                Ok::<_, anyhow::Error>(records)
+            }));
+        }
+
+        let results = futures::future::try_join_all(futures)
+            .await
+            .map_err(|e| anyhow!("Error joining shuffle fetch futures: {}", e))?;
+
+        results
+            .into_iter()
+            .map(|res| res.map_err(|e| anyhow!("A shuffle fetch task failed: {}", e)))
+            .collect()
     }
 }
 

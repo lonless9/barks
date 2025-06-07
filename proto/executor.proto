@@ -17,6 +17,9 @@ service ExecutorService {
 
     // Shutdown the executor
     rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+
+    // Request to clean up shuffle files for a specific shuffle ID
+    rpc CleanupShuffle(CleanupShuffleRequest) returns (CleanupShuffleResponse);
 }
 
 // Launch task request
@@ -68,6 +71,17 @@ message ShutdownRequest {
 
 // Shutdown response
 message ShutdownResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Cleanup shuffle request
+message CleanupShuffleRequest {
+    uint32 shuffle_id = 1;
+}
+
+// Cleanup shuffle response
+message CleanupShuffleResponse {
     bool success = 1;
     string message = 2;
 }

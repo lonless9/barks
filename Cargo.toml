@@ -69,6 +69,9 @@ reqwest = "0.12"
 # async traits
 async-trait = "0.1"
 
+# futures utilities
+futures = "0.3"
+
 # UUID generation
 uuid = { version = "1.0", features = ["v4"] }
 

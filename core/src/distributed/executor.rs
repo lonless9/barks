@@ -375,6 +375,29 @@ impl ExecutorService for ExecutorServiceImpl {
 
         Ok(Response::new(response))
     }
+
+    async fn cleanup_shuffle(
+        &self,
+        request: Request<super::proto::executor::CleanupShuffleRequest>,
+    ) -> Result<Response<super::proto::executor::CleanupShuffleResponse>, Status> {
+        let req = request.into_inner();
+        let shuffle_id = req.shuffle_id;
+
+        info!("Received request to clean up shuffle {}", shuffle_id);
+
+        // For now, we'll just return success since we don't have access to the shuffle block manager here
+        // In a real implementation, we would need to pass the block manager to the executor service
+        // or implement a cleanup mechanism through the executor
+        Ok(Response::new(
+            super::proto::executor::CleanupShuffleResponse {
+                success: true,
+                message: format!(
+                    "Shuffle {} cleanup requested (placeholder implementation).",
+                    shuffle_id
+                ),
+            },
+        ))
+    }
 }
 
 impl ExecutorServiceImpl {

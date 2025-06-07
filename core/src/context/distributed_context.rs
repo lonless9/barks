@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -28,6 +29,8 @@ pub struct DistributedContext {
     executor: Option<Arc<Mutex<Executor>>>,
     /// Execution mode
     mode: ExecutionMode,
+    /// Unique shuffle ID generator
+    next_shuffle_id: Arc<AtomicUsize>,
     /// Configuration
     config: DistributedConfig,
 }
@@ -111,6 +114,7 @@ impl DistributedContext {
             driver: Some(driver),
             executor: None,
             mode: ExecutionMode::Driver,
+            next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             config,
         }
     }
@@ -144,6 +148,7 @@ impl DistributedContext {
             driver: None,
             executor: Some(executor),
             mode: ExecutionMode::Executor,
+            next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             config,
         }
     }
@@ -155,6 +160,7 @@ impl DistributedContext {
             driver: None,
             executor: None,
             mode: ExecutionMode::Local,
+            next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             config: DistributedConfig::default(),
         }
     }
@@ -167,6 +173,27 @@ impl DistributedContext {
     /// Get the execution mode
     pub fn mode(&self) -> &ExecutionMode {
         &self.mode
+    }
+
+    fn new_shuffle_id(&self) -> usize {
+        self.next_shuffle_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Convenience method to run distributed computation without requiring Arc wrapping
+    pub async fn run_distributed_simple<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    where
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
+    {
+        // Create an Arc wrapper and delegate to the main run_distributed method
+        let arc_self = Arc::new(DistributedContext {
+            app_name: self.app_name.clone(),
+            driver: self.driver.clone(),
+            executor: self.executor.clone(),
+            mode: self.mode.clone(),
+            next_shuffle_id: self.next_shuffle_id.clone(),
+            config: self.config.clone(),
+        });
+        arc_self.run_distributed(rdd).await
     }
 
     /// Start the context (driver or executor service)
@@ -299,44 +326,134 @@ impl DistributedContext {
         }
     }
 
-    /// Run a distributed RDD computation and collect results
-    pub async fn run_distributed<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    /// The main entry point for running a job on the cluster.
+    /// This method analyzes the RDD dependency graph and executes it in stages.
+    pub async fn run_distributed<T>(self: Arc<Self>, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
         match &self.mode {
-            ExecutionMode::Driver => self.run_distributed_rdd(rdd).await,
-            ExecutionMode::Local => {
-                // Fallback to local execution
-                unimplemented!(
-                    "Local mode for generic DistributedRdd is not implemented yet. Use `run_distributed_generic` in Driver mode."
-                );
+            ExecutionMode::Driver => {
+                if self.driver.is_none() {
+                    return Err(crate::traits::RddError::ContextError(
+                        "Driver not initialized.".to_string(),
+                    ));
+                }
+                if self.driver.as_ref().unwrap().executor_count().await == 0 {
+                    warn!("No executors available. Falling back to local computation.");
+                    return Ok(rdd.collect()?);
+                }
+
+                // For now, we handle a simple case: the final RDD is either a standard RDD or a ShuffledRdd.
+                // A full DAG scheduler would handle arbitrary stage graphs.
+                if let Some(shuffle_dep) = rdd.shuffle_dependency() {
+                    // It's a shuffle operation, run as Map-Reduce stages.
+                    info!("Detected ShuffleDependency. Running as a two-stage job.");
+                    self.run_shuffle_job(shuffle_dep).await
+                } else {
+                    // No shuffle, run as a single ResultStage.
+                    info!("No ShuffleDependency detected. Running as a single stage job.");
+                    self.run_result_stage(rdd).await
+                }
             }
-            ExecutionMode::Executor => {
-                // Executors don't run RDDs directly, they execute tasks
-                Err(crate::traits::RddError::ContextError(
-                    "Executors cannot run RDDs directly".to_string(),
-                ))
+            _ => Err(crate::traits::RddError::ContextError(
+                "run_distributed can only be called in Driver mode.".to_string(),
+            )),
+        }
+    }
+
+    /// Executes a single-stage job that doesn't involve a shuffle.
+    async fn run_result_stage<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    where
+        T: crate::operations::RddDataType,
+    {
+        let (base_data, num_partitions, operations) = rdd.analyze_lineage();
+        info!(
+            "RDD lineage analyzed: {} operations found.",
+            operations.len()
+        );
+
+        let data_slice = base_data.as_ref();
+        let num_items = data_slice.len();
+        let effective_num_partitions = std::cmp::min(num_partitions, num_items.max(1));
+        let partition_size = (num_items + effective_num_partitions - 1) / effective_num_partitions;
+
+        let mut result_futures = Vec::new();
+
+        for i in 0..effective_num_partitions {
+            let start = i * partition_size;
+            let end = std::cmp::min(start + partition_size, num_items);
+            if start >= end {
+                continue;
+            }
+
+            let chunk = data_slice[start..end].to_vec();
+            let serialized_partition_data =
+                bincode::encode_to_vec(&chunk, bincode::config::standard())
+                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
+
+            let task = T::create_chained_task(serialized_partition_data, operations.clone())?;
+            let task_id = format!("result-task-{}", i);
+
+            let future = self
+                .driver
+                .as_ref()
+                .unwrap()
+                .submit_task(task_id, "result-stage".to_string(), i, task, None)
+                .await
+                .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?;
+            result_futures.push(future);
+        }
+
+        let mut collected_results = Vec::new();
+        for future in result_futures {
+            match future.await {
+                Ok(crate::distributed::driver::TaskResult::Success(bytes)) => {
+                    let (partition_result, _): (Vec<T>, _) =
+                        bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
+                            |e| crate::traits::RddError::SerializationError(e.to_string()),
+                        )?;
+                    collected_results.extend(partition_result);
+                }
+                Ok(crate::distributed::driver::TaskResult::Failure(err)) => {
+                    return Err(crate::traits::RddError::ComputationError(err))
+                }
+                Err(e) => {
+                    return Err(crate::traits::RddError::ContextError(format!(
+                        "Driver communication failed: {}",
+                        e
+                    )))
+                }
             }
         }
+        Ok(collected_results)
+    }
+
+    /// Executes a two-stage shuffle job.
+    async fn run_shuffle_job<T: 'static>(
+        &self,
+        _shuffle_dep: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> RddResult<Vec<T>>
+    where
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
+    {
+        unimplemented!("Shuffle job execution is not yet implemented.");
+        // The logic will be:
+        // 1. Downcast shuffle_dep to its concrete type, e.g., ShuffleDependency<K, V, C>.
+        // 2. Get the parent RDD from the dependency.
+        // 3. Run the parent RDD as a ShuffleMapStage, creating ShuffleMapTasks.
+        // 4. Collect MapStatus results.
+        // 5. Build MapOutputLocations (map_id -> executor_address).
+        // 6. Create ShuffleReduceTasks for the ReduceStage, passing the locations and aggregator.
+        // 7. Run the reduce tasks and collect final results.
     }
 
     /// Run RDD computation in local mode
     async fn run_local<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
     where
-        T: Send
-            + Sync
-            + Clone
-            + Serialize
-            + for<'de> Deserialize<'de>
-            + Debug
-            + 'static
-            + bincode::Encode
-            + bincode::Decode<()>,
+        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
     {
         debug!("Running RDD computation in local mode");
-
-        // Use the existing collect implementation
         rdd.collect()
     }
 

@@ -169,7 +169,7 @@ async fn test_distributed_execution() -> Result<()> {
     let start = Instant::now();
     let rdd = context.parallelize_distributed(data.clone(), 3);
 
-    match context.run_distributed(rdd).await {
+    match context.run_distributed_simple(rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(
@@ -188,7 +188,7 @@ async fn test_distributed_execution() -> Result<()> {
     let start = Instant::now();
     let rdd = context.parallelize_distributed(data.clone(), 5);
 
-    match context.run_distributed(rdd).await {
+    match context.run_distributed_simple(rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(
@@ -210,7 +210,7 @@ async fn test_distributed_execution() -> Result<()> {
         .map(Box::new(DoubleOperation))
         .filter(Box::new(GreaterThanPredicate { threshold: 50 }));
 
-    match context.run_distributed(transformed_rdd).await {
+    match context.run_distributed_simple(transformed_rdd).await {
         Ok(result) => {
             let duration = start.elapsed();
             info!(

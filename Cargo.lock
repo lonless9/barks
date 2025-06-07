@@ -255,6 +255,7 @@ dependencies = [
  "axum",
  "barks-network-common",
  "bincode",
+ "futures",
  "hyper",
  "reqwest",
  "serde",

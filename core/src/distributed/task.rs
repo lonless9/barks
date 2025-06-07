@@ -541,80 +541,103 @@ impl Task for ShuffleMapTask<String, i32> {
 /// A task that performs shuffle reduce operations.
 /// This task reads shuffle blocks from multiple map tasks and aggregates values by key.
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ShuffleReduceTask<K, V, C>
+pub struct ShuffleReduceTask<K, V, C, A>
 where
     K: crate::traits::Data,
     V: crate::traits::Data,
     C: crate::traits::Data,
+    A: crate::shuffle::Aggregator<K, V, C>,
 {
     /// Shuffle ID for this shuffle operation
     pub shuffle_id: u32,
     /// Reduce partition ID that this task will process
     pub reduce_partition_id: u32,
-    /// Map statuses from all map tasks (tells us where to fetch data)
-    pub map_statuses: Vec<MapStatus>,
+    /// Locations of map task outputs: a list of (executor_address, map_id)
+    /// The executor address should be in "host:shuffle_port" format.
+    pub map_output_locations: Vec<(String, u32)>,
     /// Serialized aggregator function
     pub aggregator_data: Vec<u8>,
-    /// Phantom data to make the struct generic over K, V, C
+    /// Phantom data to make the struct generic over K, V, C, A
     #[serde(skip)]
-    _marker: std::marker::PhantomData<(K, V, C)>,
+    _marker: std::marker::PhantomData<(K, V, C, A)>,
 }
 
-impl<K, V, C> ShuffleReduceTask<K, V, C>
+impl<K, V, C, A> ShuffleReduceTask<K, V, C, A>
 where
     K: crate::traits::Data,
     V: crate::traits::Data,
     C: crate::traits::Data,
+    A: crate::shuffle::Aggregator<K, V, C>,
 {
     pub fn new(
         shuffle_id: u32,
         reduce_partition_id: u32,
-        map_statuses: Vec<MapStatus>,
+        map_output_locations: Vec<(String, u32)>,
         aggregator_data: Vec<u8>,
     ) -> Self {
         Self {
             shuffle_id,
             reduce_partition_id,
-            map_statuses,
+            map_output_locations,
             aggregator_data,
             _marker: std::marker::PhantomData,
         }
     }
 }
 
-// Specific implementation for String keys and i32 values
 #[typetag::serde(name = "ShuffleReduceTaskStringI32")]
-impl Task for ShuffleReduceTask<String, i32, i32> {
+impl Task for ShuffleReduceTask<String, i32, i32, crate::shuffle::ReduceAggregator<i32>> {
     fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
         // In a real implementation, this would:
-        // 1. Use map_statuses to fetch shuffle blocks from remote executors
+        // 1. Use map_output_locations to fetch shuffle blocks from remote executors
         // 2. Deserialize the aggregator from aggregator_data
         // 3. Group all values by key across all fetched blocks
         // 4. Apply the aggregator to combine values for each key
         // 5. Return the final aggregated results
 
-        // For now, we'll simulate this with a simple aggregation
-        let mut aggregated_results: HashMap<String, i32> = HashMap::new();
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
 
-        // Simulate fetching and aggregating data from multiple map tasks
-        // In reality, this would involve network calls to fetch shuffle blocks
-        for (i, _map_status) in self.map_statuses.iter().enumerate() {
-            // Simulate some data that would be fetched from this map task
-            let simulated_data = vec![
-                (format!("key_{}", i), i as i32 + 1),
-                ("common_key".to_string(), i as i32 * 2),
-            ];
+        rt.block_on(async {
+            // 1. Create the aggregator (for now, we'll use a simple addition aggregator)
+            // TODO: Implement proper aggregator serialization/deserialization
+            let aggregator = crate::shuffle::ReduceAggregator::new(|a, b| a + b);
 
-            for (key, value) in simulated_data {
-                *aggregated_results.entry(key).or_insert(0) += value;
+            // 2. Create a shuffle reader
+            let reader = barks_network_shuffle::shuffle::BytewaxShuffleReader::<String, i32>::new();
+
+            // 3. Fetch all blocks for this reduce partition
+            let all_blocks = reader
+                .read_partition(
+                    self.shuffle_id,
+                    self.reduce_partition_id,
+                    &self.map_output_locations,
+                )
+                .await
+                .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
+
+            // 4. Aggregate the key-value pairs
+            let mut combiners = HashMap::<String, i32>::new();
+            for block in all_blocks {
+                for (key, value) in block {
+                    match combiners.get_mut(&key) {
+                        Some(combiner) => {
+                            *combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::merge_value(&aggregator, combiner.clone(), value);
+                        }
+                        None => {
+                            let new_combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::create_combiner(&aggregator, value);
+                            combiners.insert(key, new_combiner);
+                        }
+                    }
+                }
             }
-        }
 
-        // Convert to vector of tuples for serialization
-        let result: Vec<(String, i32)> = aggregated_results.into_iter().collect();
+            // 5. Convert to vector of tuples for serialization
+            let result: Vec<(String, i32)> = combiners.into_iter().collect();
 
-        // Serialize and return the final results
-        bincode::encode_to_vec(&result, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize reduce result: {}", e))
+            // 6. Serialize and return the final results
+            bincode::encode_to_vec(&result, bincode::config::standard())
+                .map_err(|e| format!("Failed to serialize reduce result: {}", e))
+        })
     }
 }

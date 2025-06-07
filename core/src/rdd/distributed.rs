@@ -161,6 +161,14 @@ impl<T: RddDataType> DistributedRdd<T> {
         self.partitions().len()
     }
 
+    /// Check if this RDD has a shuffle dependency.
+    /// Returns Some(shuffle_dependency) if it does, None otherwise.
+    /// For now, this always returns None since the current DistributedRdd doesn't support shuffle operations.
+    pub fn shuffle_dependency(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // TODO: Implement shuffle dependency detection when ShuffledRdd is added
+        None
+    }
+
     /// Compute the elements of this RDD for the given partition.
     /// This method is for local execution (e.g., in tests or local mode fallback).
     /// The primary distributed execution path is via `DistributedContext::run_distributed`.
