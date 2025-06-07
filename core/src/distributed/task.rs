@@ -29,11 +29,10 @@ use tracing::{debug, info, warn};
 /// This combination provides the flexibility of JSON for the trait object and the performance of
 /// bincode for the bulk data.
 #[typetag::serde(tag = "type")]
-#[async_trait::async_trait]
 pub trait Task: Send + Sync {
     /// Executes the task logic on a partition's data and returns the result as serialized bytes.
     /// This method encapsulates the entire computation for a single partition.
-    async fn execute(&self, partition_index: usize) -> Result<Vec<u8>, anyhow::Error>;
+    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, anyhow::Error>;
 }
 
 /// A task that executes a chain of serializable operations on i32 data.
@@ -49,9 +48,8 @@ pub struct ChainedI32Task {
 }
 
 #[typetag::serde]
-#[async_trait::async_trait]
 impl Task for ChainedI32Task {
-    async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
         // 1. Deserialize the initial partition data.
         let (mut current_data, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
@@ -175,8 +173,7 @@ impl TaskRunner {
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
         let execution_start = Instant::now();
-        let result_bytes = tokio::runtime::Handle::current()
-            .block_on(async { task.execute(partition_index).await })?;
+        let result_bytes = task.execute(partition_index)?;
 
         metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
         metrics.result_size_bytes = result_bytes.len() as u64;
@@ -285,7 +282,7 @@ mod tests {
             operations,
         };
 
-        let result_bytes = task.execute(0).await.unwrap();
+        let result_bytes = task.execute(0).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -319,7 +316,7 @@ mod tests {
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
         // Execute the deserialized task
-        let result_bytes = deserialized_task.execute(0).await.unwrap();
+        let result_bytes = deserialized_task.execute(0).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -333,9 +330,8 @@ mod tests {
     }
 
     #[typetag::serde]
-    #[async_trait::async_trait]
     impl Task for CustomSquareTask {
-        async fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
+        fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, anyhow::Error> {
             let (data, _): (Vec<i32>, usize) =
                 bincode::decode_from_slice(&self.partition_data, bincode::config::standard())?;
             let result: Vec<i32> = data.iter().map(|x| x * x).collect();
@@ -364,7 +360,7 @@ mod tests {
         // Deserialize it
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
-        let result_bytes = deserialized_task.execute(0).await.unwrap();
+        let result_bytes = deserialized_task.execute(0).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
         assert_eq!(result, vec![1, 4, 9, 16, 25]);

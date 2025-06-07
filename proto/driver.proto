@@ -22,6 +22,7 @@ message RegisterExecutorRequest {
     uint32 cores = 4;
     uint64 memory_mb = 5;
     map<string, string> attributes = 6;
+    uint32 max_concurrent_tasks = 7;
 }
 
 // Response to executor registration

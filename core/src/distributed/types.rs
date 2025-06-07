@@ -24,6 +24,7 @@ pub struct ExecutorInfo {
     pub port: u16,
     pub cores: u32,
     pub memory_mb: u64,
+    pub max_concurrent_tasks: u32,
     pub attributes: HashMap<String, String>,
     pub start_time: u64,
 }
@@ -42,6 +43,7 @@ impl ExecutorInfo {
             port,
             cores,
             memory_mb,
+            max_concurrent_tasks: cores, // Default to number of cores
             attributes: HashMap::new(),
             start_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)

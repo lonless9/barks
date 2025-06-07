@@ -152,54 +152,69 @@ impl DriverServiceImpl {
 
     /// Schedule pending tasks to available executors
     pub async fn schedule_tasks(&self) -> Result<(), anyhow::Error> {
-        if self.task_scheduler.pending_task_count().await == 0 {
+        let pending_count = self.task_scheduler.pending_task_count().await;
+        if pending_count == 0 {
             return Ok(()); // Optimization: Do nothing if no tasks are pending
         }
-        let idle_executors = self.get_idle_executors().await;
+        let available_executors = self.find_available_executors().await;
 
-        for executor in idle_executors {
-            if let Some(pending_task) = self.task_scheduler.get_next_task().await {
-                info!(
-                    "Attempting to schedule task {} to executor {}",
-                    pending_task.task_id,
-                    executor.info.executor_id.clone()
-                );
+        for executor in available_executors {
+            // Check available slots for this executor.
+            let available_slots = executor
+                .info
+                .max_concurrent_tasks
+                .saturating_sub(executor.metrics.active_tasks);
 
-                let executor_id = executor.info.executor_id.clone();
-                let task_id = pending_task.task_id.clone();
-                let executor_clients = self.executor_clients.clone();
-                let task_scheduler_clone = self.task_scheduler.clone();
+            for _ in 0..available_slots {
+                if let Some(pending_task) = self.task_scheduler.get_next_task().await {
+                    info!(
+                        "Scheduling task {} to executor {}",
+                        pending_task.task_id,
+                        executor.info.executor_id.clone()
+                    );
 
-                // Launch task on executor
-                tokio::spawn(async move {
-                    if let Err(e) = Self::launch_task_on_executor(
-                        executor,
-                        pending_task.clone(),
-                        executor_clients,
-                    )
-                    .await
-                    {
-                        error!(
-                            "Failed to launch task {} on executor {}: {}",
-                            task_id, executor_id, e
-                        );
-                        // Re-queue the task if launch fails
-                        warn!("Re-queueing task {}", pending_task.task_id);
-                        task_scheduler_clone.submit_pending_task(pending_task).await;
-                    }
-                });
+                    let executor_clone = executor.clone();
+                    let executor_clients = self.executor_clients.clone();
+                    let task_scheduler_clone = self.task_scheduler.clone();
+
+                    // Launch task on executor in the background
+                    tokio::spawn(async move {
+                        if let Err(e) = Self::launch_task_on_executor(
+                            executor_clone.clone(),
+                            pending_task.clone(),
+                            executor_clients,
+                        )
+                        .await
+                        {
+                            error!(
+                                "Failed to launch task {} on executor {}: {}",
+                                pending_task.task_id, executor_clone.info.executor_id, e
+                            );
+                            // Re-queue the task if launch fails
+                            warn!("Re-queueing task {}", pending_task.task_id);
+                            task_scheduler_clone.submit_pending_task(pending_task).await;
+                        }
+                    });
+                } else {
+                    // No more pending tasks, break from inner loop
+                    break;
+                }
             }
         }
 
         Ok(())
     }
 
-    async fn get_idle_executors(&self) -> Vec<RegisteredExecutor> {
-        self.executors
-            .lock()
-            .await
+    /// Finds executors that have capacity to run more tasks.
+    /// It filters executors that are not failed and have fewer active tasks than their maximum capacity.
+    async fn find_available_executors(&self) -> Vec<RegisteredExecutor> {
+        let executors = self.executors.lock().await;
+        executors
             .values()
-            .filter(|e| e.status == ExecutorStatus::Idle || e.status == ExecutorStatus::Running)
+            .filter(|e| {
+                e.status != ExecutorStatus::Failed
+                    && e.metrics.active_tasks < e.info.max_concurrent_tasks
+            })
             .cloned()
             .collect()
     }
@@ -434,7 +449,7 @@ impl DriverService for DriverServiceImpl {
             req.executor_id, req.host, req.port
         );
 
-        let executor_info = ExecutorInfo::new(
+        let mut executor_info = ExecutorInfo::new(
             req.executor_id.clone(),
             req.host,
             req.port as u16,
@@ -442,6 +457,7 @@ impl DriverService for DriverServiceImpl {
             req.memory_mb,
         )
         .with_attributes(req.attributes);
+        executor_info.max_concurrent_tasks = req.max_concurrent_tasks;
 
         let registered_executor = RegisteredExecutor {
             info: executor_info.clone(),

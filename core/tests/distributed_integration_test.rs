@@ -41,7 +41,7 @@ async fn test_driver_executor_registration() {
         4096, // 4GB memory
     );
 
-    let mut executor = Executor::new(executor_info, 2);
+    let executor = Executor::new(executor_info, 2);
 
     // Register with driver
     let driver_url = format!("http://{}", driver_addr);
@@ -181,7 +181,7 @@ async fn test_multiple_executors() {
             2048, // 2GB memory
         );
 
-        let mut executor = Executor::new(executor_info, 2);
+        let executor = Executor::new(executor_info, 2);
 
         // Register with driver
         let driver_url = format!("http://{}", driver_addr);
@@ -225,10 +225,8 @@ fn test_task_serialization() {
 
     // We can't directly compare the tasks, but we can test that they work the same way
     // by executing them and comparing results
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let original_result = rt.block_on(async { task.execute(0).await.unwrap() });
-    let deserialized_result = rt.block_on(async { deserialized_task.execute(0).await.unwrap() });
+    let original_result = task.execute(0).unwrap();
+    let deserialized_result = deserialized_task.execute(0).unwrap();
 
     assert_eq!(original_result, deserialized_result);
 

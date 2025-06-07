@@ -19,7 +19,7 @@ async fn test_task_direct_execution() {
         partition_data: serialized_data,
         operations: vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
     };
-    let result = task.execute(0).await.unwrap();
+    let result = task.execute(0).unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
@@ -35,7 +35,7 @@ async fn test_task_direct_execution() {
         partition_data: serialized_data2,
         operations: vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
     };
-    let result = task.execute(0).await.unwrap();
+    let result = task.execute(0).unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
@@ -116,7 +116,7 @@ async fn test_task_serialization_deserialization() {
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 
     // Execute the deserialized task
-    let result = deserialized.execute(0).await.unwrap();
+    let result = deserialized.execute(0).unwrap();
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
         .0;
@@ -133,7 +133,7 @@ async fn test_task_serialization_deserialization() {
     let serialized = serde_json::to_vec(&task2).unwrap();
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 
-    let result = deserialized.execute(0).await.unwrap();
+    let result = deserialized.execute(0).unwrap();
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
         .0;

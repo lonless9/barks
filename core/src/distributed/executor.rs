@@ -377,7 +377,6 @@ impl ExecutorServiceImpl {
 #[derive(Clone)]
 pub struct Executor {
     service: Arc<ExecutorServiceImpl>,
-    driver_client: Arc<Mutex<Option<DriverServiceClient<tonic::transport::Channel>>>>,
     heartbeat_interval: Duration,
 }
 
@@ -388,11 +387,10 @@ impl Executor {
         let service = Arc::new(ExecutorServiceImpl::new(
             executor_info.clone(),
             max_concurrent_tasks,
-            driver_client.clone(),
+            driver_client,
         ));
 
         Self {
-            driver_client,
             service,
             heartbeat_interval: Duration::from_secs(10), // 10 second heartbeat interval
         }
@@ -400,7 +398,7 @@ impl Executor {
 
     /// Register with the driver
     pub async fn register_with_driver(
-        &mut self,
+        &self,
         driver_addr: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
         info!("Connecting to driver at: {}", driver_addr);
@@ -413,6 +411,7 @@ impl Executor {
             port: self.service.executor_info.port as u32,
             cores: self.service.executor_info.cores,
             memory_mb: self.service.executor_info.memory_mb,
+            max_concurrent_tasks: self.service.executor_info.max_concurrent_tasks,
             attributes: self.service.executor_info.attributes.clone(),
         };
 
@@ -421,7 +420,7 @@ impl Executor {
 
         if resp.success {
             info!("Successfully registered with driver: {}", resp.driver_id);
-            *self.driver_client.lock().await = Some(client);
+            *self.service.driver_client.lock().await = Some(client);
             Ok(())
         } else {
             Err(format!("Failed to register with driver: {}", resp.message).into())
@@ -436,7 +435,8 @@ impl Executor {
 
     /// Start heartbeat loop
     pub async fn start_heartbeat(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(client) = self.driver_client.lock().await.clone() {
+        let driver_client_clone = self.service.driver_client.lock().await.clone();
+        if let Some(client) = driver_client_clone {
             let executor_id = self.service.executor_info.executor_id.clone();
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);

@@ -117,7 +117,7 @@ impl DistributedContext {
         port: u16,
         config: DistributedConfig,
     ) -> Self {
-        let executor_info = ExecutorInfo::new(
+        let mut executor_info = ExecutorInfo::new(
             executor_id,
             host,
             port,
@@ -125,6 +125,7 @@ impl DistributedContext {
             config.executor_config.memory_mb,
         )
         .with_attributes(config.executor_config.attributes.clone());
+        executor_info.max_concurrent_tasks = config.executor_config.max_concurrent_tasks as u32;
 
         let executor = Arc::new(Mutex::new(Executor::new(
             executor_info,
@@ -195,7 +196,7 @@ impl DistributedContext {
     ) -> Result<(), Box<dyn std::error::Error>> {
         if let ExecutionMode::Executor = self.mode {
             if let Some(executor) = &self.executor {
-                let mut executor = executor.lock().await;
+                let executor = executor.lock().await;
                 executor.register_with_driver(driver_addr.clone()).await?;
                 executor.start_heartbeat().await?;
                 info!("Executor registered with driver and heartbeat started");
