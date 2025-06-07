@@ -33,13 +33,18 @@ To build the project, you'll need the Protocol Buffers compiler (`protoc`).
 ### Ubuntu/Debian
 ```sh
 sudo apt-get update && sudo apt-get install -y protobuf-compiler
-Markdown
-Build & Test
-# Build all modules
-cargo build --workspace
+```
 
-# Run all tests
+# Build & Test
+## Build all modules
+```sh
+cargo build --workspace
+```
+
+## Run all tests
+```sh
 cargo test --workspace
-Sh
-🤝 Contributing
+```
+
+# 🤝 Contributing
 This is a personal learning project. Feel free to explore the code, but please be aware of its experimental and incomplete nature.
