@@ -190,6 +190,77 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn test_memory_kv_store() {
+        let store = MemoryKVStore::<String, String>::new();
+
+        // Test put and get
+        store
+            .put("key1".to_string(), "value1".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(&"key1".to_string()).await.unwrap(),
+            Some("value1".to_string())
+        );
+        assert_eq!(store.get(&"non_existent".to_string()).await.unwrap(), None);
+
+        // Test size and contains_key
+        assert_eq!(store.size().await.unwrap(), 1);
+        assert!(store.contains_key(&"key1".to_string()).await.unwrap());
+        assert!(!store
+            .contains_key(&"non_existent".to_string())
+            .await
+            .unwrap());
+
+        // Test remove
+        assert_eq!(
+            store.remove(&"key1".to_string()).await.unwrap(),
+            Some("value1".to_string())
+        );
+        assert_eq!(store.size().await.unwrap(), 0);
+        assert!(!store.contains_key(&"key1".to_string()).await.unwrap());
+
+        // Test keys and clear
+        store
+            .put("key_a".to_string(), "val_a".to_string())
+            .await
+            .unwrap();
+        store
+            .put("key_b".to_string(), "val_b".to_string())
+            .await
+            .unwrap();
+        let mut keys = store.keys().await.unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["key_a".to_string(), "key_b".to_string()]);
+
+        store.clear().await.unwrap();
+        assert_eq!(store.size().await.unwrap(), 0);
+        assert!(store.keys().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_kv_store_empty_and_new() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.db");
+
+        // Test loading from a non-existent path
+        let store1 = FileKVStore::<String, i32>::new(&path).await.unwrap();
+        assert_eq!(store1.size().await.unwrap(), 0);
+        store1.put("one".to_string(), 1).await.unwrap();
+        store1.persist().await.unwrap();
+
+        // Test loading from an existing file
+        let store2 = FileKVStore::<String, i32>::new(&path).await.unwrap();
+        assert_eq!(store2.get(&"one".to_string()).await.unwrap(), Some(1));
+
+        // Test persisting an empty store and reloading
+        store2.clear().await.unwrap();
+        store2.persist().await.unwrap();
+        let store3 = FileKVStore::<String, i32>::new(&path).await.unwrap();
+        assert_eq!(store3.size().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn test_file_kv_store_persist_and_load() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");

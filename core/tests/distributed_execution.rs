@@ -164,9 +164,13 @@ async fn test_distributed_shuffle_reduce_by_key() {
     let partitioner = Arc::new(barks_core::shuffle::HashPartitioner::new(2));
     let reduced_rdd = rdd.reduce_by_key(|a, b| a + b, partitioner);
 
-    // For now, test the local execution since distributed shuffle is simplified
-    let result = reduced_rdd.collect().unwrap();
+    info!("Submitting ShuffledRdd (reduce_by_key) to the cluster for execution.");
+    let result = driver_context
+        .run(Arc::new(reduced_rdd))
+        .await
+        .expect("Distributed shuffle computation failed");
 
+    info!("Final collected result: {:?}", result);
     // Convert to HashMap for easier comparison
     let result_map: std::collections::HashMap<String, i32> = result.into_iter().collect();
     let mut expected_map = std::collections::HashMap::new();
@@ -176,8 +180,151 @@ async fn test_distributed_shuffle_reduce_by_key() {
 
     assert_eq!(result_map, expected_map);
 
+    assert_eq!(result_map.len(), expected_map.len());
+
+    for (key, val) in expected_map {
+        assert_eq!(result_map.get(&key), Some(&val));
+    }
+
     // Shutdown cluster
     for handle in handles {
         handle.abort();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn test_executor_failure_and_task_retry() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    info!("--- test_executor_failure_and_task_retry ---");
+
+    // Configure a short liveness timeout for faster test execution
+    let mut config = DistributedConfig::default();
+    config.executor_liveness_timeout_secs = 5;
+    config.task_max_retries = 1;
+
+    // Setup cluster
+    let (driver_context, handles) =
+        setup_mini_cluster_with_config(50001, &[50002, 50003], config).await;
+
+    assert_eq!(
+        driver_context
+            .get_driver_stats()
+            .await
+            .unwrap()
+            .executor_count,
+        2
+    );
+
+    // Create a job with many partitions to ensure tasks are spread
+    let data: Vec<i32> = (1..=40).collect();
+    let rdd = driver_context.parallelize_distributed(data, 10);
+
+    // A simple transformation, the key is to have many tasks
+    let transformed_rdd = rdd.map(Box::new(DoubleOperation));
+
+    // Submit the job but don't wait for it yet
+    let result_future = driver_context.run(Arc::new(transformed_rdd));
+
+    // Give tasks time to be scheduled and start running
+    sleep(Duration::from_millis(1000)).await;
+
+    // --- Simulate executor failure ---
+    info!("💥 Killing one executor task.");
+    // We kill the second executor (index 1 in handles, but we started at port 70002, so it is the first executor handle)
+    handles[1].abort();
+
+    // Now await the result. The driver should detect the failure,
+    // re-queue the tasks, and the other executor should finish the job.
+    let result = result_future
+        .await
+        .expect("Distributed computation should succeed despite failure");
+
+    info!("--- Computation finished after executor failure ---");
+
+    let mut expected_result: Vec<i32> = (1..=40).map(|x| x * 2).collect();
+
+    // Sort for comparison
+    let mut sorted_result = result;
+    sorted_result.sort();
+    expected_result.sort();
+
+    assert_eq!(
+        sorted_result, expected_result,
+        "Final result is incorrect after task retry."
+    );
+
+    info!("✅ Correct result received after re-scheduling failed tasks.");
+
+    // Shutdown remaining cluster
+    for handle in handles {
+        if !handle.is_finished() {
+            handle.abort();
+        }
+    }
+}
+
+/// Helper to set up a mini-cluster with a custom config.
+async fn setup_mini_cluster_with_config(
+    driver_port: u16,
+    executor_ports: &[u16],
+    config: DistributedConfig,
+) -> (Arc<DistributedContext>, Vec<tokio::task::JoinHandle<()>>) {
+    let driver_addr_str = format!("127.0.0.1:{}", driver_port);
+    let driver_addr: SocketAddr = driver_addr_str.parse().unwrap();
+
+    // Start Driver
+    let driver_context = Arc::new(DistributedContext::new_driver(
+        "barks-fault-tolerance-test".to_string(),
+        config.clone(),
+    ));
+
+    let driver_handle = tokio::spawn({
+        let context = Arc::clone(&driver_context);
+        async move {
+            if let Err(e) = context.start(driver_addr).await {
+                panic!("Driver failed to start: {}", e);
+            }
+        }
+    });
+
+    sleep(Duration::from_millis(200)).await;
+
+    let mut handles = vec![driver_handle];
+
+    // Start Executors
+    for (i, &port) in executor_ports.iter().enumerate() {
+        let executor_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+        let handle = tokio::spawn({
+            let config = config.clone();
+            let driver_http_addr = format!("http://{}", driver_addr_str);
+            async move {
+                let executor_context = DistributedContext::new_executor(
+                    "barks-app".to_string(),
+                    format!("executor-fault-{}", i),
+                    executor_addr.ip().to_string(),
+                    executor_addr.port(),
+                    config,
+                );
+                if let Err(e) = executor_context
+                    .register_with_driver(driver_http_addr)
+                    .await
+                {
+                    panic!("Executor failed to register: {}", e);
+                }
+                if let Err(e) = executor_context.start(executor_addr).await {
+                    panic!("Executor failed to start its server: {}", e);
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for executors to register
+    sleep(Duration::from_millis(500)).await;
+
+    (driver_context, handles)
 }

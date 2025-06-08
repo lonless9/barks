@@ -291,9 +291,161 @@ where
             if self.block_manager.contains_block(&block_id).await? {
                 let size = self.block_manager.get_block_size(&block_id).await?;
                 block_sizes.insert(reduce_id, size);
+            } else {
+                // Create an empty block for partitions with no data
+                let empty_data: Vec<(K, V)> = Vec::new();
+                let serialized =
+                    bincode::encode_to_vec(&empty_data, bincode::config::standard())
+                        .map_err(|e| anyhow!("Failed to serialize empty shuffle buffer: {}", e))?;
+
+                self.block_manager
+                    .put_block(block_id.clone(), serialized)
+                    .await?;
+                let size = self.block_manager.get_block_size(&block_id).await?;
+                block_sizes.insert(reduce_id, size);
             }
         }
 
         Ok(crate::traits::MapStatus::new(block_sizes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shuffle::MemoryShuffleManager;
+    use crate::traits::{Partitioner, ShuffleBlockId};
+    use std::hash::{Hash, Hasher};
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+    struct SimplePartitioner {
+        num_partitions: u32,
+    }
+
+    impl Partitioner<String> for SimplePartitioner {
+        fn num_partitions(&self) -> u32 {
+            self.num_partitions
+        }
+        fn get_partition(&self, key: &String) -> u32 {
+            // Simple hash partitioner for testing
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut s);
+            (s.finish() % self.num_partitions as u64) as u32
+        }
+    }
+
+    #[tokio::test]
+    async fn test_optimized_shuffle_block_manager_spill() {
+        let dir = tempdir().unwrap();
+        let config = ShuffleConfig {
+            spill_threshold: 100, // Small threshold to force spilling
+            ..Default::default()
+        };
+        let manager = OptimizedShuffleBlockManager::new(dir.path(), config).unwrap();
+
+        let block_id1 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 0,
+        };
+        let data1 = vec![0; 50]; // Under threshold
+        manager
+            .put_block(block_id1.clone(), data1.clone())
+            .await
+            .unwrap();
+
+        // This one should not be spilled
+        assert!(!manager.spill_files.read().await.contains_key(&block_id1));
+        assert_eq!(*manager.memory_usage.read().await, 50);
+
+        let block_id2 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 1,
+        };
+        let data2 = vec![1; 60]; // This will push usage over the threshold
+        manager
+            .put_block(block_id2.clone(), data2.clone())
+            .await
+            .unwrap();
+
+        // This one should be spilled
+        assert!(manager.spill_files.read().await.contains_key(&block_id2));
+        // Memory usage should not have increased because it was spilled
+        assert_eq!(*manager.memory_usage.read().await, 50);
+
+        // Test getting both blocks
+        let retrieved1 = manager.get_block(&block_id1).await.unwrap();
+        assert_eq!(retrieved1, data1);
+
+        let retrieved2 = manager.get_block(&block_id2).await.unwrap();
+        assert_eq!(retrieved2, data2);
+
+        // Test removing spilled block
+        manager.remove_block(&block_id2).await.unwrap();
+        assert!(!manager.contains_block(&block_id2).await.unwrap());
+        assert!(!manager.spill_files.read().await.contains_key(&block_id2));
+    }
+
+    #[tokio::test]
+    async fn test_hash_shuffle_writer() {
+        let block_manager = Arc::new(MemoryShuffleManager::new());
+        let partitioner = Arc::new(SimplePartitioner { num_partitions: 2 });
+
+        let mut writer = HashShuffleWriter::<String, i32>::new(
+            1, // shuffle_id
+            0, // map_id
+            partitioner,
+            block_manager.clone(),
+            ShuffleConfig::default(),
+        );
+
+        // Write some records
+        writer
+            .write(("key_for_part_0".to_string(), 100))
+            .await
+            .unwrap(); // partition 0
+        writer
+            .write(("key_for_part_1".to_string(), 200))
+            .await
+            .unwrap(); // partition 1
+        writer
+            .write(("another_for_part_0".to_string(), 101))
+            .await
+            .unwrap(); // partition 0
+
+        // Close the writer to flush buffers and get MapStatus
+        let map_status = writer.close().await.unwrap();
+
+        // Verify MapStatus
+        let block_sizes = map_status.get_block_sizes();
+        assert_eq!(block_sizes.len(), 2);
+        assert!(block_sizes.get(&0).unwrap() > &0);
+        assert!(block_sizes.get(&1).unwrap() > &0);
+
+        // Verify the contents of the blocks
+        let block_id0 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 0,
+        };
+        let block0_data = block_manager.get_block(&block_id0).await.unwrap();
+        let (records0, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&block0_data, bincode::config::standard()).unwrap();
+        assert_eq!(records0.len(), 2);
+        assert!(records0.contains(&("key_for_part_0".to_string(), 100)));
+        assert!(records0.contains(&("another_for_part_0".to_string(), 101)));
+
+        let block_id1 = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 1,
+        };
+        let block1_data = block_manager.get_block(&block_id1).await.unwrap();
+        let (records1, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&block1_data, bincode::config::standard()).unwrap();
+        assert_eq!(records1, vec![("key_for_part_1".to_string(), 200)]);
     }
 }
