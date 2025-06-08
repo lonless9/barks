@@ -54,7 +54,7 @@ pub mod vec_utils {
             return vec![vec];
         }
 
-        let chunk_size = (vec.len() + num_partitions - 1) / num_partitions;
+        let chunk_size = vec.len().div_ceil(num_partitions);
         let mut result = Vec::with_capacity(num_partitions);
 
         while !vec.is_empty() {

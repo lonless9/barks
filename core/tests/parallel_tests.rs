@@ -151,7 +151,7 @@ fn test_complex_parallel_pipeline() {
 
 #[test]
 fn test_parallel_reduce_with_strings() {
-    let data = vec!["hello", "world", "from", "rust"];
+    let data = ["hello", "world", "from", "rust"];
     let rdd = SimpleRdd::from_vec_with_partitions(data.iter().map(|s| s.to_string()).collect(), 2);
 
     // Test automatic parallel reduce with string concatenation (multiple partitions)

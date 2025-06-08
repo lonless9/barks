@@ -331,6 +331,16 @@ pub struct BytewaxShuffleReader<K, V> {
 }
 
 #[cfg(feature = "server")]
+impl<K, V> Default for BytewaxShuffleReader<K, V>
+where
+    K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
+    V: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
+ {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> BytewaxShuffleReader<K, V>
 where
     K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
