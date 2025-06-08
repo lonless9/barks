@@ -5,12 +5,13 @@
 
 use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
-use crate::distributed::stage::DAGScheduler;
+use crate::distributed::stage::{DAGScheduler, Stage};
 use crate::distributed::types::*;
 use crate::rdd::DistributedRdd;
-use crate::traits::RddResult;
+use crate::traits::{RddError, RddResult};
+use barks_network_shuffle::traits::MapStatus;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -66,6 +67,8 @@ pub struct DistributedConfig {
     pub executor_liveness_timeout_secs: u64,
     /// Maximum number of times a task will be retried on failure
     pub task_max_retries: u32,
+    /// Maximum number of times a stage will be retried on failure.
+    pub stage_max_retries: u32,
     /// Configuration for shuffle behavior
     pub shuffle_config: barks_network_shuffle::optimizations::ShuffleConfig,
 }
@@ -93,6 +96,7 @@ impl Default for DistributedConfig {
             executor_heartbeat_interval_secs: 10, // 10 seconds
             executor_liveness_timeout_secs: 30,   // 30 seconds
             task_max_retries: 3,
+            stage_max_retries: 3,
             shuffle_config: Default::default(),
         }
     }
@@ -335,93 +339,190 @@ impl DistributedContext {
                     unsafe { std::mem::transmute(rdd.clone()) };
                 let final_stage = self.dag_scheduler.new_result_stage(rdd_any, rdd, &job_id);
 
-                // 2. Get all stages in submission order (parents first).
-                // This is a simplified topological sort.
-                let mut stages_to_submit = Vec::new();
-                let mut queue = std::collections::VecDeque::new();
-                let mut visited_stages = std::collections::HashSet::new();
+                // 2. Initialize job execution state.
+                let mut all_stages: HashMap<usize, Arc<Stage>> = HashMap::new();
+                let mut waiting: HashSet<usize> = HashSet::new();
+                let mut running: HashSet<usize> = HashSet::new();
+                let mut completed_map_outputs: HashMap<usize, Vec<MapStatus>> = HashMap::new();
+                let mut failed_attempts: HashMap<usize, u32> = HashMap::new(); // stage_id -> attempt_count
 
-                queue.push_back(Arc::new(final_stage.stage.clone()));
-                visited_stages.insert(final_stage.stage.id);
-
-                while let Some(stage) = queue.pop_front() {
-                    stages_to_submit.push(stage.clone()); // Add to front for reverse order
-                    for parent in &stage.parents {
-                        if !visited_stages.contains(&parent.id) {
-                            queue.push_back(parent.clone());
-                            visited_stages.insert(parent.id);
+                // Helper to traverse the stage graph and populate `all_stages`.
+                let mut q = VecDeque::new();
+                q.push_back(Arc::new(final_stage.stage.clone()));
+                all_stages.insert(final_stage.stage.id, Arc::new(final_stage.stage.clone()));
+                while let Some(s) = q.pop_front() {
+                    for parent in &s.parents {
+                        if all_stages.insert(parent.id, parent.clone()).is_none() {
+                            q.push_back(parent.clone());
                         }
                     }
                 }
-                stages_to_submit.reverse(); // Now in correct submission order
 
-                // 3. Execute stages one by one.
-                // A real implementation would manage stage dependencies and results more robustly.
-                // For now, we assume stages return their results to the driver.
-                let mut stage_results: HashMap<usize, Vec<crate::distributed::TaskResult>> =
-                    HashMap::new();
+                waiting.extend(all_stages.keys());
 
-                for stage in stages_to_submit {
-                    info!("Submitting stage {}", stage.id);
-                    let stage_id_str = format!("stage-{}", stage.id);
+                // 3. Main execution loop.
+                while !completed_map_outputs.contains_key(&final_stage.stage.id) {
+                    let mut ready_stages = Vec::new();
+                    for stage_id in &waiting {
+                        let stage = all_stages.get(stage_id).unwrap();
+                        let parents_completed = stage
+                            .parents
+                            .iter()
+                            .all(|p| completed_map_outputs.contains_key(&p.id));
+                        if parents_completed {
+                            ready_stages.push(stage.clone());
+                        }
+                    }
 
-                    // This downcast is necessary because the Stage holds an `Any`.
-                    // The RDD's own `create_tasks` method encapsulates the type-specific logic.
-                    let rdd_base = stage
-                        .rdd
-                        .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
-                        .expect("RDD is not of expected type for creating tasks")
-                        .clone();
+                    if ready_stages.is_empty() && running.is_empty() && !waiting.is_empty() {
+                        return Err(RddError::ContextError(format!(
+                            "Job {} failed. Deadlocked with waiting stages: {:?}. Failed stages: {:?}",
+                            job_id, waiting, failed_attempts
+                        )));
+                    }
 
-                    let tasks = rdd_base.create_tasks(stage_id_str.clone()).map_err(|e| {
-                        crate::traits::RddError::ContextError(format!(
-                            "Failed to create tasks for stage {}: {}",
-                            stage.id, e
-                        ))
-                    })?;
+                    for stage in ready_stages {
+                        waiting.remove(&stage.id);
+                        running.insert(stage.id);
 
-                    let mut futures = Vec::new();
-                    for (i, task) in tasks.into_iter().enumerate() {
-                        let task_id = format!("task-{}-{}", stage.id, i);
-                        let future = self
-                            .driver
-                            .as_ref()
+                        info!(
+                            "Submitting stage {} (attempt {})",
+                            stage.id,
+                            stage.attempt_id.load(Ordering::SeqCst)
+                        );
+                        let stage_id_str = format!("stage-{}-{}", stage.id, stage.new_attempt_id());
+
+                        // Create tasks for the stage. This needs parent results for shuffle dependencies.
+                        // Note: The downcast here assumes the RDD item type is consistent, a limitation of the current design.
+                        let tasks = stage
+                            .rdd
+                            .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
                             .unwrap()
-                            .submit_task(task_id, stage_id_str.clone(), i, task, None)
-                            .await
-                            .unwrap();
-                        futures.push(future);
+                            .create_tasks(stage_id_str.clone())?;
+
+                        let mut futures = Vec::new();
+                        for (i, task) in tasks.into_iter().enumerate() {
+                            let task_id = format!("task-{}-{}", stage_id_str, i);
+                            let future = driver
+                                .submit_task(task_id, stage_id_str.clone(), i, task, None)
+                                .await
+                                .map_err(|e| {
+                                    RddError::ContextError(format!("Failed to submit task: {}", e))
+                                })?;
+                            futures.push(future);
+                        }
+
+                        let mut task_results = Vec::new();
+                        let mut stage_failed = false;
+                        for future in futures {
+                            match future.await {
+                                Ok((result, _)) => {
+                                    if let crate::distributed::driver::TaskResult::Failure(err) =
+                                        &result
+                                    {
+                                        error!(
+                                            "Task failed for stage {}, aborting stage. Reason: {}",
+                                            stage.id, err
+                                        );
+                                        stage_failed = true;
+                                        break;
+                                    }
+                                    task_results.push(result);
+                                }
+                                Err(e) => {
+                                    error!("Task future failed for stage {}: {}", stage.id, e);
+                                    stage_failed = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        running.remove(&stage.id);
+
+                        if stage_failed {
+                            let attempt = failed_attempts.entry(stage.id).or_insert(0);
+                            *attempt += 1;
+                            if *attempt > self.config.stage_max_retries {
+                                error!(
+                                    "Stage {} failed permanently after {} retries. Aborting job {}.",
+                                    stage.id, *attempt, job_id
+                                );
+                                return Err(RddError::ComputationError(format!(
+                                    "Stage {} failed permanently",
+                                    stage.id
+                                )));
+                            }
+                            warn!(
+                                "Stage {} failed, attempt {}. Re-submitting parent stages.",
+                                stage.id, *attempt
+                            );
+                            // Re-submit this stage and its parents to the waiting pool
+                            let mut q = VecDeque::new();
+                            q.push_back(stage.id);
+                            while let Some(s_id) = q.pop_front() {
+                                waiting.insert(s_id);
+                                completed_map_outputs.remove(&s_id); // Invalidate parent results
+                                if let Some(s) = all_stages.get(&s_id) {
+                                    for p in &s.parents {
+                                        q.push_back(p.id);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Stage succeeded. Process results.
+                            let is_final_stage = stage.id == final_stage.stage.id;
+                            if is_final_stage {
+                                let collected_results = task_results
+                                    .iter()
+                                    .flat_map(|task_result| match task_result {
+                                        crate::distributed::driver::TaskResult::Success(bytes) => {
+                                            let (partition_result, _): (Vec<T>, _) =
+                                                bincode::decode_from_slice(
+                                                    bytes,
+                                                    bincode::config::standard(),
+                                                )
+                                                .unwrap();
+                                            partition_result
+                                        }
+                                        _ => vec![],
+                                    })
+                                    .collect();
+                                return Ok(collected_results);
+                            } else {
+                                // It's a ShuffleMapStage, collect MapStatus
+                                let map_statuses = task_results
+                                    .into_iter()
+                                    .map(|r| {
+                                        match r {
+                                            crate::distributed::driver::TaskResult::Success(
+                                                bytes,
+                                            ) => {
+                                                bincode::decode_from_slice(
+                                                    &bytes,
+                                                    bincode::config::standard(),
+                                                )
+                                                .unwrap()
+                                                .0
+                                            }
+                                            _ => unreachable!(), // Failures are handled above
+                                        }
+                                    })
+                                    .collect();
+                                completed_map_outputs.insert(stage.id, map_statuses);
+                            }
+                        }
                     }
 
-                    let mut results: Vec<crate::distributed::TaskResult> = Vec::new();
-                    for future in futures {
-                        let (result, _) = future.await.unwrap();
-                        // Stop the entire job on first task failure
-                        if let crate::distributed::driver::TaskResult::Failure(err) = &result {
-                            error!("Task failed, aborting job {}. Reason: {}", job_id, err);
-                            return Err(crate::traits::RddError::ComputationError(err.clone()));
-                        }
-                        results.push(result);
+                    // If we have no running stages and no ready stages, but are not done, wait.
+                    if running.is_empty() && !waiting.is_empty() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
-                    stage_results.insert(stage.id, results);
                 }
 
-                // 4. Get the final result from the last stage's output.
-                let final_stage_results = stage_results.get(&final_stage.stage.id).unwrap();
-                let collected_results = final_stage_results
-                    .iter()
-                    .flat_map(|task_result| match task_result {
-                        crate::distributed::driver::TaskResult::Success(bytes) => {
-                            let (partition_result, _): (Vec<T>, _) =
-                                bincode::decode_from_slice(bytes, bincode::config::standard())
-                                    .unwrap();
-                            partition_result
-                        }
-                        _ => vec![], // Failures are handled above
-                    })
-                    .collect();
-
-                Ok(collected_results)
+                // Should not be reached if logic is correct
+                Err(RddError::ContextError(
+                    "Job execution loop finished without completing the final stage.".to_string(),
+                ))
             }
             _ => Err(crate::traits::RddError::ContextError(
                 "run_distributed can only be called in Driver mode.".to_string(),

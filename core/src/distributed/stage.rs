@@ -9,7 +9,7 @@ use tracing::info;
 
 /// A stage of computation, containing a set of tasks that can be run in parallel.
 /// Stages are separated by shuffle boundaries.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Stage {
     pub id: usize,
     /// The RDD that this stage computes. Stored as `Any` to handle different RDD types.
@@ -17,6 +17,27 @@ pub struct Stage {
     pub num_partitions: usize,
     /// The stages that this stage depends on.
     pub parents: Vec<Arc<Stage>>,
+    pub job_id: String,
+    pub attempt_id: AtomicUsize,
+}
+
+impl Stage {
+    pub fn new_attempt_id(&self) -> usize {
+        self.attempt_id.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+impl Clone for Stage {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            rdd: self.rdd.clone(),
+            num_partitions: self.num_partitions,
+            parents: self.parents.clone(),
+            job_id: self.job_id.clone(),
+            attempt_id: AtomicUsize::new(self.attempt_id.load(Ordering::SeqCst)),
+        }
+    }
 }
 
 /// A final stage in a job that computes a result or action.
@@ -61,14 +82,16 @@ impl DAGScheduler {
             rdd_base.id(),
             job_id
         );
-        let mut rdd_to_stage: HashMap<usize, Arc<Stage>> = HashMap::new();
-        let parents = self.get_or_create_parent_stages(rdd_base.clone(), &mut rdd_to_stage);
+        let mut rdd_to_stage: HashMap<usize, Arc<ShuffleMapStage>> = HashMap::new();
+        let parents = self.get_or_create_parent_stages(rdd_base.clone(), job_id, &mut rdd_to_stage);
 
         let stage = Stage {
             id: self.new_stage_id(),
             rdd,
             num_partitions: rdd_base.num_partitions(),
             parents,
+            job_id: job_id.to_string(),
+            attempt_id: AtomicUsize::new(0),
         };
         ResultStage { stage }
     }
@@ -79,7 +102,8 @@ impl DAGScheduler {
     fn get_or_create_parent_stages<T>(
         &self,
         rdd_base: Arc<dyn RddBase<Item = T>>,
-        rdd_to_stage: &mut HashMap<usize, Arc<Stage>>,
+        job_id: &str,
+        rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
     ) -> Vec<Arc<Stage>>
     where
         T: crate::traits::Data,
@@ -90,7 +114,7 @@ impl DAGScheduler {
 
         while let Some(rdd) = waiting.pop_front() {
             if let Some(stage) = rdd_to_stage.get(&rdd.id()) {
-                parents.push(stage.clone());
+                parents.push(Arc::new(stage.stage.clone()));
             } else {
                 let mut shuffle_parents = Vec::new();
                 for dep in rdd.dependencies() {
@@ -104,10 +128,11 @@ impl DAGScheduler {
                         // Create a ShuffleMapStage for this parent.
                         let shuffle_map_stage = self.get_or_create_shuffle_map_stage(
                             parent_rdd_base,
+                            job_id,
                             shuffle_info,
                             rdd_to_stage,
                         );
-                        shuffle_parents.push(shuffle_map_stage);
+                        shuffle_parents.push(Arc::new(shuffle_map_stage.stage.clone()));
                     } else if let Dependency::Narrow(parent_rdd_any) = dep {
                         // Narrow dependency, so continue traversing up the same stage.
                         let parent_rdd_base = parent_rdd_any
@@ -129,31 +154,41 @@ impl DAGScheduler {
     fn get_or_create_shuffle_map_stage<T>(
         &self,
         parent_rdd_base: Arc<dyn RddBase<Item = T>>,
-        _shuffle_dep: ShuffleDependencyInfo,
-        rdd_to_stage: &mut HashMap<usize, Arc<Stage>>,
-    ) -> Arc<Stage>
+        job_id: &str,
+        shuffle_dep: ShuffleDependencyInfo,
+        rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
+    ) -> Arc<ShuffleMapStage>
     where
         T: crate::traits::Data,
     {
-        if let Some(stage) = rdd_to_stage.get(&parent_rdd_base.id()) {
-            return stage.clone();
+        if let Some(cached_stage) = rdd_to_stage.get(&parent_rdd_base.id()) {
+            return cached_stage.clone();
         }
 
-        let parent_stages = self.get_or_create_parent_stages(parent_rdd_base.clone(), rdd_to_stage);
-        let stage = Arc::new(Stage {
+        let parents =
+            self.get_or_create_parent_stages(parent_rdd_base.clone(), job_id, rdd_to_stage);
+
+        let stage = Stage {
             id: self.new_stage_id(),
             rdd: unsafe { std::mem::transmute(parent_rdd_base.clone()) },
             num_partitions: parent_rdd_base.num_partitions(),
-            parents: parent_stages,
+            parents,
+            job_id: job_id.to_string(),
+            attempt_id: AtomicUsize::new(0),
+        };
+
+        let shuffle_map_stage = Arc::new(ShuffleMapStage {
+            stage,
+            dependency: shuffle_dep,
         });
 
-        rdd_to_stage.insert(parent_rdd_base.id(), stage.clone());
+        rdd_to_stage.insert(parent_rdd_base.id(), shuffle_map_stage.clone());
         info!(
             "Created new ShuffleMapStage {} for RDD {}",
-            stage.id,
+            shuffle_map_stage.stage.id,
             parent_rdd_base.id()
         );
-        stage
+        shuffle_map_stage
     }
 
     fn new_stage_id(&self) -> usize {
