@@ -136,6 +136,14 @@ where
     fn id(&self) -> usize {
         self.id
     }
+
+    fn create_tasks(
+        &self,
+        _stage_id: crate::distributed::types::StageId,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // JoinedRdd task creation is not yet implemented
+        unimplemented!("JoinedRdd::create_tasks needs implementation")
+    }
 }
 
 impl<K: Data, V: Data, W: Data> JoinedRdd<K, V, W>
@@ -283,6 +291,14 @@ where
 
     fn id(&self) -> usize {
         self.id
+    }
+
+    fn create_tasks(
+        &self,
+        _stage_id: crate::distributed::types::StageId,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // CogroupedRdd task creation is not yet implemented
+        unimplemented!("CogroupedRdd::create_tasks needs implementation")
     }
 }
 

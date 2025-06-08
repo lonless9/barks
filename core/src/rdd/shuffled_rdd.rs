@@ -116,6 +116,21 @@ where
     fn id(&self) -> usize {
         self.id
     }
+
+    fn create_tasks(
+        &self,
+        _stage_id: crate::distributed::types::StageId,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // For ShuffledRdd, we need to create ShuffleReduceTask instances
+        // This is a placeholder implementation - in a real system, this would create
+        // reduce tasks that read shuffle data from map tasks
+
+        // For now, return an error indicating this needs to be implemented
+        Err(crate::traits::RddError::ContextError(
+            "ShuffledRdd task creation not yet implemented - requires shuffle reduce tasks"
+                .to_string(),
+        ))
+    }
 }
 
 impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C>

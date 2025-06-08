@@ -7,7 +7,7 @@ use crate::distributed::task::{ShuffleMapTask, ShuffleReduceTask, Task};
 use crate::distributed::types::StageId;
 use crate::traits::RddBase;
 use barks_network_shuffle::traits::MapStatus;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -252,6 +252,177 @@ impl StageManager {
 }
 
 impl Default for StageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// DAG Scheduler for managing RDD lineage and stage creation
+#[derive(Clone)]
+pub struct DAGScheduler {
+    /// Stage manager for tracking stage execution
+    stage_manager: StageManager,
+    /// Next stage ID generator
+    next_stage_id: Arc<std::sync::atomic::AtomicUsize>,
+    /// Next shuffle ID generator
+    next_shuffle_id: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DAGScheduler {
+    pub fn new() -> Self {
+        Self {
+            stage_manager: StageManager::new(),
+            next_stage_id: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            next_shuffle_id: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Submit a job for execution by analyzing RDD dependencies and creating stages
+    pub async fn submit_job<T>(&self, rdd: Arc<dyn RddBase<Item = T>>) -> Result<Vec<Stage>, String>
+    where
+        T: crate::traits::Data,
+    {
+        info!("Submitting job for RDD {}", rdd.id());
+
+        // Analyze the RDD dependency graph and create stages
+        let stages = self.create_stages_from_rdd(rdd).await?;
+
+        // Add stages to the stage manager with their dependencies
+        for (stage, dependencies) in stages.iter() {
+            self.stage_manager
+                .add_stage(stage.clone(), dependencies.clone())
+                .await;
+        }
+
+        Ok(stages.into_iter().map(|(stage, _)| stage).collect())
+    }
+
+    /// Create stages from an RDD by analyzing its dependencies
+    async fn create_stages_from_rdd<T>(
+        &self,
+        rdd: Arc<dyn RddBase<Item = T>>,
+    ) -> Result<Vec<(Stage, Vec<StageId>)>, String>
+    where
+        T: crate::traits::Data,
+    {
+        let mut stages = Vec::new();
+        let mut visited_rdds = HashSet::new();
+
+        // For now, we'll create a simplified stage creation logic
+        // In a full implementation, this would recursively traverse the RDD lineage
+        self.create_stages_recursive(rdd, &mut stages, &mut visited_rdds)
+            .await?;
+
+        Ok(stages)
+    }
+
+    /// Recursively create stages from RDD dependencies
+    async fn create_stages_recursive<T>(
+        &self,
+        rdd: Arc<dyn RddBase<Item = T>>,
+        _stages: &mut [(Stage, Vec<StageId>)],
+        visited_rdds: &mut HashSet<usize>,
+    ) -> Result<StageId, String>
+    where
+        T: crate::traits::Data,
+    {
+        let rdd_id = rdd.id();
+
+        // Avoid processing the same RDD multiple times
+        if visited_rdds.contains(&rdd_id) {
+            // Return a placeholder stage ID - in a real implementation,
+            // we would maintain a mapping from RDD ID to stage ID
+            return Ok(format!("stage_{}", rdd_id));
+        }
+
+        visited_rdds.insert(rdd_id);
+
+        let dependencies = rdd.dependencies();
+        let mut parent_stage_ids = Vec::new();
+
+        // Process parent RDDs first
+        for dep in &dependencies {
+            match dep {
+                crate::traits::Dependency::Narrow(_narrow_dep) => {
+                    // For narrow dependencies, we can include the parent in the same stage
+                    // This is a simplified implementation
+                }
+                crate::traits::Dependency::Shuffle(_shuffle_dep) => {
+                    // For shuffle dependencies, we need to create separate stages
+                    let shuffle_id = self
+                        .next_shuffle_id
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        as u32;
+
+                    // Create a shuffle map stage for the parent
+                    // For now, we'll create a placeholder stage since we can't safely cast types
+                    let map_stage_id = format!("shuffle_map_{}", shuffle_id);
+
+                    // This is a temporary implementation - in a real system, we would need
+                    // to handle generic types properly or use type erasure techniques
+                    warn!("Creating placeholder shuffle map stage - full implementation needed");
+
+                    // Skip creating the actual stage for now to avoid type issues
+                    // stages.push((map_stage, Vec::new()));
+                    parent_stage_ids.push(map_stage_id);
+                }
+            }
+        }
+
+        // Create a result stage for this RDD
+        let stage_id = format!(
+            "result_{}",
+            self.next_stage_id
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+
+        // For now, we'll skip creating the actual result stage due to type constraints
+        // In a real implementation, we would need a more sophisticated type system
+        // or use trait objects more carefully
+        warn!(
+            "Skipping result stage creation due to type constraints - full implementation needed"
+        );
+
+        // stages.push((result_stage, parent_stage_ids));
+
+        Ok(stage_id)
+    }
+
+    /// Get the next ready stage for execution
+    pub async fn get_next_ready_stage(&self) -> Option<Stage> {
+        self.stage_manager.get_next_ready_stage().await
+    }
+
+    /// Complete a stage with its results
+    pub async fn complete_stage(&self, stage_id: StageId, result: StageResult) {
+        self.stage_manager.complete_stage(stage_id, result).await;
+    }
+
+    /// Check if all stages are completed
+    pub async fn all_stages_completed(&self) -> bool {
+        self.stage_manager.all_stages_completed().await
+    }
+
+    /// Create tasks for a given stage using the new create_tasks method
+    pub async fn create_tasks_for_stage(
+        &self,
+        stage: &Stage,
+    ) -> Result<Vec<Box<dyn Task>>, String> {
+        match stage {
+            Stage::Result { rdd, .. } => {
+                // Use the new create_tasks method from RddBase
+                rdd.create_tasks(stage.stage_id().clone())
+                    .map_err(|e| format!("Failed to create tasks: {}", e))
+            }
+            _ => {
+                // For other stage types, fall back to the stage manager's implementation
+                Ok(self.stage_manager.create_tasks_for_stage(stage).await)
+            }
+        }
+    }
+}
+
+impl Default for DAGScheduler {
     fn default() -> Self {
         Self::new()
     }

@@ -86,6 +86,13 @@ pub trait RddBase: Send + Sync + Debug + Any {
             .map(|i| Arc::new(BasicPartition::new(i)) as Arc<dyn Partition>)
             .collect()
     }
+
+    /// Create tasks for a given stage. This method eliminates the need for downcasting
+    /// in the distributed scheduler by allowing each RDD type to define its own task creation logic.
+    fn create_tasks(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+    ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
 }
 
 /// A data type that can be used in an RDD.

@@ -117,6 +117,14 @@ where
     fn id(&self) -> usize {
         self.id
     }
+
+    fn create_tasks(
+        &self,
+        _stage_id: crate::distributed::types::StageId,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // SortedRdd task creation is not yet implemented
+        unimplemented!("SortedRdd::create_tasks needs implementation")
+    }
 }
 
 impl<K: Data, V: Data> SortedRdd<K, V>

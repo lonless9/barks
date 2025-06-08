@@ -5,6 +5,7 @@
 
 use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
+use crate::distributed::stage::DAGScheduler;
 use crate::distributed::types::*;
 use crate::rdd::DistributedRdd;
 use crate::traits::RddResult;
@@ -30,6 +31,9 @@ pub struct DistributedContext {
     mode: ExecutionMode,
     /// Unique shuffle ID generator
     next_shuffle_id: Arc<AtomicUsize>,
+    /// DAG scheduler for managing stages
+    #[allow(dead_code)] // Will be used in future implementations
+    dag_scheduler: Arc<DAGScheduler>,
     /// Configuration
     config: DistributedConfig,
 }
@@ -114,6 +118,7 @@ impl DistributedContext {
             executor: None,
             mode: ExecutionMode::Driver,
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
+            dag_scheduler: Arc::new(DAGScheduler::new()),
             config,
         }
     }
@@ -149,6 +154,7 @@ impl DistributedContext {
             executor: Some(executor),
             mode: ExecutionMode::Executor,
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
+            dag_scheduler: Arc::new(DAGScheduler::new()),
             config,
         }
     }
@@ -161,6 +167,7 @@ impl DistributedContext {
             executor: None,
             mode: ExecutionMode::Local,
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
+            dag_scheduler: Arc::new(DAGScheduler::new()),
             config: DistributedConfig::default(),
         }
     }
@@ -349,43 +356,17 @@ impl DistributedContext {
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
-        // HACK: Downcast to DistributedRdd to use its analyze_lineage method.
-        // A proper DAG scheduler would build the task chain differently.
-        let distributed_rdd = rdd
-            .as_any()
-            .downcast_ref::<DistributedRdd<T>>()
-            .ok_or_else(|| {
-                crate::traits::RddError::ContextError(
-                    "Result stage can only be run on a DistributedRdd (for now)".to_string(),
-                )
-            })?
-            .clone();
-        let (base_data, num_partitions, operations) = distributed_rdd.analyze_lineage();
-        info!(
-            "RDD lineage analyzed: {} operations found.",
-            operations.len()
-        );
+        // Use the new create_tasks method instead of downcasting
+        info!("Creating tasks for result stage using RddBase::create_tasks");
+        let tasks = rdd.create_tasks("result-stage".to_string()).map_err(|e| {
+            crate::traits::RddError::ContextError(format!("Failed to create tasks: {}", e))
+        })?;
 
-        let data_slice = base_data.as_ref();
-        let num_items = data_slice.len();
-        let effective_num_partitions = std::cmp::min(num_partitions, num_items.max(1));
-        let partition_size = num_items.div_ceil(effective_num_partitions);
+        info!("Created {} tasks for result stage", tasks.len());
 
+        // Submit each task to the driver
         let mut result_futures = Vec::new();
-
-        for i in 0..effective_num_partitions {
-            let start = i * partition_size;
-            let end = std::cmp::min(start + partition_size, num_items);
-            if start >= end {
-                continue;
-            }
-
-            let chunk = data_slice[start..end].to_vec();
-            let serialized_partition_data =
-                bincode::encode_to_vec(&chunk, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            let task = T::create_chained_task(serialized_partition_data, operations.clone())?;
+        for (i, task) in tasks.into_iter().enumerate() {
             let task_id = format!("result-task-{}", i);
 
             let future = self
@@ -398,6 +379,7 @@ impl DistributedContext {
             result_futures.push(future);
         }
 
+        // Collect results from all tasks
         let mut collected_results = Vec::new();
         for future in result_futures {
             match future

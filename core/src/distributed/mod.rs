@@ -9,6 +9,9 @@ pub mod stage;
 pub mod task;
 pub mod types;
 
+#[cfg(test)]
+mod end_to_end_shuffle_test;
+
 pub use driver::*;
 pub use executor::*;
 pub use stage::*;

@@ -23,6 +23,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
+/// Type alias for task completion notifiers to reduce complexity
+type TaskCompletionNotifiers =
+    Arc<Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>>;
+
 /// Result of a completed task.
 #[derive(Debug, Clone)]
 pub enum TaskResult {
@@ -50,7 +54,7 @@ pub struct DriverServiceImpl {
     /// Tasks that have been scheduled but not yet completed. Key is TaskId.
     active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
     /// Notifiers for waiting tasks
-    completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>>,
+    completion_notifiers: TaskCompletionNotifiers,
     /// Executor clients cache
     executor_clients:
         Arc<Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
@@ -278,7 +282,7 @@ impl DriverServiceImpl {
         mut task: PendingTask,
         max_retries: u32,
         scheduler: Arc<TaskScheduler>,
-        notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>>,
+        notifiers: TaskCompletionNotifiers,
         failure_reason: &str,
     ) {
         if task.retries < max_retries {
@@ -407,9 +411,7 @@ impl DriverServiceImpl {
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         task_scheduler: Arc<TaskScheduler>,
         active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
-        completion_notifiers: Arc<
-            Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>,
-        >,
+        completion_notifiers: TaskCompletionNotifiers,
         executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
@@ -502,9 +504,7 @@ impl DriverServiceImpl {
         executor_id: &ExecutorId,
         task_scheduler: Arc<TaskScheduler>,
         active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
-        completion_notifiers: Arc<
-            Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>,
-        >,
+        completion_notifiers: TaskCompletionNotifiers,
         max_retries: u32,
     ) {
         warn!(
