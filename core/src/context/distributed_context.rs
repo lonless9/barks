@@ -180,23 +180,6 @@ impl DistributedContext {
         self.next_shuffle_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Convenience method to run distributed computation without requiring Arc wrapping
-    pub async fn run_distributed_simple<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
-    where
-        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
-    {
-        // Create an Arc wrapper and delegate to the main run_distributed method
-        let arc_self = Arc::new(DistributedContext {
-            app_name: self.app_name.clone(),
-            driver: self.driver.clone(),
-            executor: self.executor.clone(),
-            mode: self.mode.clone(),
-            next_shuffle_id: self.next_shuffle_id.clone(),
-            config: self.config.clone(),
-        });
-        arc_self.run_distributed(rdd).await
-    }
-
     /// Start the context (driver or executor service)
     pub async fn start(&self, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
         match &self.mode {
@@ -275,7 +258,10 @@ impl DistributedContext {
     }
 
     /// Run an RDD computation and collect results
-    pub async fn run<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    pub async fn run<T>(
+        self: Arc<Self>,
+        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
+    ) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
@@ -283,13 +269,12 @@ impl DistributedContext {
             ExecutionMode::Driver => {
                 if let Some(driver) = &self.driver {
                     let executor_count = driver.executor_count().await;
-                    // DistributedRdd can be executed in distributed mode
                     if executor_count > 0 {
                         // Run in distributed mode using the driver
-                        Arc::new(self).run_distributed_simple(rdd).await
+                        self.run_distributed(rdd).await
                     } else {
                         // No executors available, fall back to local execution
-                        warn!("No executors available. Running DistributedRdd job locally on the driver.");
+                        warn!("No executors available. Running RDD job locally on the driver.");
                         self.run_local(rdd).await
                     }
                 } else {
@@ -313,7 +298,10 @@ impl DistributedContext {
 
     /// The main entry point for running a job on the cluster.
     /// This method analyzes the RDD dependency graph and executes it in stages.
-    pub async fn run_distributed<T>(self: Arc<Self>, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    pub async fn run_distributed<T>(
+        self: Arc<Self>,
+        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
+    ) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
@@ -325,18 +313,24 @@ impl DistributedContext {
                     ));
                 }
                 if self.driver.as_ref().unwrap().executor_count().await == 0 {
-                    warn!("No executors available. Falling back to local computation.");
-                    return rdd.collect();
+                    warn!("No executors available. Running job locally on the driver.");
+                    return self.run_local(rdd).await;
                 }
 
-                // For now, we handle a simple case: the final RDD is either a standard RDD or a ShuffledRdd.
-                // A full DAG scheduler would handle arbitrary stage graphs.
-                if let Some(shuffle_dep) = rdd.shuffle_dependency() {
+                // Simplified DAG logic: Check dependencies of the final RDD.
+                let deps = rdd.dependencies();
+                if deps
+                    .iter()
+                    .any(|d| matches!(d, crate::traits::Dependency::Shuffle(_)))
+                {
                     // It's a shuffle operation, run as Map-Reduce stages.
-                    info!("Detected ShuffleDependency. Running as a two-stage job.");
-                    self.run_shuffle_job(shuffle_dep).await
+                    info!("Detected ShuffleDependency. Running shuffle job.");
+                    self.run_shuffle_job(rdd).await
                 } else {
                     // No shuffle, run as a single ResultStage.
+                    // This part now needs to handle the Arc<dyn RddBase>
+                    // We can try to downcast it back to DistributedRdd for the existing logic to work.
+                    // This is a temporary hack before a full DAGScheduler is in place.
                     info!("No ShuffleDependency detected. Running as a single stage job.");
                     self.run_result_stage(rdd).await
                 }
@@ -348,11 +342,25 @@ impl DistributedContext {
     }
 
     /// Executes a single-stage job that doesn't involve a shuffle.
-    async fn run_result_stage<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    async fn run_result_stage<T>(
+        &self,
+        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
+    ) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
-        let (base_data, num_partitions, operations) = rdd.analyze_lineage();
+        // HACK: Downcast to DistributedRdd to use its analyze_lineage method.
+        // A proper DAG scheduler would build the task chain differently.
+        let distributed_rdd = rdd
+            .as_any()
+            .downcast_ref::<DistributedRdd<T>>()
+            .ok_or_else(|| {
+                crate::traits::RddError::ContextError(
+                    "Result stage can only be run on a DistributedRdd (for now)".to_string(),
+                )
+            })?
+            .clone();
+        let (base_data, num_partitions, operations) = distributed_rdd.analyze_lineage();
         info!(
             "RDD lineage analyzed: {} operations found.",
             operations.len()
@@ -417,17 +425,17 @@ impl DistributedContext {
     /// Executes a two-stage shuffle job.
     async fn run_shuffle_job<T>(
         &self,
-        _shuffle_dep: Arc<dyn std::any::Any + Send + Sync>,
+        _rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
     ) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()> + 'static,
     {
         // For now, we'll implement a simplified shuffle execution
         // In a full implementation, this would:
-        // 1. Downcast shuffle_dep to its concrete type
-        // 2. Create and execute shuffle map stage
-        // 3. Create and execute shuffle reduce stage
-        // 4. Return aggregated results
+        // 1. Analyze the RDD dependencies to build stages (e.g., ShuffleMapStage, ResultStage)
+        // 2. Execute the ShuffleMapStage, collecting MapStatus results.
+        // 3. Use MapStatus results to execute the final ResultStage (containing ShuffleReduceTasks).
+        // 4. Return the aggregated results from the ResultStage.
 
         warn!("Shuffle job execution is simplified - using local fallback");
 
@@ -436,12 +444,19 @@ impl DistributedContext {
     }
 
     /// Run RDD computation in local mode
-    async fn run_local<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
+    async fn run_local<T>(
+        &self,
+        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
+    ) -> RddResult<Vec<T>>
     where
         T: crate::operations::RddDataType,
     {
         debug!("Running RDD computation in local mode");
-        rdd.collect()
+        let mut result = Vec::new();
+        for p in rdd.partitions() {
+            result.extend(rdd.compute(p.as_ref())?);
+        }
+        Ok(result)
     }
 
     /// Get driver statistics (for driver mode)

@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute the computation
     let start_time = std::time::Instant::now();
-    let result = driver_context.run_distributed(transformed_rdd).await?;
+    let result = driver_context.run(Arc::new(transformed_rdd)).await?;
     let duration = start_time.elapsed();
 
     // Step 6: Display results

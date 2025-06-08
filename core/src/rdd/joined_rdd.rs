@@ -41,6 +41,10 @@ where
 {
     type Item = (K, (V, W));
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn compute(
         &self,
         partition: &dyn Partition,
@@ -194,6 +198,10 @@ where
     K: std::hash::Hash + Eq,
 {
     type Item = (K, (Vec<V>, Vec<W>));
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
     fn compute(
         &self,

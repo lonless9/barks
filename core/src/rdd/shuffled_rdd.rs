@@ -44,6 +44,10 @@ where
 {
     type Item = (K, C);
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn compute(
         &self,
         partition: &dyn Partition,

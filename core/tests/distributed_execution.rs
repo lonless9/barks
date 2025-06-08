@@ -109,7 +109,7 @@ async fn test_basic_distributed_computation() {
         .filter(Box::new(GreaterThanPredicate { threshold: 20 })); // Keep results > 20
 
     let result = driver_context
-        .run_distributed(transformed_rdd)
+        .run(Arc::new(transformed_rdd))
         .await
         .expect("Distributed computation failed");
 

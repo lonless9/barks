@@ -343,6 +343,10 @@ impl<T: RddDataType> DistributedRdd<T> {
 impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
     type Item = T;
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn compute(
         &self,
         partition: &dyn crate::traits::Partition,

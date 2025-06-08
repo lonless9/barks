@@ -64,6 +64,9 @@ impl Partition for BasicPartition {
 pub trait RddBase: Send + Sync + Debug + Any {
     type Item: Data;
 
+    /// Downcast self to a `&dyn Any`.
+    fn as_any(&self) -> &dyn Any;
+
     /// Compute the elements of this RDD for the given partition
     fn compute(&self, partition: &dyn Partition)
         -> RddResult<Box<dyn Iterator<Item = Self::Item>>>;
