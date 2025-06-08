@@ -1,5 +1,6 @@
 //! Defines the Aggregator trait for combining values in shuffle operations.
 
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// Aggregator trait for combining values for a key.
@@ -434,5 +435,117 @@ mod tests {
         // Test merge_combiners
         let combined = <CombineAggregator<String, usize> as Aggregator<String, String, usize>>::merge_combiners(&aggregator, merged, 3);
         assert_eq!(combined, 13); // 10 + 3
+    }
+
+    #[test]
+    fn test_serializable_aggregator() {
+        // Test serialization and deserialization of aggregators
+        let aggregator = SerializableAggregator::AddI32;
+
+        // Serialize
+        let serialized = aggregator.serialize().unwrap();
+        assert!(!serialized.is_empty());
+
+        // Deserialize
+        let deserialized = SerializableAggregator::deserialize(&serialized).unwrap();
+
+        // Verify they match
+        match (aggregator, deserialized) {
+            (SerializableAggregator::AddI32, SerializableAggregator::AddI32) => {}
+            _ => panic!("Aggregators don't match after serialization/deserialization"),
+        }
+
+        // Test creating actual aggregators
+        let add_aggregator = SerializableAggregator::create_add_i32_aggregator();
+        let result = <ReduceAggregator<i32> as Aggregator<String, i32, i32>>::merge_value(
+            &add_aggregator,
+            5,
+            3,
+        );
+        assert_eq!(result, 8);
+
+        // Test string concatenation aggregator
+        let concat_aggregator = SerializableAggregator::create_concat_string_aggregator();
+        let result = <ReduceAggregator<String> as Aggregator<i32, String, String>>::merge_value(
+            &concat_aggregator,
+            "hello".to_string(),
+            "world".to_string(),
+        );
+        assert_eq!(result, "hello,world");
+
+        // Test GroupI32 aggregator serialization
+        let group_aggregator = SerializableAggregator::GroupI32;
+        let serialized = group_aggregator.serialize().unwrap();
+        let deserialized = SerializableAggregator::deserialize(&serialized).unwrap();
+        match (group_aggregator, deserialized) {
+            (SerializableAggregator::GroupI32, SerializableAggregator::GroupI32) => {}
+            _ => panic!("GroupI32 aggregators don't match after serialization/deserialization"),
+        }
+
+        // Test creating GroupByKeyAggregator
+        let group_by_key_aggregator = SerializableAggregator::create_group_i32_aggregator();
+        let result =
+            <GroupByKeyAggregator<i32> as Aggregator<String, i32, Vec<i32>>>::create_combiner(
+                &group_by_key_aggregator,
+                42,
+            );
+        assert_eq!(result, vec![42]);
+    }
+}
+
+/// Serializable aggregator types for common operations
+/// This allows us to serialize and deserialize aggregators for distributed execution
+#[derive(Clone, Debug, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+pub enum SerializableAggregator {
+    /// Addition aggregator for i32 values
+    AddI32,
+    /// String concatenation aggregator
+    ConcatString,
+    /// Sum aggregator for i32 values
+    SumI32,
+    /// Count aggregator
+    Count,
+    /// Group by key for i32 values
+    GroupI32,
+}
+
+impl SerializableAggregator {
+    /// Create a ReduceAggregator for i32 addition
+    pub fn create_add_i32_aggregator() -> ReduceAggregator<i32> {
+        ReduceAggregator::new(|a, b| a + b)
+    }
+
+    /// Create a ReduceAggregator for string concatenation
+    pub fn create_concat_string_aggregator() -> ReduceAggregator<String> {
+        ReduceAggregator::new(|a, b| format!("{},{}", a, b))
+    }
+
+    /// Create a SumAggregator for i32 values
+    pub fn create_sum_i32_aggregator() -> SumAggregator<i32> {
+        SumAggregator::new()
+    }
+
+    /// Create a CountAggregator
+    pub fn create_count_aggregator<V>() -> CountAggregator<V> {
+        CountAggregator::new()
+    }
+
+    /// Create a GroupByKeyAggregator for i32 values
+    pub fn create_group_i32_aggregator() -> GroupByKeyAggregator<i32> {
+        GroupByKeyAggregator::new()
+    }
+
+    /// Serialize this aggregator to bytes
+    pub fn serialize(&self) -> Result<Vec<u8>, String> {
+        bincode::encode_to_vec(self, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize aggregator: {}", e))
+    }
+
+    /// Deserialize an aggregator from bytes
+    pub fn deserialize(data: &[u8]) -> Result<Self, String> {
+        let (aggregator, _): (Self, _) =
+            bincode::decode_from_slice(data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize aggregator: {}", e))?;
+        Ok(aggregator)
     }
 }

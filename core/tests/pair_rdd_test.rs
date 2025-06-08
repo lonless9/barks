@@ -113,3 +113,39 @@ fn test_pair_rdd_combine_by_key_operation() {
     assert_eq!(combined_rdd.num_partitions(), 2);
     assert!(combined_rdd.id() > 0);
 }
+
+#[test]
+fn test_pair_rdd_multiple_types() {
+    // Test with (i32, String) pairs - new type support
+    let data = vec![
+        (1, "apple".to_string()),
+        (2, "banana".to_string()),
+        (1, "cherry".to_string()),
+        (3, "date".to_string()),
+    ];
+
+    let rdd: DistributedRdd<(i32, String)> = DistributedRdd::from_vec(data);
+    let partitioner = Arc::new(HashPartitioner::new(2));
+
+    // Test reduce_by_key with string concatenation
+    let reduced_rdd = rdd.reduce_by_key(|a, b| format!("{},{}", a, b), partitioner.clone());
+
+    // Verify the RDD was created successfully
+    assert_eq!(reduced_rdd.num_partitions(), 2);
+    assert!(reduced_rdd.id() > 0);
+
+    // Test local execution to verify functionality
+    let result = reduced_rdd.collect().unwrap();
+
+    // Convert to HashMap for easier verification
+    let result_map: std::collections::HashMap<i32, String> = result.into_iter().collect();
+
+    // Verify that key 1 has concatenated values
+    assert!(result_map.contains_key(&1));
+    assert!(result_map.contains_key(&2));
+    assert!(result_map.contains_key(&3));
+
+    // Key 1 should have "apple,cherry" (order may vary)
+    let key1_result = result_map.get(&1).unwrap();
+    assert!(key1_result.contains("apple") && key1_result.contains("cherry"));
+}
