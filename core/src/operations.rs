@@ -549,4 +549,37 @@ impl RddDataType for (i32, String) {
     }
 }
 
+// For simplicity in tests, implement RddDataType for (String, String) by reusing String operations
+impl RddDataType for (String, String) {
+    type MapOperation = Box<dyn StringOperation>;
+    type FilterPredicate = Box<dyn StringPredicate>;
+    type SerializableOperation = SerializableStringOperation;
+
+    fn apply_operation(
+        op: &Self::SerializableOperation,
+        data: Vec<Self>,
+        _arena: &Bump,
+    ) -> Vec<Self> {
+        // For simplicity, we'll just pass through the data unchanged for tuple operations
+        // In a real implementation, you'd want proper tuple-specific operations
+        match op {
+            SerializableStringOperation::Map(_) => data, // Pass through unchanged
+            SerializableStringOperation::Filter(_) => data, // Pass through unchanged
+        }
+    }
+
+    fn create_chained_task(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<Self::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
+        // For simplicity, reuse the String task implementation
+        Ok(Box::new(
+            crate::distributed::task::ChainedTask::<String>::new(
+                serialized_partition_data,
+                operations,
+            ),
+        ))
+    }
+}
+
 pub mod tests;

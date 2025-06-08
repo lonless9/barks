@@ -127,6 +127,25 @@ impl Task for ChainedTask<(String, i32)> {
     }
 }
 
+#[typetag::serde(name = "ChainedTaskI32StringTuple")]
+impl Task for ChainedTask<(i32, String)> {
+    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
+        // 1. Deserialize the initial partition data.
+        let (mut current_data, _): (Vec<(i32, String)>, _) =
+            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
+
+        // 2. Apply each operation in sequence.
+        for operation in &self.operations {
+            current_data = <(i32, String)>::apply_operation(operation, current_data, arena);
+        }
+
+        // 3. Serialize the result.
+        bincode::encode_to_vec(current_data, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize result: {}", e))
+    }
+}
+
 /// Task runner for executing distributed tasks
 pub struct TaskRunner {
     /// Semaphore to limit concurrent tasks

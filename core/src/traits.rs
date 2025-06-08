@@ -99,9 +99,42 @@ impl<T> Data for T where
 #[derive(Clone)]
 pub enum Dependency {
     /// A one-to-one dependency where each partition of the child RDD depends on a single partition of the parent.
-    Narrow(Arc<dyn Any + Send + Sync>), // Use Any for now to avoid associated type issues
+    Narrow(NarrowDependency),
     /// A shuffle dependency where partitions of the child RDD depend on multiple partitions of the parent.
-    Shuffle(Arc<dyn Any + Send + Sync>), // Placeholder with Any for now
+    Shuffle(ShuffleDependencyInfo),
+}
+
+/// Represents a narrow dependency between RDDs
+#[derive(Clone, Debug)]
+pub struct NarrowDependency {
+    pub parent_rdd_id: usize,
+    pub partition_mapping: NarrowDependencyType,
+}
+
+/// Types of narrow dependencies
+#[derive(Clone, Debug)]
+pub enum NarrowDependencyType {
+    /// One-to-one mapping: child partition i depends on parent partition i
+    OneToOne,
+    /// Range dependency: child partition depends on a range of parent partitions
+    Range { start: usize, end: usize },
+}
+
+/// Represents a shuffle dependency between RDDs
+#[derive(Clone, Debug)]
+pub struct ShuffleDependencyInfo {
+    pub shuffle_id: usize,
+    pub parent_rdd_id: usize,
+    pub num_partitions: u32,
+    pub partitioner_type: PartitionerType,
+}
+
+/// Types of partitioners for shuffle dependencies
+#[derive(Clone, Debug)]
+pub enum PartitionerType {
+    Hash { num_partitions: u32, seed: u64 },
+    Range { num_partitions: u32 },
+    Custom { num_partitions: u32 },
 }
 
 impl std::fmt::Debug for Dependency {

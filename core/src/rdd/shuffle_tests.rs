@@ -38,7 +38,7 @@ mod tests {
 
     #[test]
     fn test_group_by_key() {
-        let context = FlowContext::new();
+        let context = FlowContext::new("test_group_by_key");
 
         // Create test data: (key, value) pairs
         let data = vec![
@@ -50,7 +50,7 @@ mod tests {
             ("x".to_string(), 6),
         ];
 
-        let rdd = context.parallelize(data, 2);
+        let rdd = context.parallelize_with_partitions(data, 2);
         let partitioner = Arc::new(HashPartitioner::new(2));
 
         // Test group_by_key
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let context = FlowContext::new();
+        let context = FlowContext::new("test_join");
 
         // Create test data for left RDD
         let left_data = vec![
@@ -115,15 +115,15 @@ mod tests {
             ("c".to_string(), 3),
         ];
 
-        // Create test data for right RDD
+        // Create test data for right RDD - use String instead of &str for RddDataType compatibility
         let right_data = vec![
-            ("a".to_string(), "alpha"),
-            ("b".to_string(), "beta"),
-            ("d".to_string(), "delta"),
+            ("a".to_string(), "alpha".to_string()),
+            ("b".to_string(), "beta".to_string()),
+            ("d".to_string(), "delta".to_string()),
         ];
 
-        let left_rdd = context.parallelize(left_data, 2);
-        let right_rdd = context.parallelize(right_data, 2);
+        let left_rdd = context.parallelize_with_partitions(left_data, 2);
+        let right_rdd = context.parallelize_with_partitions(right_data, 2);
         let partitioner = Arc::new(HashPartitioner::new(2));
 
         // Test join
@@ -131,12 +131,12 @@ mod tests {
         let result = joined.collect().unwrap();
 
         // Convert to HashMap for easier testing
-        let result_map: std::collections::HashMap<String, (i32, &str)> =
+        let result_map: std::collections::HashMap<String, (i32, String)> =
             result.into_iter().collect();
 
         // Only keys present in both RDDs should appear in the result
-        assert_eq!(result_map.get("a"), Some(&(1, "alpha")));
-        assert_eq!(result_map.get("b"), Some(&(2, "beta")));
+        assert_eq!(result_map.get("a"), Some(&(1, "alpha".to_string())));
+        assert_eq!(result_map.get("b"), Some(&(2, "beta".to_string())));
         assert_eq!(result_map.get("c"), None); // Not in right RDD
         assert_eq!(result_map.get("d"), None); // Not in left RDD
         assert_eq!(result_map.len(), 2);
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_cogroup() {
-        let context = FlowContext::new();
+        let context = FlowContext::new("test_cogroup");
 
         // Create test data for left RDD
         let left_data = vec![
@@ -153,15 +153,15 @@ mod tests {
             ("a".to_string(), 3),
         ];
 
-        // Create test data for right RDD
+        // Create test data for right RDD - use String instead of &str
         let right_data = vec![
-            ("a".to_string(), "alpha"),
-            ("c".to_string(), "gamma"),
-            ("a".to_string(), "alpha2"),
+            ("a".to_string(), "alpha".to_string()),
+            ("c".to_string(), "gamma".to_string()),
+            ("a".to_string(), "alpha2".to_string()),
         ];
 
-        let left_rdd = context.parallelize(left_data, 2);
-        let right_rdd = context.parallelize(right_data, 2);
+        let left_rdd = context.parallelize_with_partitions(left_data, 2);
+        let right_rdd = context.parallelize_with_partitions(right_data, 2);
         let partitioner = Arc::new(HashPartitioner::new(2));
 
         // Test cogroup
@@ -169,7 +169,7 @@ mod tests {
         let result = cogrouped.collect().unwrap();
 
         // Convert to HashMap for easier testing
-        let result_map: std::collections::HashMap<String, (Vec<i32>, Vec<&str>)> =
+        let result_map: std::collections::HashMap<String, (Vec<i32>, Vec<String>)> =
             result.into_iter().collect();
 
         // Check cogrouped results
@@ -179,20 +179,23 @@ mod tests {
         let mut a_right_sorted = a_right.clone();
         a_right_sorted.sort();
         assert_eq!(a_left_sorted, vec![1, 3]);
-        assert_eq!(a_right_sorted, vec!["alpha", "alpha2"]);
+        assert_eq!(
+            a_right_sorted,
+            vec!["alpha".to_string(), "alpha2".to_string()]
+        );
 
         let (b_left, b_right) = result_map.get("b").unwrap();
         assert_eq!(b_left, &vec![2]);
-        assert_eq!(b_right, &Vec::<&str>::new()); // Empty for right side
+        assert_eq!(b_right, &Vec::<String>::new()); // Empty for right side
 
         let (c_left, c_right) = result_map.get("c").unwrap();
         assert_eq!(c_left, &Vec::<i32>::new()); // Empty for left side
-        assert_eq!(c_right, &vec!["gamma"]);
+        assert_eq!(c_right, &vec!["gamma".to_string()]);
     }
 
     #[test]
     fn test_combine_by_key() {
-        let context = FlowContext::new();
+        let context = FlowContext::new("test_combine_by_key");
 
         // Create test data: (key, value) pairs
         let data = vec![
@@ -203,7 +206,7 @@ mod tests {
             ("b".to_string(), 5),
         ];
 
-        let rdd = context.parallelize(data, 2);
+        let rdd = context.parallelize_with_partitions(data, 2);
         let partitioner = Arc::new(HashPartitioner::new(2));
 
         // Create a custom aggregator that sums values

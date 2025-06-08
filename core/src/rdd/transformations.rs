@@ -95,9 +95,11 @@ where
         let new_rdd_id = self.id().saturating_add(4);
         let num_partitions = self.num_partitions() as u32;
 
-        // Create a range partitioner with empty sample keys
-        // TODO Sample the RDD to determine range bounds
-        let sample_keys = Vec::new();
+        // Sample the RDD to determine range bounds for proper partitioning
+        let sample_size = (num_partitions as usize * 20).max(100); // 20 samples per partition, minimum 100
+        let parent_rdd: Arc<dyn crate::traits::RddBase<Item = (K, V)>> = Arc::new(self.clone());
+        let sample_keys = crate::rdd::sorted_rdd::sample_keys_for_sorting(&parent_rdd, sample_size);
+
         let partitioner = Arc::new(crate::shuffle::RangePartitioner::from_sample(
             num_partitions,
             sample_keys,

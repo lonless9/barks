@@ -1,7 +1,9 @@
 //! RDD that represents a sort operation by key.
 
 use crate::shuffle::{Partitioner, RangePartitioner};
-use crate::traits::{Data, Dependency, Partition, RddBase, RddResult};
+use crate::traits::{
+    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+};
 use std::sync::Arc;
 
 /// SortedRdd represents an RDD that has been sorted by key.
@@ -56,7 +58,7 @@ where
         &self,
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
-        // TODO For local execution, we simulate the sort by collecting all data
+        // For local execution, we simulate the sort by collecting all data
         // and sorting it. In a distributed environment, this would use
         // range partitioning and fetch shuffle blocks.
 
@@ -74,14 +76,8 @@ where
         let mut partition_data: Vec<(K, V)> = Vec::new();
 
         for (key, value) in all_data {
-            // TODO Use hash partitioning here instead of range partitioning
-            // This would use the RangePartitioner
-            let key_partition = {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
+            // Use the RangePartitioner to determine the correct partition
+            let key_partition = self.partitioner.get_partition_for(&key) as usize;
 
             if key_partition == partition_index {
                 partition_data.push((key, value));
@@ -104,7 +100,14 @@ where
 
     fn dependencies(&self) -> Vec<Dependency> {
         // Sort creates a shuffle dependency on the parent RDD
-        vec![Dependency::Shuffle(Arc::new(()))]
+        vec![Dependency::Shuffle(ShuffleDependencyInfo {
+            shuffle_id: self.id,
+            parent_rdd_id: self.parent.id(),
+            num_partitions: self.partitioner.num_partitions(),
+            partitioner_type: PartitionerType::Range {
+                num_partitions: self.partitioner.num_partitions(),
+            },
+        })]
     }
 
     fn id(&self) -> usize {
@@ -119,7 +122,17 @@ where
     /// Collect all elements from all partitions into a vector
     pub fn collect(&self) -> crate::traits::RddResult<Vec<(K, V)>> {
         let mut result = Vec::new();
-        for i in 0..self.num_partitions() {
+
+        // For sorted RDDs, we need to collect partitions in the right order
+        // For ascending sort: collect partitions 0, 1, 2, ...
+        // For descending sort: collect partitions ..., 2, 1, 0
+        let partition_indices: Vec<usize> = if self.ascending {
+            (0..self.num_partitions()).collect()
+        } else {
+            (0..self.num_partitions()).rev().collect()
+        };
+
+        for i in partition_indices {
             let partition = crate::traits::BasicPartition::new(i);
             let partition_data = self.compute(&partition)?;
             result.extend(partition_data);
@@ -138,14 +151,40 @@ where
     K: Data + Ord + Clone,
     V: Data,
 {
-    // In a real implementation, this would:
-    // 1. Sample a fraction of the RDD data
-    // 2. Extract keys from the sampled data
-    // 3. Return a representative sample for range partitioning
+    // Sample data from all partitions to get a representative set of keys
+    let mut sampled_keys = Vec::new();
+    let num_partitions = rdd.num_partitions();
 
-    // For now, return an empty vector as a placeholder
-    // The actual implementation would involve running a sampling job
-    Vec::new()
+    if num_partitions == 0 || sample_size == 0 {
+        return Vec::new();
+    }
+
+    // Calculate how many samples to take from each partition
+    let samples_per_partition = (sample_size / num_partitions).max(1);
+
+    for i in 0..num_partitions {
+        let partition = crate::traits::BasicPartition::new(i);
+        if let Ok(partition_data) = rdd.compute(&partition) {
+            for (count, (key, _)) in partition_data.enumerate() {
+                if count >= samples_per_partition {
+                    break;
+                }
+                sampled_keys.push(key);
+            }
+        }
+    }
+
+    // Sort and deduplicate the sampled keys
+    sampled_keys.sort();
+    sampled_keys.dedup();
+
+    // If we have too many samples, take a subset
+    if sampled_keys.len() > sample_size {
+        let step = sampled_keys.len() / sample_size;
+        sampled_keys = sampled_keys.into_iter().step_by(step.max(1)).collect();
+    }
+
+    sampled_keys
 }
 
 /// Utility to create a sorted RDD with automatic sampling
@@ -160,8 +199,15 @@ where
     K: Data + Ord + Clone + std::fmt::Debug,
     V: Data,
 {
-    // Sample keys from the parent RDD
-    let sample_keys = sample_keys_for_sorting(&parent, sample_size);
+    // Sample keys from the parent RDD for range partitioning
+    // Use a reasonable default sample size if none provided
+    let effective_sample_size = if sample_size == 0 {
+        (num_partitions as usize * 20).max(100) // 20 samples per partition, minimum 100
+    } else {
+        sample_size
+    };
+
+    let sample_keys = sample_keys_for_sorting(&parent, effective_sample_size);
 
     // Create the sorted RDD with the sampled keys
     SortedRdd::from_sample(id, parent, num_partitions, sample_keys, ascending)

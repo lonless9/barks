@@ -164,9 +164,10 @@ impl<T: RddDataType> DistributedRdd<T> {
 
     /// Check if this RDD has a shuffle dependency.
     /// Returns Some(shuffle_dependency) if it does, None otherwise.
-    /// For now, this always returns None since the current DistributedRdd doesn't support shuffle operations.
+    /// DistributedRdd operations (map, filter) don't create shuffle dependencies.
     pub fn shuffle_dependency(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        // TODO: Implement shuffle dependency detection when ShuffledRdd is added
+        // DistributedRdd operations are narrow transformations and don't create shuffle dependencies
+        // Shuffle dependencies are created by operations like reduceByKey, groupByKey, join, etc.
         None
     }
 
@@ -355,9 +356,22 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
     }
 
     fn dependencies(&self) -> Vec<crate::traits::Dependency> {
-        // For now, return empty dependencies to avoid lifetime issues
-        // In a full implementation, this would track parent RDD dependencies
-        vec![]
+        // Return appropriate dependencies based on the RDD type
+        match self {
+            Self::Vec { .. } => {
+                // Base RDD has no dependencies
+                vec![]
+            }
+            Self::Map { parent, .. } | Self::Filter { parent, .. } => {
+                // Narrow dependency on parent RDD
+                vec![crate::traits::Dependency::Narrow(
+                    crate::traits::NarrowDependency {
+                        parent_rdd_id: parent.id(),
+                        partition_mapping: crate::traits::NarrowDependencyType::OneToOne,
+                    },
+                )]
+            }
+        }
     }
 
     fn id(&self) -> usize {

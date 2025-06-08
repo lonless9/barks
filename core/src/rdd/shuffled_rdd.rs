@@ -1,7 +1,9 @@
 //! RDD that represents a shuffle dependency.
 
 use crate::shuffle::{Aggregator, Partitioner};
-use crate::traits::{Data, Dependency, Partition, RddBase, RddResult};
+use crate::traits::{
+    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+};
 use std::sync::Arc;
 
 /// ShuffledRdd is an RDD that has a shuffle dependency on its parent.
@@ -65,9 +67,9 @@ where
             std::collections::HashMap::new();
 
         for (key, value) in all_data {
-            // Determine which partition this key belongs to
+            // Determine which partition this key belongs to using hash partitioning
             let key_partition = {
-                use std::hash::{Hash, Hasher};
+                use std::hash::Hasher;
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut hasher);
                 (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
@@ -102,9 +104,16 @@ where
     }
 
     fn dependencies(&self) -> Vec<Dependency> {
-        // This would create a ShuffleDependency in a real implementation
-        // For now, we'll use a placeholder
-        vec![Dependency::Shuffle(Arc::new(()))]
+        // Create a proper shuffle dependency
+        vec![Dependency::Shuffle(ShuffleDependencyInfo {
+            shuffle_id: self.id,
+            parent_rdd_id: self.parent.id(),
+            num_partitions: self.partitioner.num_partitions(),
+            partitioner_type: PartitionerType::Hash {
+                num_partitions: self.partitioner.num_partitions(),
+                seed: 0, // Default seed for hash partitioning
+            },
+        })]
     }
 
     fn id(&self) -> usize {

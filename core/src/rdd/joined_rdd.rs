@@ -1,8 +1,13 @@
 //! RDD that represents a join operation between two RDDs.
 
 use crate::shuffle::Partitioner;
-use crate::traits::{Data, Dependency, Partition, RddBase, RddResult};
+use crate::traits::{
+    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+};
 use std::sync::Arc;
+
+/// Type alias for cogrouped data to reduce type complexity
+type CogroupedData<K, V, W> = Vec<(K, (Vec<V>, Vec<W>))>;
 
 /// JoinedRdd represents the result of joining two RDDs by key.
 /// It performs a hash join using shuffle operations.
@@ -116,8 +121,24 @@ where
     fn dependencies(&self) -> Vec<Dependency> {
         // Join creates shuffle dependencies on both parent RDDs
         vec![
-            Dependency::Shuffle(Arc::new(())), // Left RDD shuffle dependency
-            Dependency::Shuffle(Arc::new(())), // Right RDD shuffle dependency
+            Dependency::Shuffle(ShuffleDependencyInfo {
+                shuffle_id: self.id,
+                parent_rdd_id: self.left_rdd.id(),
+                num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Hash {
+                    num_partitions: self.partitioner.num_partitions(),
+                    seed: 0,
+                },
+            }),
+            Dependency::Shuffle(ShuffleDependencyInfo {
+                shuffle_id: self.id + 1, // Different shuffle ID for right RDD
+                parent_rdd_id: self.right_rdd.id(),
+                num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Hash {
+                    num_partitions: self.partitioner.num_partitions(),
+                    seed: 0,
+                },
+            }),
         ]
     }
 
@@ -238,7 +259,7 @@ where
         all_keys.extend(right_partitioned.keys().cloned());
 
         // Create cogrouped results
-        let cogrouped_data: Vec<(K, (Vec<V>, Vec<W>))> = all_keys
+        let cogrouped_data: CogroupedData<K, V, W> = all_keys
             .into_iter()
             .map(|key| {
                 let left_values = left_partitioned.get(&key).cloned().unwrap_or_default();
@@ -257,8 +278,24 @@ where
     fn dependencies(&self) -> Vec<Dependency> {
         // Cogroup creates shuffle dependencies on both parent RDDs
         vec![
-            Dependency::Shuffle(Arc::new(())), // Left RDD shuffle dependency
-            Dependency::Shuffle(Arc::new(())), // Right RDD shuffle dependency
+            Dependency::Shuffle(ShuffleDependencyInfo {
+                shuffle_id: self.id,
+                parent_rdd_id: self.left_rdd.id(),
+                num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Hash {
+                    num_partitions: self.partitioner.num_partitions(),
+                    seed: 0,
+                },
+            }),
+            Dependency::Shuffle(ShuffleDependencyInfo {
+                shuffle_id: self.id + 1, // Different shuffle ID for right RDD
+                parent_rdd_id: self.right_rdd.id(),
+                num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Hash {
+                    num_partitions: self.partitioner.num_partitions(),
+                    seed: 0,
+                },
+            }),
         ]
     }
 
@@ -272,7 +309,7 @@ where
     K: std::hash::Hash + Eq,
 {
     /// Collect all elements from all partitions into a vector
-    pub fn collect(&self) -> crate::traits::RddResult<Vec<(K, (Vec<V>, Vec<W>))>> {
+    pub fn collect(&self) -> crate::traits::RddResult<CogroupedData<K, V, W>> {
         let mut result = Vec::new();
         for i in 0..self.num_partitions() {
             let partition = crate::traits::BasicPartition::new(i);
