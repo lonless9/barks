@@ -108,33 +108,16 @@ impl<T> Data for T where
 /// Represents a dependency of an RDD on its parent(s).
 #[derive(Clone)]
 pub enum Dependency {
-    /// A one-to-one dependency where each partition of the child RDD depends on a single partition of the parent.
-    Narrow(NarrowDependency),
-    /// A shuffle dependency where partitions of the child RDD depend on multiple partitions of the parent.
-    Shuffle(ShuffleDependencyInfo),
-}
-
-/// Represents a narrow dependency between RDDs
-#[derive(Clone, Debug)]
-pub struct NarrowDependency {
-    pub parent_rdd_id: usize,
-    pub partition_mapping: NarrowDependencyType,
-}
-
-/// Types of narrow dependencies
-#[derive(Clone, Debug)]
-pub enum NarrowDependencyType {
-    /// One-to-one mapping: child partition i depends on parent partition i
-    OneToOne,
-    /// Range dependency: child partition depends on a range of parent partitions
-    Range { start: usize, end: usize },
+    /// A narrow dependency on a parent RDD. The parent is stored as `Any` to handle different RDD types.
+    Narrow(Arc<dyn Any + Send + Sync>),
+    /// A shuffle dependency, which marks a stage boundary. Holds the parent RDD and shuffle metadata.
+    Shuffle(Arc<dyn Any + Send + Sync>, ShuffleDependencyInfo),
 }
 
 /// Represents a shuffle dependency between RDDs
 #[derive(Clone, Debug)]
 pub struct ShuffleDependencyInfo {
     pub shuffle_id: usize,
-    pub parent_rdd_id: usize,
     pub num_partitions: u32,
     pub partitioner_type: PartitionerType,
 }
@@ -150,8 +133,8 @@ pub enum PartitionerType {
 impl std::fmt::Debug for Dependency {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Dependency::Narrow(_) => write!(f, "Narrow(...)"),
-            Dependency::Shuffle(_) => write!(f, "Shuffle(...)"),
+            Dependency::Narrow(_) => write!(f, "NarrowDependency"),
+            Dependency::Shuffle(_, info) => write!(f, "ShuffleDependency({:?})", info),
         }
     }
 }

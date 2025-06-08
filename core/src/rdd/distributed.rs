@@ -22,12 +22,12 @@ pub enum DistributedRdd<T: RddDataType> {
     },
     /// RDD that applies a map transformation
     Map {
-        parent: Box<DistributedRdd<T>>,
+        parent: Arc<DistributedRdd<T>>,
         operation: T::MapOperation,
     },
     /// RDD that applies a filter transformation
     Filter {
-        parent: Box<DistributedRdd<T>>,
+        parent: Arc<DistributedRdd<T>>,
         predicate: T::FilterPredicate,
     },
 }
@@ -57,7 +57,7 @@ impl<T: RddDataType> DistributedRdd<T> {
     /// Apply a map transformation to this RDD
     pub fn map(self, operation: T::MapOperation) -> Self {
         Self::Map {
-            parent: Box::new(self),
+            parent: Arc::new(self),
             operation,
         }
     }
@@ -65,7 +65,7 @@ impl<T: RddDataType> DistributedRdd<T> {
     /// Apply a filter transformation to this RDD
     pub fn filter(self, predicate: T::FilterPredicate) -> Self {
         Self::Filter {
-            parent: Box::new(self),
+            parent: Arc::new(self),
             predicate,
         }
     }
@@ -111,11 +111,11 @@ impl<T: RddDataType> DistributedRdd<T> {
                 num_partitions,
             },
             Self::Map { parent, operation } => Self::Map {
-                parent: Box::new(parent.coalesce(num_partitions)),
+                parent: Arc::new((*parent).clone().coalesce(num_partitions)),
                 operation,
             },
             Self::Filter { parent, predicate } => Self::Filter {
-                parent: Box::new(parent.coalesce(num_partitions)),
+                parent: Arc::new((*parent).clone().coalesce(num_partitions)),
                 predicate,
             },
         }
@@ -135,11 +135,11 @@ impl<T: RddDataType> DistributedRdd<T> {
                 } => break (data, num_partitions),
                 Self::Map { parent, operation } => {
                     operations.push(operation.into());
-                    current_rdd = *parent;
+                    current_rdd = (*parent).clone();
                 }
                 Self::Filter { parent, predicate } => {
                     operations.push(predicate.into());
-                    current_rdd = *parent;
+                    current_rdd = (*parent).clone();
                 }
             }
         };
@@ -367,13 +367,8 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
                 vec![]
             }
             Self::Map { parent, .. } | Self::Filter { parent, .. } => {
-                // Narrow dependency on parent RDD
-                vec![crate::traits::Dependency::Narrow(
-                    crate::traits::NarrowDependency {
-                        parent_rdd_id: parent.id(),
-                        partition_mapping: crate::traits::NarrowDependencyType::OneToOne,
-                    },
-                )]
+                // A narrow dependency on the parent RDD.
+                vec![crate::traits::Dependency::Narrow(parent.clone())]
             }
         }
     }

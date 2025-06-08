@@ -104,14 +104,16 @@ where
 
     fn dependencies(&self) -> Vec<Dependency> {
         // Sort creates a shuffle dependency on the parent RDD
-        vec![Dependency::Shuffle(ShuffleDependencyInfo {
-            shuffle_id: self.id,
-            parent_rdd_id: self.parent.id(),
-            num_partitions: self.partitioner.num_partitions(),
-            partitioner_type: PartitionerType::Range {
+        vec![Dependency::Shuffle(
+            unsafe { std::mem::transmute(self.parent.clone()) },
+            ShuffleDependencyInfo {
+                shuffle_id: self.id,
                 num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Range {
+                    num_partitions: self.partitioner.num_partitions(),
+                },
             },
-        })]
+        )]
     }
 
     fn id(&self) -> usize {

@@ -327,23 +327,94 @@ impl DistributedContext {
                     return self.run_local(rdd).await;
                 }
 
-                // Simplified DAG logic: Check dependencies of the final RDD.
-                let deps = rdd.dependencies();
-                if deps
-                    .iter()
-                    .any(|d| matches!(d, crate::traits::Dependency::Shuffle(_)))
-                {
-                    // It's a shuffle operation, run as Map-Reduce stages.
-                    info!("Detected ShuffleDependency. Running shuffle job.");
-                    self.run_shuffle_job(rdd).await
-                } else {
-                    // No shuffle, run as a single ResultStage.
-                    // This part now needs to handle the Arc<dyn RddBase>
-                    // We can try to downcast it back to DistributedRdd for the existing logic to work.
-                    // This is a temporary hack before a full DAGScheduler is in place.
-                    info!("No ShuffleDependency detected. Running as a single stage job.");
-                    self.run_result_stage(rdd).await
+                let job_id = Uuid::new_v4().to_string();
+                info!("Starting job {} for RDD {}", job_id, rdd.id());
+
+                // 1. Build the stage graph from the final RDD.
+                // Convert RddBase to Any using as_any method
+                let rdd_any: Arc<dyn std::any::Any + Send + Sync> =
+                    unsafe { std::mem::transmute(rdd.clone()) };
+                let final_stage =
+                    self.dag_scheduler
+                        .new_result_stage(rdd_any, rdd.clone(), &job_id);
+
+                // 2. Get all stages in submission order (parents first).
+                let mut stages_to_submit = Vec::new();
+                let mut queue = std::collections::VecDeque::new();
+                queue.push_back(Arc::new(final_stage.stage.clone()));
+                let mut visited_stages = std::collections::HashSet::new();
+                visited_stages.insert(final_stage.stage.id);
+
+                while let Some(stage) = queue.pop_front() {
+                    stages_to_submit.push(stage.clone());
+                    for parent in &stage.parents {
+                        if !visited_stages.contains(&parent.id) {
+                            queue.push_back(parent.clone());
+                            visited_stages.insert(parent.id);
+                        }
+                    }
                 }
+                stages_to_submit.reverse(); // Execute parents first.
+
+                // 3. Execute stages one by one.
+                let mut stage_results: HashMap<usize, Vec<Vec<u8>>> = HashMap::new();
+
+                for stage in stages_to_submit {
+                    info!("Submitting stage {}", stage.id);
+                    let stage_id_str = format!("stage-{}", stage.id);
+
+                    // Downcast the RDD from `Any` to `RddBase` to create tasks.
+                    let rdd_base = stage
+                        .rdd
+                        .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
+                        .expect("RDD is not of expected type for creating tasks")
+                        .clone();
+
+                    let tasks = rdd_base.create_tasks(stage_id_str.clone()).map_err(|e| {
+                        crate::traits::RddError::ContextError(format!(
+                            "Failed to create tasks: {}",
+                            e
+                        ))
+                    })?;
+
+                    let mut futures = Vec::new();
+                    for (i, task) in tasks.into_iter().enumerate() {
+                        let task_id = format!("task-{}-{}", stage.id, i);
+                        let future = self
+                            .driver
+                            .as_ref()
+                            .unwrap()
+                            .submit_task(task_id, stage_id_str.clone(), i, task, None)
+                            .await
+                            .unwrap();
+                        futures.push(future);
+                    }
+
+                    let mut results = Vec::new();
+                    for future in futures {
+                        let (result, _) = future.await.unwrap();
+                        if let crate::distributed::driver::TaskResult::Success(bytes) = result {
+                            results.push(bytes);
+                        } else if let crate::distributed::driver::TaskResult::Failure(err) = result
+                        {
+                            return Err(crate::traits::RddError::ComputationError(err));
+                        }
+                    }
+                    stage_results.insert(stage.id, results);
+                }
+
+                // 4. Get the final result from the last stage's output.
+                let final_stage_results = stage_results.get(&final_stage.stage.id).unwrap();
+                let collected_results = final_stage_results
+                    .iter()
+                    .flat_map(|bytes| {
+                        let (partition_result, _): (Vec<T>, _) =
+                            bincode::decode_from_slice(bytes, bincode::config::standard()).unwrap();
+                        partition_result
+                    })
+                    .collect();
+
+                Ok(collected_results)
             }
             _ => Err(crate::traits::RddError::ContextError(
                 "run_distributed can only be called in Driver mode.".to_string(),

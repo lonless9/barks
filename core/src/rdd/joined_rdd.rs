@@ -112,24 +112,28 @@ where
     fn dependencies(&self) -> Vec<Dependency> {
         // Join creates shuffle dependencies on both parent RDDs
         vec![
-            Dependency::Shuffle(ShuffleDependencyInfo {
-                shuffle_id: self.id,
-                parent_rdd_id: self.left_rdd.id(),
-                num_partitions: self.partitioner.num_partitions(),
-                partitioner_type: PartitionerType::Hash {
+            Dependency::Shuffle(
+                unsafe { std::mem::transmute(self.left_rdd.clone()) },
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id,
                     num_partitions: self.partitioner.num_partitions(),
-                    seed: 0,
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
                 },
-            }),
-            Dependency::Shuffle(ShuffleDependencyInfo {
-                shuffle_id: self.id + 1, // Different shuffle ID for right RDD
-                parent_rdd_id: self.right_rdd.id(),
-                num_partitions: self.partitioner.num_partitions(),
-                partitioner_type: PartitionerType::Hash {
+            ),
+            Dependency::Shuffle(
+                unsafe { std::mem::transmute(self.right_rdd.clone()) },
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
                     num_partitions: self.partitioner.num_partitions(),
-                    seed: 0,
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
                 },
-            }),
+            ),
         ]
     }
 
@@ -268,24 +272,28 @@ where
     fn dependencies(&self) -> Vec<Dependency> {
         // Cogroup creates shuffle dependencies on both parent RDDs
         vec![
-            Dependency::Shuffle(ShuffleDependencyInfo {
-                shuffle_id: self.id,
-                parent_rdd_id: self.left_rdd.id(),
-                num_partitions: self.partitioner.num_partitions(),
-                partitioner_type: PartitionerType::Hash {
+            Dependency::Shuffle(
+                unsafe { std::mem::transmute(self.left_rdd.clone()) },
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id,
                     num_partitions: self.partitioner.num_partitions(),
-                    seed: 0,
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
                 },
-            }),
-            Dependency::Shuffle(ShuffleDependencyInfo {
-                shuffle_id: self.id + 1, // Different shuffle ID for right RDD
-                parent_rdd_id: self.right_rdd.id(),
-                num_partitions: self.partitioner.num_partitions(),
-                partitioner_type: PartitionerType::Hash {
+            ),
+            Dependency::Shuffle(
+                unsafe { std::mem::transmute(self.right_rdd.clone()) },
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
                     num_partitions: self.partitioner.num_partitions(),
-                    seed: 0,
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
                 },
-            }),
+            ),
         ]
     }
 

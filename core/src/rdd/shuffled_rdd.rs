@@ -102,15 +102,18 @@ where
 
     fn dependencies(&self) -> Vec<Dependency> {
         // Create a proper shuffle dependency
-        vec![Dependency::Shuffle(ShuffleDependencyInfo {
+        let shuffle_info = ShuffleDependencyInfo {
             shuffle_id: self.id,
-            parent_rdd_id: self.parent.id(),
             num_partitions: self.partitioner.num_partitions(),
             partitioner_type: PartitionerType::Hash {
                 num_partitions: self.partitioner.num_partitions(),
-                seed: 0, // Default seed for hash partitioning
+                seed: 0,
             },
-        })]
+        };
+        vec![Dependency::Shuffle(
+            unsafe { std::mem::transmute(self.parent.clone()) },
+            shuffle_info,
+        )]
     }
 
     fn id(&self) -> usize {
