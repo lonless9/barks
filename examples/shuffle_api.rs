@@ -1,6 +1,6 @@
-//! Demonstration of shuffle operations like reduceByKey and groupByKey
+//! Shuffle API Example
 //!
-//! This example shows how to use the new shuffle-based RDD operations
+//! This example demonstrates shuffle operations like reduceByKey and groupByKey
 //! that require wide dependencies and data redistribution.
 
 use barks_core::rdd::transformations::PairRdd;
@@ -10,7 +10,7 @@ use barks_core::traits::RddBase;
 use std::sync::Arc;
 
 fn main() {
-    println!("=== Barks: Shuffle Operations Demo ===\n");
+    println!("=== Barks: Shuffle API Example ===\n");
 
     // Demo 1: Basic reduceByKey operation
     println!("1. ReduceByKey Operation:");
@@ -78,8 +78,14 @@ fn main() {
         reduced_rdd.dependencies().len()
     );
 
-    println!("\n=== Demo completed ===");
-    println!("Note: This demo shows the RDD creation and shuffle setup.");
+    println!("\n=== Shuffle API Example Complete ===");
+    println!("Note: This example shows the RDD creation and shuffle setup.");
     println!("In a distributed environment, the actual shuffle would involve");
     println!("network communication between executors to redistribute data.");
+    println!("\nKey Features Demonstrated:");
+    println!("✓ ReduceByKey operations");
+    println!("✓ GroupByKey operations");
+    println!("✓ Hash partitioning");
+    println!("✓ Wide dependencies");
+    println!("✓ RDD lineage tracking");
 }

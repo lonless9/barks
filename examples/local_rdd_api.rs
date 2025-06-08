@@ -1,4 +1,4 @@
-//! Basic Demo - Single-Machine Core Abstractions
+//! Local RDD API Example
 //!
 //! This example demonstrates the basic core RDD abstractions implemented:
 //! - VecRdd for collections
@@ -10,10 +10,10 @@
 use barks_core::{FlowContext, SimpleRdd};
 
 fn main() {
-    println!("=== Barks: Single-Machine Core Abstractions Demo ===\n");
+    println!("=== Barks: Local RDD API Example ===\n");
 
     // Create a FlowContext for managing RDD operations
-    let context = FlowContext::new("barks-phase0-demo");
+    let context = FlowContext::new("barks-local-api-demo");
     println!("Created FlowContext: '{}'", context.app_name());
 
     // Demo 1: Basic RDD creation and collection
@@ -125,7 +125,7 @@ fn main() {
     let filtered_tuples = tuple_rdd.filter(|(num, _)| num % 2 == 0).collect().unwrap();
     println!("   Tuple filtering: {:?}", filtered_tuples);
 
-    println!("\n=== Barks Demo Complete ===");
+    println!("\n=== Local RDD API Example Complete ===");
     println!("\nKey Features Demonstrated:");
     println!("✓ RDD creation from vectors");
     println!("✓ Partitioning support");

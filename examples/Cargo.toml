@@ -22,9 +22,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[bin]]
-name = "advanced_distributed_example"
-path = "src/advanced_distributed_example.rs"
+name = "local_rdd_api"
+path = "local_rdd_api.rs"
 
 [[bin]]
-name = "distributed_rdd_example"
-path = "src/distributed_rdd_example.rs"
+name = "shuffle_api"
+path = "shuffle_api.rs"
+
+[[bin]]
+name = "distributed_app"
+path = "distributed_app.rs"
