@@ -49,13 +49,6 @@ jobs:
       - name: Generate code coverage report
         run: cargo tarpaulin --workspace --all-features --out Lcov --output-dir ./coverage
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/lcov.info
-          fail_ci_if_error: true
-
       - name: Check formatting
         run: cargo fmt -- --check
 
