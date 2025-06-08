@@ -11,8 +11,11 @@ use std::sync::Arc;
 /// Task represents a unit of work to be executed
 pub struct Task<T> {
     pub partition: Box<dyn Partition>,
-    pub compute_fn: Arc<dyn Fn(&dyn Partition) -> RddResult<Vec<T>> + Send + Sync>,
+    pub compute_fn: ComputeFn<T>,
 }
+
+/// Type alias for complex compute function type
+pub type ComputeFn<T> = Arc<dyn Fn(&dyn Partition) -> RddResult<Vec<T>> + Send + Sync>;
 
 impl<T> Debug for Task<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,10 +27,7 @@ impl<T> Debug for Task<T> {
 }
 
 impl<T> Task<T> {
-    pub fn new(
-        partition: Box<dyn Partition>,
-        compute_fn: Arc<dyn Fn(&dyn Partition) -> RddResult<Vec<T>> + Send + Sync>,
-    ) -> Self {
+    pub fn new(partition: Box<dyn Partition>, compute_fn: ComputeFn<T>) -> Self {
         Self {
             partition,
             compute_fn,
@@ -53,7 +53,7 @@ impl LocalScheduler {
     }
 
     /// Create a new LocalScheduler with the default number of threads (CPU cores)
-    pub fn default() -> Self {
+    pub fn with_default_threads() -> Self {
         Self {
             num_threads: rayon::current_num_threads(),
         }
@@ -157,6 +157,6 @@ impl LocalScheduler {
 
 impl Default for LocalScheduler {
     fn default() -> Self {
-        Self::default()
+        Self::with_default_threads()
     }
 }

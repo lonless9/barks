@@ -385,6 +385,7 @@ impl DriverServiceImpl {
     }
 
     /// Periodically checks for dead executors and removes them.
+    #[allow(clippy::too_many_arguments)]
     async fn check_executor_liveness(
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         task_scheduler: Arc<TaskScheduler>,
@@ -657,7 +658,7 @@ impl DriverService for DriverServiceImpl {
         };
 
         // Send heartbeat to monitor
-        if let Err(_) = self.heartbeat_sender.send(heartbeat_info) {
+        if self.heartbeat_sender.send(heartbeat_info).is_err() {
             error!("Failed to send heartbeat to monitor");
             return Err(Status::internal("Failed to process heartbeat"));
         }
@@ -685,7 +686,7 @@ impl DriverService for DriverServiceImpl {
 
         let mut statuses = self.task_statuses.lock().await;
         let task_state = Self::convert_task_state(req.state);
-        statuses.insert(req.task_id.clone(), task_state.clone());
+        statuses.insert(req.task_id.clone(), task_state);
 
         // Remove from the executor's running task set upon completion/failure
         {

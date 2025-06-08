@@ -4,7 +4,7 @@
 //! that enable distributed RDD execution.
 
 #[cfg(test)]
-mod tests {
+mod operation_tests {
     use super::super::*;
     use crate::rdd::DistributedRdd;
 

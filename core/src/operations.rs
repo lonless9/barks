@@ -76,7 +76,7 @@ dyn_clone::clone_trait_object!(StringOperation);
 #[typetag::serde(tag = "type")]
 pub trait StringPredicate: Send + Sync + Debug + DynClone {
     /// Execute the predicate on a single String item
-    fn test(&self, item: &String) -> bool;
+    fn test(&self, item: &str) -> bool;
 }
 dyn_clone::clone_trait_object!(StringPredicate);
 
@@ -260,7 +260,7 @@ pub struct MinLengthPredicate {
 
 #[typetag::serde]
 impl StringPredicate for MinLengthPredicate {
-    fn test(&self, item: &String) -> bool {
+    fn test(&self, item: &str) -> bool {
         item.len() >= self.min_length
     }
 }
@@ -304,7 +304,7 @@ pub struct StringAlwaysTruePredicate;
 
 #[typetag::serde]
 impl StringPredicate for StringAlwaysTruePredicate {
-    fn test(&self, _item: &String) -> bool {
+    fn test(&self, _item: &str) -> bool {
         true
     }
 }

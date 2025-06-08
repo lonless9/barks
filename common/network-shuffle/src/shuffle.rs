@@ -262,7 +262,7 @@ pub struct BytewaxShuffleWriter<K, V> {
 
 impl<K, V> BytewaxShuffleWriter<K, V>
 where
-    K: Serialize + Send + Sync + Clone + Encode,
+    K: Serialize + Send + Sync + Clone + Encode + std::hash::Hash,
     V: Serialize + Send + Sync + Clone + Encode,
 {
     pub fn new(
@@ -285,9 +285,14 @@ where
     /// Write a key-value pair. The key is used to determine the output partition.
     pub async fn write(&mut self, record: (K, V)) -> Result<()> {
         let (key, value) = record;
-        // For now, we'll use a simple hash-based partitioning
-        // In a real implementation, we'd use the partitioner properly
-        let reduce_id = 0; // Simplified for now
+
+        // Use hash-based partitioning with the configured partitioner
+        let reduce_id = {
+            use std::hash::Hasher;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+            (hasher.finish() % self.partitioner.num_partitions() as u64) as u32
+        };
 
         let serialized_record =
             bincode::encode_to_vec((key, value), bincode::config::standard())
@@ -335,7 +340,7 @@ impl<K, V> Default for BytewaxShuffleReader<K, V>
 where
     K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
     V: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
- {
+{
     fn default() -> Self {
         Self::new()
     }

@@ -59,7 +59,7 @@ impl ExecutorInfo {
 }
 
 /// Task execution metrics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskMetrics {
     pub executor_deserialize_time_ms: u64,
     pub executor_run_time_ms: u64,
@@ -71,23 +71,8 @@ pub struct TaskMetrics {
     pub peak_execution_memory_bytes: u64,
 }
 
-impl Default for TaskMetrics {
-    fn default() -> Self {
-        Self {
-            executor_deserialize_time_ms: 0,
-            executor_run_time_ms: 0,
-            result_size_bytes: 0,
-            jvm_gc_time_ms: 0,
-            result_serialization_time_ms: 0,
-            memory_bytes_spilled: 0,
-            disk_bytes_spilled: 0,
-            peak_execution_memory_bytes: 0,
-        }
-    }
-}
-
 /// Executor metrics for monitoring
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutorMetrics {
     pub total_tasks: u64,
     pub failed_tasks: u64,
@@ -97,21 +82,6 @@ pub struct ExecutorMetrics {
     pub max_memory_bytes: u64,
     pub memory_used_bytes: u64,
     pub active_tasks: u32,
-}
-
-impl Default for ExecutorMetrics {
-    fn default() -> Self {
-        Self {
-            total_tasks: 0,
-            failed_tasks: 0,
-            succeeded_tasks: 0,
-            total_duration_ms: 0,
-            total_gc_time_ms: 0,
-            max_memory_bytes: 0,
-            memory_used_bytes: 0,
-            active_tasks: 0,
-        }
-    }
 }
 
 /// Serialization utilities for distributed tasks

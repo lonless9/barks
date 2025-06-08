@@ -13,7 +13,9 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ShuffledRdd<K: Data, V: Data, C: Data> {
     id: usize,
+    #[allow(dead_code)]
     parent: Arc<dyn RddBase<Item = (K, V)>>,
+    #[allow(dead_code)]
     aggregator: Arc<dyn Aggregator<K, V, C>>,
     partitioner: Arc<dyn Partitioner>,
 }

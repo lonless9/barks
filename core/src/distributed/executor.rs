@@ -208,7 +208,7 @@ impl ExecutorService for ExecutorServiceImpl {
             let mut driver_client_guard = driver_client_arc.lock().await;
             if let Some(client) = driver_client_guard.as_mut() {
                 let status_request = DriverTaskStatusRequest {
-                    executor_id: executor_id,
+                    executor_id,
                     task_id: task_id.clone(),
                     state: final_task_result.state as i32,
                     result: final_task_result.result.unwrap_or_default(),

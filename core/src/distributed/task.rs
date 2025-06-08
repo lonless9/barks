@@ -190,7 +190,7 @@ impl TaskRunner {
     // This is now a blocking function suitable for `spawn_blocking`
     fn deserialize_and_execute_task(
         partition_index: usize,
-        serialized_task: &Vec<u8>,
+        serialized_task: &[u8],
         metrics: &mut TaskMetrics,
     ) -> Result<(Vec<u8>, TaskMetrics), String> {
         let deserialize_start = Instant::now();
@@ -622,7 +622,7 @@ impl Task for ShuffleReduceTask<String, i32, i32, crate::shuffle::ReduceAggregat
                 for (key, value) in block {
                     match combiners.get_mut(&key) {
                         Some(combiner) => {
-                            *combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::merge_value(&aggregator, combiner.clone(), value);
+                            *combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::merge_value(&aggregator, *combiner, value);
                         }
                         None => {
                             let new_combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::create_combiner(&aggregator, value);

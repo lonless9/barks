@@ -175,6 +175,7 @@ impl DistributedContext {
         &self.mode
     }
 
+    #[allow(dead_code)]
     fn new_shuffle_id(&self) -> usize {
         self.next_shuffle_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -294,10 +295,10 @@ impl DistributedContext {
                     // If we have executors and the RDD has non-serializable transformations, it's an error.
                     if executor_count > 0 && rdd.is_transformed() {
                         error!("Attempted to run a transformed SimpleRdd in a distributed context with active executors.");
-                        return Err(crate::traits::RddError::ContextError(
+                        Err(crate::traits::RddError::ContextError(
                             "SimpleRdd with non-serializable closures cannot be executed in distributed mode. \
                              Use DistributedRdd with context.run_distributed() instead.".to_string(),
-                        ));
+                        ))
                     } else {
                         // Otherwise, run locally. This covers:
                         // 1. Base SimpleRdd (Vec) which is always local to the driver.
@@ -341,7 +342,7 @@ impl DistributedContext {
                 }
                 if self.driver.as_ref().unwrap().executor_count().await == 0 {
                     warn!("No executors available. Falling back to local computation.");
-                    return Ok(rdd.collect()?);
+                    return rdd.collect();
                 }
 
                 // For now, we handle a simple case: the final RDD is either a standard RDD or a ShuffledRdd.
@@ -376,7 +377,7 @@ impl DistributedContext {
         let data_slice = base_data.as_ref();
         let num_items = data_slice.len();
         let effective_num_partitions = std::cmp::min(num_partitions, num_items.max(1));
-        let partition_size = (num_items + effective_num_partitions - 1) / effective_num_partitions;
+        let partition_size = num_items.div_ceil(effective_num_partitions);
 
         let mut result_futures = Vec::new();
 
@@ -430,12 +431,12 @@ impl DistributedContext {
     }
 
     /// Executes a two-stage shuffle job.
-    async fn run_shuffle_job<T: 'static>(
+    async fn run_shuffle_job<T>(
         &self,
         _shuffle_dep: Arc<dyn std::any::Any + Send + Sync>,
     ) -> RddResult<Vec<T>>
     where
-        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()> + 'static,
     {
         unimplemented!("Shuffle job execution is not yet implemented.");
         // The logic will be:
