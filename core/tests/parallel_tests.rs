@@ -138,7 +138,7 @@ fn test_partition_driven_parallelism() {
 
 #[test]
 fn test_complex_parallel_pipeline() {
-    use barks_core::operations::{DivideByTwoOperation, EvenFilterPredicate, SquareMapOperation};
+    use barks_core::operations::{AddConstantOperation, EvenPredicate, SquareOperation};
 
     let context = FlowContext::new_with_threads("complex-pipeline", 4);
 
@@ -146,9 +146,9 @@ fn test_complex_parallel_pipeline() {
     let data: Vec<i32> = (1..=1000).collect();
     let rdd = context
         .parallelize_with_partitions(data, 10)
-        .map(Box::new(SquareMapOperation)) // Square each number
-        .filter(Box::new(EvenFilterPredicate)) // Keep only even squares
-        .map(Box::new(DivideByTwoOperation)); // Divide by 2
+        .map(Box::new(SquareOperation)) // Square each number
+        .filter(Box::new(EvenPredicate)) // Keep only even squares
+        .map(Box::new(AddConstantOperation { constant: 10 })); // Add 10
 
     let result = context.run(rdd.clone()).unwrap();
 
@@ -157,7 +157,7 @@ fn test_complex_parallel_pipeline() {
     assert_eq!(result.len(), count);
 
     // Verify some properties of the result
-    assert!(result.iter().all(|&x| x % 2 == 0)); // All should be even
+    assert!(result.iter().all(|&x| x >= 10)); // All should be at least 10 (since we added 10)
     assert!(!result.is_empty());
 }
 

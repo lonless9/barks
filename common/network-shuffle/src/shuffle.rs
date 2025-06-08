@@ -13,9 +13,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "server")]
-use tracing::debug;
-
-#[cfg(feature = "server")]
 use futures;
 
 /// Basic shuffle data implementation
@@ -202,6 +199,7 @@ where
     }
 }
 
+#[cfg(feature = "server")]
 impl<K, V> HttpShuffleReader<K, V>
 where
     K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
@@ -234,7 +232,7 @@ where
                 executor_addr, shuffle_id, map_id, reduce_id
             );
             let client = self.client.clone();
-            debug!("Fetching shuffle block from {}", url);
+            tracing::debug!("Fetching shuffle block from {}", url);
 
             futures.push(tokio::spawn(async move {
                 let resp = client.get(&url).send().await?;

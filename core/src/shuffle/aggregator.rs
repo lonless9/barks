@@ -263,3 +263,176 @@ where
         c1
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reduce_aggregator() {
+        let aggregator = ReduceAggregator::new(|a: i32, b: i32| a + b);
+
+        // Test create_combiner
+        let combiner = <ReduceAggregator<i32> as Aggregator<String, i32, i32>>::create_combiner(
+            &aggregator,
+            5,
+        );
+        assert_eq!(combiner, 5);
+
+        // Test merge_value
+        let merged = <ReduceAggregator<i32> as Aggregator<String, i32, i32>>::merge_value(
+            &aggregator,
+            combiner,
+            3,
+        );
+        assert_eq!(merged, 8);
+
+        // Test merge_combiners
+        let combined = <ReduceAggregator<i32> as Aggregator<String, i32, i32>>::merge_combiners(
+            &aggregator,
+            merged,
+            2,
+        );
+        assert_eq!(combined, 10);
+    }
+
+    #[test]
+    fn test_sum_aggregator() {
+        let aggregator = SumAggregator::<i32>::new();
+
+        // Test create_combiner
+        let combiner =
+            <SumAggregator<i32> as Aggregator<String, i32, i32>>::create_combiner(&aggregator, 10);
+        assert_eq!(combiner, 10);
+
+        // Test merge_value
+        let merged = <SumAggregator<i32> as Aggregator<String, i32, i32>>::merge_value(
+            &aggregator,
+            combiner,
+            20,
+        );
+        assert_eq!(merged, 30);
+
+        // Test merge_combiners
+        let combined = <SumAggregator<i32> as Aggregator<String, i32, i32>>::merge_combiners(
+            &aggregator,
+            merged,
+            15,
+        );
+        assert_eq!(combined, 45);
+    }
+
+    #[test]
+    fn test_count_aggregator() {
+        let aggregator = CountAggregator::<String>::new();
+
+        // Test create_combiner
+        let combiner =
+            <CountAggregator<String> as Aggregator<String, String, u64>>::create_combiner(
+                &aggregator,
+                "hello".to_string(),
+            );
+        assert_eq!(combiner, 1);
+
+        // Test merge_value
+        let merged = <CountAggregator<String> as Aggregator<String, String, u64>>::merge_value(
+            &aggregator,
+            combiner,
+            "world".to_string(),
+        );
+        assert_eq!(merged, 2);
+
+        // Test merge_combiners
+        let combined =
+            <CountAggregator<String> as Aggregator<String, String, u64>>::merge_combiners(
+                &aggregator,
+                merged,
+                3,
+            );
+        assert_eq!(combined, 5);
+    }
+
+    #[test]
+    fn test_average_aggregator() {
+        let aggregator = AverageAggregator::<i32>::new();
+
+        // Test create_combiner
+        let combiner = <AverageAggregator<i32> as Aggregator<String, i32, AverageCombiner<i32>>>::create_combiner(&aggregator, 10);
+        assert_eq!(combiner.sum, 10);
+        assert_eq!(combiner.count, 1);
+
+        // Test merge_value
+        let merged =
+            <AverageAggregator<i32> as Aggregator<String, i32, AverageCombiner<i32>>>::merge_value(
+                &aggregator,
+                combiner,
+                20,
+            );
+        assert_eq!(merged.sum, 30);
+        assert_eq!(merged.count, 2);
+
+        // Test merge_combiners
+        let other_combiner = AverageCombiner { sum: 15, count: 3 };
+        let combined = <AverageAggregator<i32> as Aggregator<String, i32, AverageCombiner<i32>>>::merge_combiners(&aggregator, merged, other_combiner);
+        assert_eq!(combined.sum, 45);
+        assert_eq!(combined.count, 5);
+    }
+
+    #[test]
+    fn test_group_by_key_aggregator() {
+        let aggregator = GroupByKeyAggregator::<String>::new();
+
+        // Test create_combiner
+        let combiner = <GroupByKeyAggregator<String> as Aggregator<String, String, Vec<String>>>::create_combiner(&aggregator, "first".to_string());
+        assert_eq!(combiner, vec!["first".to_string()]);
+
+        // Test merge_value
+        let merged =
+            <GroupByKeyAggregator<String> as Aggregator<String, String, Vec<String>>>::merge_value(
+                &aggregator,
+                combiner,
+                "second".to_string(),
+            );
+        assert_eq!(merged, vec!["first".to_string(), "second".to_string()]);
+
+        // Test merge_combiners
+        let other_combiner = vec!["third".to_string(), "fourth".to_string()];
+        let combined = <GroupByKeyAggregator<String> as Aggregator<String, String, Vec<String>>>::merge_combiners(&aggregator, merged, other_combiner);
+        assert_eq!(
+            combined,
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+                "fourth".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_combine_aggregator() {
+        // Test a custom aggregator that converts strings to their lengths and sums them
+        let aggregator = CombineAggregator::new(
+            |s: String| s.len(),
+            |acc: usize, s: String| acc + s.len(),
+            |acc1: usize, acc2: usize| acc1 + acc2,
+        );
+
+        // Test create_combiner
+        let combiner = <CombineAggregator<String, usize> as Aggregator<String, String, usize>>::create_combiner(&aggregator, "hello".to_string());
+        assert_eq!(combiner, 5);
+
+        // Test merge_value
+        let merged =
+            <CombineAggregator<String, usize> as Aggregator<String, String, usize>>::merge_value(
+                &aggregator,
+                combiner,
+                "world".to_string(),
+            );
+        assert_eq!(merged, 10); // 5 + 5
+
+        // Test merge_combiners
+        let combined = <CombineAggregator<String, usize> as Aggregator<String, String, usize>>::merge_combiners(&aggregator, merged, 3);
+        assert_eq!(combined, 13); // 10 + 3
+    }
+}

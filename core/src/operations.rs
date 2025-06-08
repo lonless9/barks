@@ -260,39 +260,6 @@ impl I32Predicate for GreaterThanPredicate {
     }
 }
 
-/// Map operation that squares an integer
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SquareMapOperation;
-
-#[typetag::serde]
-impl I32Operation for SquareMapOperation {
-    fn execute(&self, item: i32) -> i32 {
-        item * item
-    }
-}
-
-/// Map operation that divides an integer by 2
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DivideByTwoOperation;
-
-#[typetag::serde]
-impl I32Operation for DivideByTwoOperation {
-    fn execute(&self, item: i32) -> i32 {
-        item / 2
-    }
-}
-
-/// Filter predicate that checks if a number is even
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct EvenFilterPredicate;
-
-#[typetag::serde]
-impl I32Predicate for EvenFilterPredicate {
-    fn test(&self, item: &i32) -> bool {
-        item % 2 == 0
-    }
-}
-
 /// Generic map operation for string transformations
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToUpperCaseOperation;
