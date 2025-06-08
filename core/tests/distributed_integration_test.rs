@@ -10,6 +10,7 @@ use barks_core::distributed::{
 use barks_core::operations::{DoubleOperation, SerializableI32Operation};
 use barks_core::DistributedConfig;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing_test::traced_test;
@@ -205,8 +206,8 @@ async fn test_multiple_executors() {
 }
 
 /// Test task serialization and deserialization
-#[test]
-fn test_task_serialization() {
+#[tokio::test]
+async fn test_task_serialization() {
     // Test ChainedI32Task serialization, which is the core of an RDD task
     let partition_data: Vec<i32> = vec![1, 2, 3, 4, 5];
     let serialized_data = bincode::encode_to_vec(&partition_data, bincode::config::standard())
@@ -224,10 +225,9 @@ fn test_task_serialization() {
 
     // We can't directly compare the tasks, but we can test that they work the same way
     // by executing them and comparing results
-    let arena = bumpalo::Bump::new();
-    let original_result = task.execute(0, &arena).unwrap();
-    let arena2 = bumpalo::Bump::new();
-    let deserialized_result = deserialized_task.execute(0, &arena2).unwrap();
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let original_result = task.execute(0, block_manager.clone()).await.unwrap();
+    let deserialized_result = deserialized_task.execute(0, block_manager).await.unwrap();
 
     assert_eq!(original_result, deserialized_result);
 

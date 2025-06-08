@@ -19,7 +19,7 @@ pub struct ShuffledRdd<K: Data, V: Data, C: Data> {
     parent: Arc<dyn RddBase<Item = (K, V)>>,
     #[allow(dead_code)]
     aggregator: Arc<dyn Aggregator<K, V, C>>,
-    partitioner: Arc<dyn Partitioner>,
+    partitioner: Arc<dyn Partitioner<K>>,
 }
 
 impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {
@@ -27,7 +27,7 @@ impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {
         id: usize,
         parent: Arc<dyn RddBase<Item = (K, V)>>,
         aggregator: Arc<dyn Aggregator<K, V, C>>,
-        partitioner: Arc<dyn Partitioner>,
+        partitioner: Arc<dyn Partitioner<K>>,
     ) -> Self {
         Self {
             id,

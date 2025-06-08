@@ -120,9 +120,12 @@ pub struct ShuffleBlockId {
 /// Trait for a partitioner, which defines how keys are mapped to reduce partitions.
 /// Note: We'll implement specific partitioners for concrete types rather than using generics
 /// to work around typetag limitations with generic traits.
-pub trait Partitioner: Send + Sync + std::fmt::Debug {
+pub trait Partitioner<K>: Send + Sync + std::fmt::Debug {
     /// Get the number of partitions.
     fn num_partitions(&self) -> u32;
+
+    /// Get the partition for a given key.
+    fn get_partition(&self, key: &K) -> u32;
 }
 
 /// The status of a completed map task, sent back to the driver.

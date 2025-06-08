@@ -32,15 +32,12 @@ impl HashPartitioner {
     }
 }
 
-impl Partitioner for HashPartitioner {
+impl<K: Hash + Send + Sync + HashPartitionable> Partitioner<K> for HashPartitioner {
     fn num_partitions(&self) -> u32 {
         self.num_partitions
     }
-}
 
-impl HashPartitioner {
-    /// Get the partition for a hashable key
-    pub fn get_partition_for<K: HashPartitionable>(&self, key: &K) -> u32 {
+    fn get_partition(&self, key: &K) -> u32 {
         key.get_partition_with_seed(self.num_partitions, self.seed)
     }
 }
@@ -130,8 +127,7 @@ where
         }
     }
 
-    /// Get the partition for a given key
-    pub fn get_partition_for(&self, key: &K) -> u32 {
+    fn get_partition(&self, key: &K) -> u32 {
         // Binary search to find the appropriate partition
         match self.range_bounds.binary_search(key) {
             Ok(index) => index as u32,
@@ -140,12 +136,20 @@ where
     }
 }
 
-impl<K> Partitioner for RangePartitioner<K>
+impl<K> Partitioner<K> for RangePartitioner<K>
 where
     K: Ord + Clone + Send + Sync + std::fmt::Debug + 'static,
 {
     fn num_partitions(&self) -> u32 {
         self.num_partitions
+    }
+
+    fn get_partition(&self, key: &K) -> u32 {
+        // Binary search to find the appropriate partition
+        match self.range_bounds.binary_search(key) {
+            Ok(index) => index as u32,
+            Err(index) => index as u32,
+        }
     }
 }
 
@@ -174,14 +178,22 @@ where
         let partition = (self.partition_func)(key);
         partition % self.num_partitions
     }
+
+    fn get_partition(&self, key: &K) -> u32 {
+        self.get_partition_for(key)
+    }
 }
 
-impl<K> Partitioner for CustomPartitioner<K>
+impl<K> Partitioner<K> for CustomPartitioner<K>
 where
     K: Send + Sync + 'static,
 {
     fn num_partitions(&self) -> u32 {
         self.num_partitions
+    }
+
+    fn get_partition(&self, key: &K) -> u32 {
+        self.get_partition_for(key)
     }
 }
 

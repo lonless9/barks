@@ -192,11 +192,11 @@ impl ShuffleBlockManager for OptimizedShuffleBlockManager {
     }
 }
 
-/// Sort-based shuffle writer that sorts data before writing to improve read performance
-pub struct SortBasedShuffleWriter<K, V> {
+/// Hash-based shuffle writer that sorts data before writing to improve read performance
+pub struct HashShuffleWriter<K, V> {
     shuffle_id: u32,
     map_id: u32,
-    partitioner: Arc<dyn Partitioner>,
+    partitioner: Arc<dyn crate::traits::Partitioner<K>>,
     block_manager: Arc<dyn ShuffleBlockManager>,
     config: ShuffleConfig,
     // Buffer for each reduce partition: reduce_id -> Vec<(K, V)>
@@ -204,7 +204,7 @@ pub struct SortBasedShuffleWriter<K, V> {
     memory_usage: usize,
 }
 
-impl<K, V> SortBasedShuffleWriter<K, V>
+impl<K, V> HashShuffleWriter<K, V>
 where
     K: serde::Serialize + Send + Sync + Clone + bincode::Encode + std::hash::Hash + Ord,
     V: serde::Serialize + Send + Sync + Clone + bincode::Encode,
@@ -212,7 +212,7 @@ where
     pub fn new(
         shuffle_id: u32,
         map_id: u32,
-        partitioner: Arc<dyn Partitioner>,
+        partitioner: Arc<dyn crate::traits::Partitioner<K>>,
         block_manager: Arc<dyn ShuffleBlockManager>,
         config: ShuffleConfig,
     ) -> Self {
@@ -231,13 +231,7 @@ where
     pub async fn write(&mut self, record: (K, V)) -> Result<()> {
         let (key, value) = record;
 
-        // Determine partition
-        let reduce_id = {
-            use std::hash::Hasher;
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut hasher);
-            (hasher.finish() % self.partitioner.num_partitions() as u64) as u32
-        };
+        let reduce_id = self.partitioner.get_partition(&key);
 
         // Add to buffer
         let buffer = self.buffers.entry(reduce_id).or_default();
@@ -281,7 +275,7 @@ where
         Ok(())
     }
 
-    pub async fn close(&mut self) -> Result<HashMap<u32, u64>> {
+    pub async fn close(&mut self) -> Result<crate::traits::MapStatus> {
         // Flush any remaining buffers
         self.spill_buffers().await?;
 
@@ -300,6 +294,6 @@ where
             }
         }
 
-        Ok(block_sizes)
+        Ok(crate::traits::MapStatus::new(block_sizes))
     }
 }

@@ -7,6 +7,7 @@ use barks_core::distributed::task::{ChainedTask, Task, TaskExecutionResult, Task
 use barks_core::operations::{
     DoubleOperation, EvenPredicate, GreaterThanPredicate, SerializableI32Operation,
 };
+use std::sync::Arc;
 use tracing_test::traced_test;
 
 #[tokio::test]
@@ -19,8 +20,8 @@ async fn test_task_direct_execution() {
         serialized_data,
         vec![SerializableI32Operation::Map(Box::new(DoubleOperation))],
     );
-    let arena = bumpalo::Bump::new();
-    let result = task.execute(0, &arena).unwrap();
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let result = task.execute(0, block_manager).await.unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
@@ -36,8 +37,8 @@ async fn test_task_direct_execution() {
         serialized_data2,
         vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
     );
-    let arena = bumpalo::Bump::new();
-    let result = task.execute(0, &arena).unwrap();
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let result = task.execute(0, block_manager).await.unwrap();
 
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
@@ -49,7 +50,8 @@ async fn test_task_direct_execution() {
 #[tokio::test]
 #[traced_test]
 async fn test_task_runner_with_chained_i32_task() {
-    let task_runner = TaskRunner::new(4);
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let task_runner = TaskRunner::new(4, block_manager);
 
     // Create a ChainedTask<i32>
     let test_data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -118,8 +120,8 @@ async fn test_task_serialization_deserialization() {
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 
     // Execute the deserialized task
-    let arena = bumpalo::Bump::new();
-    let result = deserialized.execute(0, &arena).unwrap();
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let result = deserialized.execute(0, block_manager).await.unwrap();
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
         .0;
@@ -136,8 +138,8 @@ async fn test_task_serialization_deserialization() {
     let serialized = serde_json::to_vec(&task2).unwrap();
     let deserialized: Box<dyn Task> = serde_json::from_slice(&serialized).unwrap();
 
-    let arena = bumpalo::Bump::new();
-    let result = deserialized.execute(0, &arena).unwrap();
+    let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+    let result = deserialized.execute(0, block_manager).await.unwrap();
     let result_data: Vec<i32> = bincode::decode_from_slice(&result, bincode::config::standard())
         .unwrap()
         .0;

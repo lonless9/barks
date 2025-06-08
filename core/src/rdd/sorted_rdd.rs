@@ -77,7 +77,7 @@ where
 
         for (key, value) in all_data {
             // Use the RangePartitioner to determine the correct partition
-            let key_partition = self.partitioner.get_partition_for(&key) as usize;
+            let key_partition = self.partitioner.get_partition(&key) as usize;
 
             if key_partition == partition_index {
                 partition_data.push((key, value));

@@ -17,13 +17,13 @@ use crate::distributed::proto::executor::{
 };
 use crate::distributed::task::TaskRunner;
 use crate::distributed::types::{ExecutorInfo, ExecutorMetrics, TaskId};
-use barks_network_shuffle::{shuffle::server::ShuffleServer, FileShuffleBlockManager};
+use barks_network_shuffle::shuffle::server::ShuffleServer;
 use barks_utils::current_timestamp_secs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::tempdir;
+
 use tokio::sync::Mutex;
 use tokio::time::interval;
 use tonic::{transport::Server, Request, Response, Status};
@@ -54,6 +54,8 @@ pub struct ExecutorServiceImpl {
     metrics: Arc<Mutex<ExecutorMetrics>>,
     /// Running tasks information
     running_tasks: Arc<Mutex<HashMap<TaskId, TaskInfo>>>,
+    /// Shared shuffle block manager for this executor
+    block_manager: Arc<dyn barks_network_shuffle::traits::ShuffleBlockManager>,
 }
 
 impl ExecutorServiceImpl {
@@ -62,14 +64,16 @@ impl ExecutorServiceImpl {
         executor_info: ExecutorInfo,
         max_concurrent_tasks: usize,
         driver_client: Arc<Mutex<Option<DriverServiceClient<tonic::transport::Channel>>>>,
+        block_manager: Arc<dyn barks_network_shuffle::traits::ShuffleBlockManager>,
     ) -> Self {
         Self {
             executor_info,
             status: Arc::new(Mutex::new(ExecutorStatus::Starting)),
             driver_client,
-            task_runner: Arc::new(TaskRunner::new(max_concurrent_tasks)),
+            task_runner: Arc::new(TaskRunner::new(max_concurrent_tasks, block_manager.clone())),
             metrics: Arc::new(Mutex::new(ExecutorMetrics::default())),
             running_tasks: Arc::new(Mutex::new(HashMap::new())),
+            block_manager,
         }
     }
 
@@ -421,6 +425,11 @@ impl ExecutorServiceImpl {
 pub struct Executor {
     service: Arc<ExecutorServiceImpl>,
     config: DistributedConfig,
+    // The executor owns the shuffle directory's lifetime
+    // Using a temp directory for now; in a real deployment, this would be a configured path.
+    // We keep the handle here to ensure it's not dropped until the Executor is.
+    #[allow(dead_code)]
+    shuffle_dir: Arc<tempfile::TempDir>,
 }
 
 impl Executor {
@@ -430,14 +439,27 @@ impl Executor {
         max_concurrent_tasks: usize,
         config: DistributedConfig,
     ) -> Self {
+        let shuffle_dir = Arc::new(
+            tempfile::tempdir().expect("Failed to create temporary directory for shuffle files"),
+        );
+        let block_manager: Arc<dyn barks_network_shuffle::traits::ShuffleBlockManager> = Arc::new(
+            barks_network_shuffle::FileShuffleBlockManager::new(shuffle_dir.path())
+                .expect("Failed to create FileShuffleBlockManager"),
+        );
+
         let driver_client = Arc::new(Mutex::new(None));
         let service = Arc::new(ExecutorServiceImpl::new(
             executor_info.clone(),
             max_concurrent_tasks,
             driver_client,
+            block_manager,
         ));
 
-        Self { service, config }
+        Self {
+            service,
+            config,
+            shuffle_dir,
+        }
     }
 
     /// Register with the driver with retry logic and backoff strategy
@@ -533,13 +555,8 @@ impl Executor {
         let shuffle_port = addr.port() + 1000;
         let shuffle_addr_str = format!("{}:{}", addr.ip(), shuffle_port);
         let shuffle_addr: SocketAddr = shuffle_addr_str.parse()?;
-
-        // Each executor needs its own root directory for shuffle files.
-        // In a real deployment, this would be a configured path.
-        let temp_dir = tempdir()?;
-        let shuffle_root_dir = temp_dir.keep();
-        info!("Shuffle root directory: {:?}", shuffle_root_dir);
-        let block_manager = Arc::new(FileShuffleBlockManager::new(shuffle_root_dir)?);
+        let block_manager = self.service.block_manager.clone();
+        info!("Shuffle root directory: {:?}", self.shuffle_dir.path());
         let shuffle_server = ShuffleServer::new(shuffle_addr, block_manager);
 
         tokio::spawn(async move {

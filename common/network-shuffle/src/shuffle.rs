@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "server")]
-use tracing::{debug, info};
+use tracing::debug;
 
 #[cfg(feature = "server")]
 use futures;
@@ -184,159 +184,15 @@ impl FileShuffleBlockManager {
     }
 }
 
-/// Memory shuffle writer
-pub struct MemoryShuffleWriter<D: ShuffleData> {
-    shuffle_id: u32,
-    map_id: u32,
-    blocks: Arc<RwLock<HashMap<ShuffleBlockId, Vec<u8>>>>,
-    bytes_written: u64,
-    _phantom: std::marker::PhantomData<D>,
-}
-
-impl<D: ShuffleData> MemoryShuffleWriter<D> {
-    pub fn new(
-        shuffle_id: u32,
-        map_id: u32,
-        blocks: Arc<RwLock<HashMap<ShuffleBlockId, Vec<u8>>>>,
-    ) -> Self {
-        Self {
-            shuffle_id,
-            map_id,
-            blocks,
-            bytes_written: 0,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-#[async_trait]
-impl<D: ShuffleData> ShuffleWriter for MemoryShuffleWriter<D> {
-    type Data = D;
-
-    async fn write(&mut self, partition_id: u32, data: Self::Data) -> Result<()> {
-        let block_id = ShuffleBlockId {
-            shuffle_id: self.shuffle_id,
-            map_id: self.map_id,
-            reduce_id: partition_id,
-        };
-
-        let bytes = data.to_bytes()?;
-        self.bytes_written += bytes.len() as u64;
-
-        let mut blocks = self.blocks.write().await;
-        blocks.insert(block_id, bytes);
-
-        Ok(())
-    }
-
-    async fn flush(&mut self) -> Result<()> {
-        // Memory implementation doesn't need flushing
-        Ok(())
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        // Nothing to close for memory implementation
-        Ok(())
-    }
-
-    fn bytes_written(&self) -> u64 {
-        self.bytes_written
-    }
-}
-
-/// A writer that partitions data by key and writes to shuffle files.
-///
-/// This writer buffers outputs for each reduce partition and flushes them to the
-/// underlying ShuffleBlockManager.
-pub struct BytewaxShuffleWriter<K, V> {
-    shuffle_id: u32,
-    map_id: u32,
-    partitioner: Arc<dyn Partitioner>,
-    block_manager: Arc<dyn ShuffleBlockManager>,
-    // Buffer for each reduce partition: reduce_id -> Vec<Serialized(K, V)>
-    buffers: HashMap<u32, Vec<u8>>,
-    // Track block sizes for MapStatus
-    block_sizes: HashMap<u32, u64>,
-    _marker: std::marker::PhantomData<(K, V)>,
-}
-
-impl<K, V> BytewaxShuffleWriter<K, V>
-where
-    K: Serialize + Send + Sync + Clone + Encode + std::hash::Hash,
-    V: Serialize + Send + Sync + Clone + Encode,
-{
-    pub fn new(
-        shuffle_id: u32,
-        map_id: u32,
-        partitioner: Arc<dyn Partitioner>,
-        block_manager: Arc<dyn ShuffleBlockManager>,
-    ) -> Self {
-        Self {
-            shuffle_id,
-            map_id,
-            partitioner,
-            block_manager,
-            buffers: HashMap::new(),
-            block_sizes: HashMap::new(),
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    /// Write a key-value pair. The key is used to determine the output partition.
-    pub async fn write(&mut self, record: (K, V)) -> Result<()> {
-        let (key, value) = record;
-
-        // Use hash-based partitioning with the configured partitioner
-        let reduce_id = {
-            use std::hash::Hasher;
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut hasher);
-            (hasher.finish() % self.partitioner.num_partitions() as u64) as u32
-        };
-
-        let serialized_record =
-            bincode::encode_to_vec((key, value), bincode::config::standard())
-                .map_err(|e| anyhow::anyhow!("Failed to serialize shuffle record: {}", e))?;
-
-        let buffer = self.buffers.entry(reduce_id).or_default();
-        buffer.extend_from_slice(&serialized_record);
-        Ok(())
-    }
-
-    /// Flush all buffered data to the block manager and return the map status.
-    /// This should be called once all records for the map task have been written.
-    pub async fn close(mut self) -> Result<MapStatus> {
-        #[cfg(feature = "server")]
-        info!(
-            "Closing shuffle writer for map task {}_{}",
-            self.shuffle_id, self.map_id
-        );
-
-        for (reduce_id, buffer) in self.buffers.drain() {
-            if !buffer.is_empty() {
-                let block_id = ShuffleBlockId {
-                    shuffle_id: self.shuffle_id,
-                    map_id: self.map_id,
-                    reduce_id,
-                };
-                let block_size = buffer.len() as u64;
-                self.block_manager.put_block(block_id, buffer).await?;
-                self.block_sizes.insert(reduce_id, block_size);
-            }
-        }
-        Ok(MapStatus::new(self.block_sizes))
-    }
-}
-
 /// Fetches shuffle blocks from remote executors for a reduce task.
 #[cfg(feature = "server")]
-pub struct BytewaxShuffleReader<K, V> {
+pub struct HttpShuffleReader<K, V> {
     client: reqwest::Client,
     _marker: std::marker::PhantomData<(K, V)>,
 }
 
 #[cfg(feature = "server")]
-impl<K, V> Default for BytewaxShuffleReader<K, V>
+impl<K, V> Default for HttpShuffleReader<K, V>
 where
     K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
     V: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
@@ -346,7 +202,7 @@ where
     }
 }
 
-impl<K, V> BytewaxShuffleReader<K, V>
+impl<K, V> HttpShuffleReader<K, V>
 where
     K: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,
     V: for<'de> Deserialize<'de> + Send + Sync + 'static + Decode<()>,

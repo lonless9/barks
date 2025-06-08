@@ -16,7 +16,7 @@ pub struct JoinedRdd<K: Data, V: Data, W: Data> {
     id: usize,
     left_rdd: Arc<dyn RddBase<Item = (K, V)>>,
     right_rdd: Arc<dyn RddBase<Item = (K, W)>>,
-    partitioner: Arc<dyn Partitioner>,
+    partitioner: Arc<dyn Partitioner<K>>,
 }
 
 impl<K: Data, V: Data, W: Data> JoinedRdd<K, V, W> {
@@ -24,7 +24,7 @@ impl<K: Data, V: Data, W: Data> JoinedRdd<K, V, W> {
         id: usize,
         left_rdd: Arc<dyn RddBase<Item = (K, V)>>,
         right_rdd: Arc<dyn RddBase<Item = (K, W)>>,
-        partitioner: Arc<dyn Partitioner>,
+        partitioner: Arc<dyn Partitioner<K>>,
     ) -> Self {
         Self {
             id,
@@ -170,7 +170,7 @@ pub struct CogroupedRdd<K: Data, V: Data, W: Data> {
     id: usize,
     left_rdd: Arc<dyn RddBase<Item = (K, V)>>,
     right_rdd: Arc<dyn RddBase<Item = (K, W)>>,
-    partitioner: Arc<dyn Partitioner>,
+    partitioner: Arc<dyn Partitioner<K>>,
 }
 
 impl<K: Data, V: Data, W: Data> CogroupedRdd<K, V, W> {
@@ -178,7 +178,7 @@ impl<K: Data, V: Data, W: Data> CogroupedRdd<K, V, W> {
         id: usize,
         left_rdd: Arc<dyn RddBase<Item = (K, V)>>,
         right_rdd: Arc<dyn RddBase<Item = (K, W)>>,
-        partitioner: Arc<dyn Partitioner>,
+        partitioner: Arc<dyn Partitioner<K>>,
     ) -> Self {
         Self {
             id,

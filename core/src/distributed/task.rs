@@ -7,15 +7,13 @@ use crate::distributed::proto::driver::TaskState;
 use crate::distributed::types::*;
 use crate::operations::RddDataType;
 use anyhow::Result;
+use barks_network_shuffle::traits::ShuffleBlockManager;
 use bumpalo::Bump;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
-
-// Import shuffle-related types
-use barks_network_shuffle::traits::MapStatus;
 
 /// A trait for any task that can be executed on an executor.
 ///
@@ -34,11 +32,16 @@ use barks_network_shuffle::traits::MapStatus;
 /// This combination provides the flexibility of JSON for the trait object and the performance of
 /// bincode for the bulk data.
 #[typetag::serde(tag = "type")]
+#[async_trait::async_trait]
 pub trait Task: Send + Sync {
     /// Executes the task logic on a partition's data and returns the result as serialized bytes.
     /// This method encapsulates the entire computation for a single partition.
-    /// The arena parameter provides efficient memory allocation for intermediate computations.
-    fn execute(&self, partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String>;
+    /// The block_manager parameter provides access to shuffle data storage.
+    async fn execute(
+        &self,
+        partition_index: usize,
+        block_manager: Arc<dyn barks_network_shuffle::traits::ShuffleBlockManager>,
+    ) -> Result<Vec<u8>, String>;
 }
 
 /// A generic task that executes a chain of serializable operations on data of type T.
@@ -68,88 +71,57 @@ impl<T: crate::operations::RddDataType> ChainedTask<T> {
 // Generic implementation for any type that implements RddDataType
 // Note: We can't use #[typetag::serde] with generic implementations,
 // so we need specific implementations for each concrete type.
+macro_rules! impl_chained_task {
+    ($type:ty, $name:literal) => {
+        #[typetag::serde(name = $name)]
+        #[async_trait::async_trait]
+        impl Task for ChainedTask<$type> {
+            async fn execute(
+                &self,
+                _partition_index: usize,
+                _block_manager: Arc<dyn ShuffleBlockManager>,
+            ) -> Result<Vec<u8>, String> {
+                // This is a CPU-bound operation, so we run it in a blocking thread
+                // to avoid starving the async runtime.
+                let partition_data = self.partition_data.clone();
+                let operations = self.operations.clone();
 
-#[typetag::serde(name = "ChainedTaskI32")]
-impl Task for ChainedTask<i32> {
-    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the initial partition data.
-        let (mut current_data, _): (Vec<i32>, _) =
-            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
-                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
+                tokio::task::spawn_blocking(move || {
+                    // Each blocking task gets its own arena.
+                    let arena = Bump::new();
 
-        // 2. Apply each operation in the chain sequentially. The output of one
-        //    operation becomes the input for the next.
-        for op in &self.operations {
-            current_data = i32::apply_operation(op, current_data, arena);
+                    // 1. Deserialize the initial partition data.
+                    let (mut current_data, _): (Vec<$type>, _) =
+                        bincode::decode_from_slice(&partition_data, bincode::config::standard())
+                            .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
+
+                    // 2. Apply each operation in the chain sequentially.
+                    for op in &operations {
+                        current_data = <$type>::apply_operation(op, current_data, &arena);
+                    }
+
+                    // 3. Serialize the final result.
+                    bincode::encode_to_vec(&current_data, bincode::config::standard())
+                        .map_err(|e| format!("Failed to serialize result: {}", e))
+                })
+                .await
+                .map_err(|e| format!("Task panicked: {}", e))?
+            }
         }
-
-        // 3. Serialize the final result.
-        bincode::encode_to_vec(&current_data, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize result: {}", e))
-    }
+    };
 }
 
-#[typetag::serde(name = "ChainedTaskString")]
-impl Task for ChainedTask<String> {
-    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the initial partition data.
-        let (mut current_data, _): (Vec<String>, _) =
-            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
-                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
-
-        // 2. Apply each operation in the chain sequentially.
-        for op in &self.operations {
-            current_data = String::apply_operation(op, current_data, arena);
-        }
-
-        // 3. Serialize the final result.
-        bincode::encode_to_vec(&current_data, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize result: {}", e))
-    }
-}
-
-#[typetag::serde(name = "ChainedTaskStringI32Tuple")]
-impl Task for ChainedTask<(String, i32)> {
-    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the initial partition data.
-        let (mut current_data, _): (Vec<(String, i32)>, _) =
-            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
-                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
-
-        // 2. Apply each operation in the chain sequentially.
-        for op in &self.operations {
-            current_data = <(String, i32)>::apply_operation(op, current_data, arena);
-        }
-
-        // 3. Serialize the final result.
-        bincode::encode_to_vec(&current_data, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize result: {}", e))
-    }
-}
-
-#[typetag::serde(name = "ChainedTaskI32StringTuple")]
-impl Task for ChainedTask<(i32, String)> {
-    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the initial partition data.
-        let (mut current_data, _): (Vec<(i32, String)>, _) =
-            bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
-                .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
-
-        // 2. Apply each operation in sequence.
-        for operation in &self.operations {
-            current_data = <(i32, String)>::apply_operation(operation, current_data, arena);
-        }
-
-        // 3. Serialize the result.
-        bincode::encode_to_vec(current_data, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize result: {}", e))
-    }
-}
+impl_chained_task!(i32, "ChainedTaskI32");
+impl_chained_task!(String, "ChainedTaskString");
+impl_chained_task!((String, i32), "ChainedTaskStringI32Tuple");
+impl_chained_task!((i32, String), "ChainedTaskI32StringTuple");
 
 /// Task runner for executing distributed tasks
 pub struct TaskRunner {
     /// Semaphore to limit concurrent tasks
     semaphore: Arc<tokio::sync::Semaphore>,
+    /// Shared shuffle block manager from the executor
+    block_manager: Arc<dyn ShuffleBlockManager>,
 }
 
 /// Task execution result
@@ -163,9 +135,10 @@ pub struct TaskExecutionResult {
 
 impl TaskRunner {
     /// Create a new task runner
-    pub fn new(max_concurrent_tasks: usize) -> Self {
+    pub fn new(max_concurrent_tasks: usize, block_manager: Arc<dyn ShuffleBlockManager>) -> Self {
         Self {
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent_tasks)),
+            block_manager,
         }
     }
 
@@ -183,35 +156,52 @@ impl TaskRunner {
             .await
             .expect("Semaphore closed");
 
-        let _start_time = Instant::now();
         let mut metrics = TaskMetrics::default();
 
-        // Execute the task in a separate blocking thread and handle all possible outcomes,
-        // including panics, to prevent the executor from crashing.
-        let execution_result = tokio::task::spawn_blocking(move || {
-            Self::deserialize_and_execute_task(partition_index, &serialized_task, &mut metrics)
-        })
-        .await
-        .unwrap_or_else(|join_error| {
-            // This case handles panics within the blocking task.
-            Err(format!("Task execution panicked: {}", join_error))
-        });
+        // Deserialize the task first. This is quick and done on the async thread.
+        let deserialize_start = Instant::now();
+        let task: Box<dyn Task> = match serde_json::from_slice(&serialized_task) {
+            Ok(task) => task,
+            Err(e) => {
+                return TaskExecutionResult {
+                    state: TaskState::TaskFailed,
+                    result: None,
+                    error_message: Some(format!(
+                        "Failed to deserialize task with serde_json: {}",
+                        e
+                    )),
+                    metrics,
+                };
+            }
+        };
+        metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
+
+        // Now execute the task asynchronously.
+        let execution_start = Instant::now();
+        let execution_result = task
+            .execute(partition_index, self.block_manager.clone())
+            .await;
+
+        metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
 
         // Drop permit to release the semaphore slot
         drop(permit);
 
         match execution_result {
-            Ok((result_bytes, task_metrics)) => TaskExecutionResult {
-                state: TaskState::TaskFinished,
-                result: Some(result_bytes),
-                error_message: None,
-                metrics: task_metrics,
-            },
+            Ok(result_bytes) => {
+                metrics.result_size_bytes = result_bytes.len() as u64;
+                TaskExecutionResult {
+                    state: TaskState::TaskFinished,
+                    result: Some(result_bytes),
+                    error_message: None,
+                    metrics,
+                }
+            }
             Err(e) => TaskExecutionResult {
                 state: TaskState::TaskFailed,
                 result: None,
-                error_message: Some(e.to_string()),
-                metrics: TaskMetrics::default(),
+                error_message: Some(e),
+                metrics,
             },
         }
     }
@@ -225,30 +215,6 @@ impl TaskRunner {
             task_id
         );
         Ok(())
-    }
-
-    // This is now a blocking function suitable for `spawn_blocking`
-    fn deserialize_and_execute_task(
-        partition_index: usize,
-        serialized_task: &[u8],
-        metrics: &mut TaskMetrics,
-    ) -> Result<(Vec<u8>, TaskMetrics), String> {
-        let deserialize_start = Instant::now();
-        let task: Box<dyn Task> = serde_json::from_slice(serialized_task)
-            .map_err(|e| format!("Failed to deserialize task with serde_json: {}", e))?;
-        metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
-
-        let execution_start = Instant::now();
-
-        // Create a new Bump arena for this specific task.
-        let arena = Bump::new();
-        // Pass the arena to the execute method.
-        let result_bytes = task.execute(partition_index, &arena)?; // Errors are now String
-
-        metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
-        metrics.result_size_bytes = result_bytes.len() as u64;
-
-        Ok((result_bytes, metrics.clone()))
     }
 }
 
@@ -392,8 +358,9 @@ mod tests {
             operations,
         );
 
-        let arena = Bump::new();
-        let result_bytes = task.execute(0, &arena).unwrap();
+        // Create a mock block manager for testing
+        let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+        let result_bytes = task.execute(0, block_manager).await.unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -425,8 +392,8 @@ mod tests {
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
         // Execute the deserialized task
-        let arena = Bump::new();
-        let result_bytes = deserialized_task.execute(0, &arena).unwrap();
+        let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+        let result_bytes = deserialized_task.execute(0, block_manager).await.unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -440,8 +407,13 @@ mod tests {
     }
 
     #[typetag::serde]
+    #[async_trait::async_trait]
     impl Task for CustomSquareTask {
-        fn execute(&self, _partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
+        async fn execute(
+            &self,
+            _partition_index: usize,
+            _block_manager: Arc<dyn ShuffleBlockManager>,
+        ) -> Result<Vec<u8>, String> {
             let (data, _): (Vec<i32>, usize) =
                 bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
                     .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
@@ -471,8 +443,8 @@ mod tests {
         // Deserialize it
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
-        let arena = Bump::new();
-        let result_bytes = deserialized_task.execute(0, &arena).unwrap();
+        let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+        let result_bytes = deserialized_task.execute(0, block_manager).await.unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
         assert_eq!(result, vec![1, 4, 9, 16, 25]);
@@ -515,69 +487,45 @@ where
 
 // Specific implementations for concrete types
 #[typetag::serde(name = "ShuffleMapTaskStringI32")]
+#[async_trait::async_trait]
 impl Task for ShuffleMapTask<String, i32> {
-    fn execute(&self, partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
-        // In a real executor, the block manager would be injected/retrieved from context.
-        // For this task, we assume a local temp directory for shuffle files.
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| format!("Failed to create temp dir for shuffle: {}", e))?;
-        let block_manager = Arc::new(
-            barks_network_shuffle::FileShuffleBlockManager::new(temp_dir.path())
-                .map_err(|e| format!("Failed to create FileShuffleBlockManager: {}", e))?,
-        );
-
+    async fn execute(
+        &self,
+        partition_index: usize,
+        block_manager: Arc<dyn ShuffleBlockManager>,
+    ) -> Result<Vec<u8>, String> {
         // 1. Deserialize the partition data
         let (data, _): (Vec<(String, i32)>, _) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
                 .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
 
         // 2. Create a shuffle writer
+        // In a real system, the partitioner would also be serialized as part of the task
         let partitioner = Arc::new(crate::shuffle::HashPartitioner::new(
             self.num_reduce_partitions,
         ));
-        let _writer: barks_network_shuffle::BytewaxShuffleWriter<String, i32> =
-            barks_network_shuffle::BytewaxShuffleWriter::new(
+        let mut writer: barks_network_shuffle::optimizations::HashShuffleWriter<String, i32> =
+            barks_network_shuffle::optimizations::HashShuffleWriter::new(
                 self.shuffle_id,
                 partition_index as u32,
                 partitioner,
                 block_manager,
+                barks_network_shuffle::optimizations::ShuffleConfig::default(), // Use default shuffle config
             );
 
-        // 3. For now, we'll simulate the shuffle write operation without async
-        // In a real implementation, this would use the actual shuffle writer
-        // but we need to avoid creating nested runtimes
-
-        // Simulate partitioning the data
-        let mut partitioned_data: std::collections::HashMap<u32, Vec<(String, i32)>> =
-            std::collections::HashMap::new();
-
-        for (key, value) in data {
-            // Simple hash partitioning
-            let partition_id = {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.num_reduce_partitions as u64) as u32
-            };
-
-            partitioned_data
-                .entry(partition_id)
-                .or_default()
-                .push((key, value));
+        // 3. Write all records to the shuffle writer
+        for record in data {
+            writer
+                .write(record)
+                .await
+                .map_err(|e| format!("Failed to write shuffle record: {}", e))?;
         }
 
-        // 4. Create MapStatus with block sizes
-        let map_status = MapStatus::new({
-            let mut block_sizes = std::collections::HashMap::new();
-            for (partition_id, partition_data) in &partitioned_data {
-                let serialized_size =
-                    bincode::encode_to_vec(partition_data, bincode::config::standard())
-                        .map_err(|e| format!("Failed to serialize partition data: {}", e))?
-                        .len() as u64;
-                block_sizes.insert(*partition_id, serialized_size);
-            }
-            block_sizes
-        });
+        // 4. Close the writer to flush all buffers and get the MapStatus
+        let map_status = writer
+            .close()
+            .await
+            .map_err(|e| format!("Failed to close shuffle writer: {}", e))?;
 
         // 5. Serialize and return the MapStatus
         bincode::encode_to_vec(&map_status, bincode::config::standard())
@@ -633,58 +581,58 @@ where
 }
 
 #[typetag::serde(name = "ShuffleReduceTaskStringI32")]
+#[async_trait::async_trait]
 impl Task for ShuffleReduceTask<String, i32, i32, crate::shuffle::ReduceAggregator<i32>> {
-    fn execute(&self, _partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
+    async fn execute(
+        &self,
+        _partition_index: usize,
+        _block_manager: Arc<dyn ShuffleBlockManager>,
+    ) -> Result<Vec<u8>, String> {
         // In a real implementation, this would:
-        // 1. Use map_output_locations to fetch shuffle blocks from remote executors
-        // 2. Deserialize the aggregator from aggregator_data
+        // 1. Deserialize the aggregator from aggregator_data
+        // 2. Use map_output_locations to fetch shuffle blocks from remote executors
         // 3. Group all values by key across all fetched blocks
         // 4. Apply the aggregator to combine values for each key
         // 5. Return the final aggregated results
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
+        // 1. Create the aggregator (for now, we'll use a simple addition aggregator)
+        // TODO: Implement proper aggregator serialization/deserialization
+        let aggregator = crate::shuffle::ReduceAggregator::new(|a, b| a + b);
 
-        rt.block_on(async {
-            // 1. Create the aggregator (for now, we'll use a simple addition aggregator)
-            // TODO: Implement proper aggregator serialization/deserialization
-            let aggregator = crate::shuffle::ReduceAggregator::new(|a, b| a + b);
+        // 2. Create a shuffle reader
+        let reader = barks_network_shuffle::shuffle::HttpShuffleReader::<String, i32>::new();
 
-            // 2. Create a shuffle reader
-            let reader = barks_network_shuffle::shuffle::BytewaxShuffleReader::<String, i32>::new();
+        // 3. Fetch all blocks for this reduce partition
+        let all_blocks = reader
+            .read_partition(
+                self.shuffle_id,
+                self.reduce_partition_id,
+                &self.map_output_locations,
+            )
+            .await
+            .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
 
-            // 3. Fetch all blocks for this reduce partition
-            let all_blocks = reader
-                .read_partition(
-                    self.shuffle_id,
-                    self.reduce_partition_id,
-                    &self.map_output_locations,
-                )
-                .await
-                .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
-
-            // 4. Aggregate the key-value pairs
-            let mut combiners = HashMap::<String, i32>::new();
-            for block in all_blocks {
-                for (key, value) in block {
-                    match combiners.get_mut(&key) {
-                        Some(combiner) => {
-                            *combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::merge_value(&aggregator, *combiner, value);
-                        }
-                        None => {
-                            let new_combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::create_combiner(&aggregator, value);
-                            combiners.insert(key, new_combiner);
-                        }
+        // 4. Aggregate the key-value pairs
+        let mut combiners = HashMap::<String, i32>::new();
+        for block in all_blocks {
+            for (key, value) in block {
+                match combiners.get_mut(&key) {
+                    Some(combiner) => {
+                        *combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::merge_value(&aggregator, *combiner, value);
+                    }
+                    None => {
+                        let new_combiner = <crate::shuffle::ReduceAggregator<i32> as crate::shuffle::aggregator::Aggregator<String, i32, i32>>::create_combiner(&aggregator, value);
+                        combiners.insert(key, new_combiner);
                     }
                 }
             }
+        }
 
-            // 5. Convert to vector of tuples for serialization
-            let result: Vec<(String, i32)> = combiners.into_iter().collect();
+        // 5. Convert to vector of tuples for serialization
+        let result: Vec<(String, i32)> = combiners.into_iter().collect();
 
-            // 6. Serialize and return the final results
-            bincode::encode_to_vec(&result, bincode::config::standard())
-                .map_err(|e| format!("Failed to serialize reduce result: {}", e))
-        })
+        // 6. Serialize and return the final results
+        bincode::encode_to_vec(&result, bincode::config::standard())
+            .map_err(|e| format!("Failed to serialize reduce result: {}", e))
     }
 }
