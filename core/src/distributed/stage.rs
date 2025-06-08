@@ -227,11 +227,7 @@ impl StageManager {
                 warn!("Regular stage task creation not implemented yet");
                 Vec::new()
             }
-            Stage::Result {
-                
-                
-                ..
-            } => {
+            Stage::Result { .. } => {
                 // For result stages, create tasks to collect final output
                 // This is a placeholder implementation
                 warn!("Result stage task creation not implemented yet");
