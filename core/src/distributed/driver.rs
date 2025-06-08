@@ -186,45 +186,50 @@ impl DriverServiceImpl {
                     break; // Skip remaining slots for this executor
                 }
 
-                // Ask the scheduler for a task, preferring one local to this executor
-                if let Some(pending_task) = self
-                    .task_scheduler
-                    .get_next_task_for_executor(&executor.info.executor_id)
-                    .await
-                {
-                    info!(
-                        "Scheduling task {} to executor {}",
-                        pending_task.task_id,
-                        executor.info.executor_id.clone()
-                    );
-
-                    // Add task to active and executor-specific maps BEFORE launching.
-                    self.active_tasks
-                        .lock()
-                        .await
-                        .insert(pending_task.task_id.clone(), pending_task.clone());
-                    self.executor_tasks
-                        .lock()
-                        .await
-                        .entry(executor.info.executor_id.clone())
-                        .or_default()
-                        .insert(pending_task.task_id.clone());
-
-                    match Self::launch_task_on_executor(
-                        executor.clone(),
-                        pending_task.clone(),
-                        self.executor_clients.clone(),
-                        self.config.max_result_size,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            // Successfully launched, continue to next slot.
+                if let Some(mut pending_task) = self.task_scheduler.get_next_task().await {
+                    let executor_id_to_use = match &pending_task.preferred_executor {
+                        Some(pref_id) if self.executors.lock().await.contains_key(pref_id) => {
+                            pref_id.clone()
                         }
-                        Err(e) => {
+                        _ => executor.info.executor_id.clone(),
+                    };
+                    let target_executor = self
+                        .executors
+                        .lock()
+                        .await
+                        .get(&executor_id_to_use)
+                        .cloned();
+
+                    if let Some(target_executor) = target_executor {
+                        info!(
+                            "Scheduling task {} to executor {}",
+                            pending_task.task_id,
+                            target_executor.info.executor_id.clone()
+                        );
+
+                        // Add task to active and executor-specific maps BEFORE launching.
+                        self.active_tasks
+                            .lock()
+                            .await
+                            .insert(pending_task.task_id.clone(), pending_task.clone());
+                        self.executor_tasks
+                            .lock()
+                            .await
+                            .entry(target_executor.info.executor_id.clone())
+                            .or_default()
+                            .insert(pending_task.task_id.clone());
+
+                        if let Err(e) = Self::launch_task_on_executor(
+                            target_executor.clone(),
+                            pending_task.clone(),
+                            self.executor_clients.clone(),
+                            self.config.max_result_size,
+                        )
+                        .await
+                        {
                             error!(
                                 "Failed to launch task {} on executor {}: {}",
-                                pending_task.task_id, executor.info.executor_id, e
+                                pending_task.task_id, target_executor.info.executor_id, e
                             );
                             // IMPORTANT: If launch fails, clean up state from both active tasks
                             // and the executor's task set to prevent ghost tasks.
@@ -232,10 +237,9 @@ impl DriverServiceImpl {
                             self.executor_tasks
                                 .lock()
                                 .await
-                                .get_mut(&executor.info.executor_id)
-                                .map(|tasks| tasks.remove(&pending_task.task_id));
+                                .get_mut(&target_executor.info.executor_id)
+                                .map(|s| s.remove(&pending_task.task_id));
 
-                            // Re-queue the task if launch fails.
                             Self::requeue_or_fail_task(
                                 pending_task,
                                 self.config.task_max_retries,
@@ -245,9 +249,19 @@ impl DriverServiceImpl {
                             )
                             .await;
 
-                            // Mark executor as failed for this scheduling round
-                            executor_failed = true;
+                            if target_executor.info.executor_id == executor.info.executor_id {
+                                executor_failed = true;
+                            }
                         }
+                    } else {
+                        // Preferred executor not found/available, re-queue the task
+                        warn!(
+                            "Preferred executor {} for task {} not available, re-queueing.",
+                            pending_task.preferred_executor.as_deref().unwrap_or("N/A"),
+                            pending_task.task_id
+                        );
+                        pending_task.preferred_executor = None; // Clear preference for next attempt
+                        self.task_scheduler.submit_pending_task(pending_task).await;
                     }
                 } else {
                     // No more pending tasks, break from inner loop
@@ -535,10 +549,10 @@ impl DriverService for DriverServiceImpl {
         &self,
         request: Request<RegisterExecutorRequest>,
     ) -> Result<Response<RegisterExecutorResponse>, Status> {
-        let req = request.into_inner();
-        let executor_id = req.executor_id.clone();
+        let req_inner = request.into_inner();
+        let executor_id = req_inner.executor_id.clone();
 
-        // --- Start: Handle re-registration robustly by cleaning up all old state ---
+        // --- Handle re-registration robustly by cleaning up all old state ---
         {
             let mut executors_guard = self.executors.lock().await;
             if executors_guard.contains_key(&executor_id) {
@@ -568,10 +582,45 @@ impl DriverService for DriverServiceImpl {
                         .await;
                     });
                 }
+
+                if let Some(old_executor) = executors_guard.remove(&executor_id) {
+                    // Remove from task scheduler
+                    self.task_scheduler
+                        .unregister_executor(&old_executor.info.executor_id)
+                        .await;
+
+                    // Remove client
+                    self.executor_clients.lock().await.remove(&executor_id);
+
+                    // Re-queue tasks from the old instance.
+                    if let Some(tasks_to_requeue) =
+                        self.executor_tasks.lock().await.remove(&executor_id)
+                    {
+                        let task_scheduler = self.task_scheduler.clone();
+                        let active_tasks = self.active_tasks.clone();
+                        let max_retries = self.config.task_max_retries;
+                        let notifiers = self.completion_notifiers.clone();
+                        let old_executor_id = old_executor.info.executor_id.clone();
+
+                        tokio::spawn(async move {
+                            Self::handle_failed_tasks(
+                                tasks_to_requeue,
+                                &old_executor_id,
+                                task_scheduler,
+                                active_tasks,
+                                notifiers,
+                                max_retries,
+                            )
+                            .await;
+                        });
+                    }
+                }
+
                 // Remove the old executor entry completely to ensure a clean state.
                 executors_guard.remove(&executor_id);
             }
         }
+
         // --- End: Handle re-registration ---
 
         // CRITICAL FIX: Invalidate any existing client for this executor ID.
@@ -591,19 +640,19 @@ impl DriverService for DriverServiceImpl {
 
         info!(
             "Registering new executor: id={}, addr={}:{}",
-            req.executor_id, req.host, req.port
+            req_inner.executor_id, req_inner.host, req_inner.port
         );
 
         let mut executor_info = ExecutorInfo::new(
-            req.executor_id.clone(),
-            req.host,
-            req.port as u16,
-            req.shuffle_port as u16,
-            req.cores,
-            req.memory_mb,
+            req_inner.executor_id.clone(),
+            req_inner.host,
+            req_inner.port as u16,
+            req_inner.shuffle_port as u16,
+            req_inner.cores,
+            req_inner.memory_mb,
         )
-        .with_attributes(req.attributes);
-        executor_info.max_concurrent_tasks = req.max_concurrent_tasks;
+        .with_attributes(req_inner.attributes);
+        executor_info.max_concurrent_tasks = req_inner.max_concurrent_tasks;
 
         let registered_executor = RegisteredExecutor {
             info: executor_info.clone(),
@@ -619,11 +668,11 @@ impl DriverService for DriverServiceImpl {
         self.executors
             .lock()
             .await
-            .insert(req.executor_id.clone(), registered_executor);
+            .insert(executor_id.clone(), registered_executor);
         self.executor_tasks
             .lock()
             .await
-            .entry(req.executor_id.clone())
+            .entry(executor_id.clone())
             .or_default();
 
         let response = RegisterExecutorResponse {
@@ -632,7 +681,7 @@ impl DriverService for DriverServiceImpl {
             driver_id: self.driver_id.clone(),
         };
 
-        info!("Successfully registered executor: {}", req.executor_id);
+        info!("Successfully registered executor: {}", executor_id);
         Ok(Response::new(response))
     }
 
