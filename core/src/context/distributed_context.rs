@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Distributed context for managing RDD operations across a cluster
@@ -275,11 +275,11 @@ impl DistributedContext {
     where
         T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
-        match &self.mode {
+        match self.mode {
             ExecutionMode::Driver => {
                 if let Some(driver) = &self.driver {
                     let executor_count = driver.executor_count().await;
-                    if executor_count > 0 {
+                    if executor_count > 0 && self.config.driver_addr.is_some() {
                         // Run in distributed mode using the driver
                         self.run_distributed(rdd).await
                     } else {
@@ -317,12 +317,11 @@ impl DistributedContext {
     {
         match &self.mode {
             ExecutionMode::Driver => {
-                if self.driver.is_none() {
-                    return Err(crate::traits::RddError::ContextError(
-                        "Driver not initialized.".to_string(),
-                    ));
-                }
-                if self.driver.as_ref().unwrap().executor_count().await == 0 {
+                let driver = self.driver.as_ref().ok_or_else(|| {
+                    crate::traits::RddError::ContextError("Driver not initialized.".to_string())
+                })?;
+
+                if driver.executor_count().await == 0 {
                     warn!("No executors available. Running job locally on the driver.");
                     return self.run_local(rdd).await;
                 }
@@ -330,23 +329,23 @@ impl DistributedContext {
                 let job_id = Uuid::new_v4().to_string();
                 info!("Starting job {} for RDD {}", job_id, rdd.id());
 
-                // 1. Build the stage graph from the final RDD.
-                // Convert RddBase to Any using as_any method
+                // 1. Build the stage graph from the final RDD using the DAGScheduler.
+                // The `as_any` is necessary for the `Stage` struct which stores the RDD as `Any`.
                 let rdd_any: Arc<dyn std::any::Any + Send + Sync> =
                     unsafe { std::mem::transmute(rdd.clone()) };
-                let final_stage =
-                    self.dag_scheduler
-                        .new_result_stage(rdd_any, rdd.clone(), &job_id);
+                let final_stage = self.dag_scheduler.new_result_stage(rdd_any, rdd, &job_id);
 
                 // 2. Get all stages in submission order (parents first).
+                // This is a simplified topological sort.
                 let mut stages_to_submit = Vec::new();
                 let mut queue = std::collections::VecDeque::new();
-                queue.push_back(Arc::new(final_stage.stage.clone()));
                 let mut visited_stages = std::collections::HashSet::new();
+
+                queue.push_back(Arc::new(final_stage.stage.clone()));
                 visited_stages.insert(final_stage.stage.id);
 
                 while let Some(stage) = queue.pop_front() {
-                    stages_to_submit.push(stage.clone());
+                    stages_to_submit.push(stage.clone()); // Add to front for reverse order
                     for parent in &stage.parents {
                         if !visited_stages.contains(&parent.id) {
                             queue.push_back(parent.clone());
@@ -354,16 +353,20 @@ impl DistributedContext {
                         }
                     }
                 }
-                stages_to_submit.reverse(); // Execute parents first.
+                stages_to_submit.reverse(); // Now in correct submission order
 
                 // 3. Execute stages one by one.
-                let mut stage_results: HashMap<usize, Vec<Vec<u8>>> = HashMap::new();
+                // A real implementation would manage stage dependencies and results more robustly.
+                // For now, we assume stages return their results to the driver.
+                let mut stage_results: HashMap<usize, Vec<crate::distributed::TaskResult>> =
+                    HashMap::new();
 
                 for stage in stages_to_submit {
                     info!("Submitting stage {}", stage.id);
                     let stage_id_str = format!("stage-{}", stage.id);
 
-                    // Downcast the RDD from `Any` to `RddBase` to create tasks.
+                    // This downcast is necessary because the Stage holds an `Any`.
+                    // The RDD's own `create_tasks` method encapsulates the type-specific logic.
                     let rdd_base = stage
                         .rdd
                         .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
@@ -372,8 +375,8 @@ impl DistributedContext {
 
                     let tasks = rdd_base.create_tasks(stage_id_str.clone()).map_err(|e| {
                         crate::traits::RddError::ContextError(format!(
-                            "Failed to create tasks: {}",
-                            e
+                            "Failed to create tasks for stage {}: {}",
+                            stage.id, e
                         ))
                     })?;
 
@@ -390,15 +393,15 @@ impl DistributedContext {
                         futures.push(future);
                     }
 
-                    let mut results = Vec::new();
+                    let mut results: Vec<crate::distributed::TaskResult> = Vec::new();
                     for future in futures {
                         let (result, _) = future.await.unwrap();
-                        if let crate::distributed::driver::TaskResult::Success(bytes) = result {
-                            results.push(bytes);
-                        } else if let crate::distributed::driver::TaskResult::Failure(err) = result
-                        {
-                            return Err(crate::traits::RddError::ComputationError(err));
+                        // Stop the entire job on first task failure
+                        if let crate::distributed::driver::TaskResult::Failure(err) = &result {
+                            error!("Task failed, aborting job {}. Reason: {}", job_id, err);
+                            return Err(crate::traits::RddError::ComputationError(err.clone()));
                         }
+                        results.push(result);
                     }
                     stage_results.insert(stage.id, results);
                 }
@@ -407,10 +410,14 @@ impl DistributedContext {
                 let final_stage_results = stage_results.get(&final_stage.stage.id).unwrap();
                 let collected_results = final_stage_results
                     .iter()
-                    .flat_map(|bytes| {
-                        let (partition_result, _): (Vec<T>, _) =
-                            bincode::decode_from_slice(bytes, bincode::config::standard()).unwrap();
-                        partition_result
+                    .flat_map(|task_result| match task_result {
+                        crate::distributed::driver::TaskResult::Success(bytes) => {
+                            let (partition_result, _): (Vec<T>, _) =
+                                bincode::decode_from_slice(bytes, bincode::config::standard())
+                                    .unwrap();
+                            partition_result
+                        }
+                        _ => vec![], // Failures are handled above
                     })
                     .collect();
 
@@ -420,372 +427,6 @@ impl DistributedContext {
                 "run_distributed can only be called in Driver mode.".to_string(),
             )),
         }
-    }
-
-    /// Executes a single-stage job that doesn't involve a shuffle.
-    async fn run_result_stage<T>(
-        &self,
-        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
-    ) -> RddResult<Vec<T>>
-    where
-        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
-    {
-        // Use the new create_tasks method instead of downcasting
-        info!("Creating tasks for result stage using RddBase::create_tasks");
-        let tasks = rdd.create_tasks("result-stage".to_string()).map_err(|e| {
-            crate::traits::RddError::ContextError(format!("Failed to create tasks: {}", e))
-        })?;
-
-        info!("Created {} tasks for result stage", tasks.len());
-
-        // Submit each task to the driver
-        let mut result_futures = Vec::new();
-        for (i, task) in tasks.into_iter().enumerate() {
-            let task_id = format!("result-task-{}", i);
-
-            let future = self
-                .driver
-                .as_ref()
-                .unwrap()
-                .submit_task(task_id, "result-stage".to_string(), i, task, None)
-                .await
-                .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?;
-            result_futures.push(future);
-        }
-
-        // Collect results from all tasks
-        let mut collected_results = Vec::new();
-        for future in result_futures {
-            match future
-                .await
-                .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?
-            {
-                (crate::distributed::driver::TaskResult::Success(bytes), _exec_id) => {
-                    let (partition_result, _): (Vec<T>, _) =
-                        bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
-                            |e| crate::traits::RddError::SerializationError(e.to_string()),
-                        )?;
-                    collected_results.extend(partition_result);
-                }
-                (crate::distributed::driver::TaskResult::Failure(err), exec_id) => {
-                    return Err(crate::traits::RddError::ComputationError(format!(
-                        "Task failed on {}: {}",
-                        exec_id, err
-                    )));
-                }
-            }
-        }
-        Ok(collected_results)
-    }
-
-    /// Executes a two-stage shuffle job.
-    async fn run_shuffle_job<T>(
-        &self,
-        rdd: Arc<dyn crate::traits::RddBase<Item = T>>,
-    ) -> RddResult<Vec<T>>
-    where
-        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()> + 'static,
-    {
-        // This is a simplified DAG scheduler. It uses downcasting to identify the type of shuffle.
-        // A full implementation would analyze the RDD dependency graph more abstractly.
-
-        // --- POC for a specific shuffle RDD type ---
-        // Handle ShuffledRdd for (String, i32) -> (String, i32), typical of reduceByKey.
-        type K = String;
-        type V = i32;
-        type C = i32;
-
-        if let Some(shuffled_rdd) = rdd
-            .as_any()
-            .downcast_ref::<crate::rdd::ShuffledRdd<K, V, C>>()
-        {
-            info!("Executing shuffle for ShuffledRdd<String, i32, i32>");
-            let parent_rdd = shuffled_rdd.parent.clone();
-            let _aggregator = shuffled_rdd.aggregator.clone();
-            let partitioner = shuffled_rdd.partitioner.clone();
-            let shuffle_id = self.new_shuffle_id() as u32;
-            let num_reduce_partitions = partitioner.num_partitions();
-
-            // --- MAP STAGE ---
-            info!("Starting Map Stage for shuffle {}", shuffle_id);
-            let map_output_locations = self
-                .execute_map_stage(parent_rdd, shuffle_id, num_reduce_partitions)
-                .await?;
-
-            // --- REDUCE STAGE ---
-            info!("Starting Reduce Stage for shuffle {}", shuffle_id);
-            // This is a placeholder for serializing a real aggregator.
-            // In a real system, the aggregator itself would be serialized.
-            let aggregator_data = crate::shuffle::SerializableAggregator::AddI32
-                .serialize()
-                .unwrap();
-
-            let reduce_results = self
-                .execute_reduce_stage::<K, V, C>(
-                    shuffle_id,
-                    map_output_locations,
-                    aggregator_data,
-                    partitioner,
-                )
-                .await?;
-
-            // The result is Vec<Vec<(K, C)>>. Flatten it and cast to Vec<T>.
-            // This cast is safe because we checked the RDD type at the beginning.
-            let final_results: Vec<T> = reduce_results
-                .into_iter()
-                .flatten()
-                .map(|item| {
-                    *(Box::new(item) as Box<dyn std::any::Any>)
-                        .downcast::<T>()
-                        .unwrap()
-                })
-                .collect();
-
-            return Ok(final_results);
-        }
-
-        warn!(
-            "No distributed shuffle implementation found for this RDD type. Falling back to local execution."
-        );
-        self.run_local(rdd).await
-    }
-
-    /// Helper to execute the map stage of a shuffle.
-    async fn execute_map_stage<K, V>(
-        &self,
-        parent_rdd: Arc<dyn crate::traits::RddBase<Item = (K, V)>>,
-        shuffle_id: u32,
-        num_reduce_partitions: u32,
-    ) -> RddResult<Vec<(String, Vec<(u32, barks_network_shuffle::traits::MapStatus)>)>>
-    where
-        K: crate::traits::Data + std::hash::Hash + Ord,
-        V: crate::traits::Data,
-        (K, V): crate::operations::RddDataType,
-    {
-        // Downcast to get lineage information. This is a simplification.
-        let distributed_rdd = parent_rdd
-            .as_any()
-            .downcast_ref::<DistributedRdd<(K, V)>>()
-            .ok_or_else(|| {
-                crate::traits::RddError::ContextError(
-                    "Shuffle parent must be a DistributedRdd (for now)".to_string(),
-                )
-            })?
-            .clone();
-
-        let (base_data, num_partitions, operations) = distributed_rdd.analyze_lineage();
-
-        // Create and submit ShuffleMapTasks for each partition
-        let mut map_task_futures = Vec::new();
-
-        for partition_index in 0..num_partitions {
-            // Calculate partition data slice
-            let partition_size = base_data.len() / num_partitions;
-            let start = partition_index * partition_size;
-            let end = if partition_index == num_partitions - 1 {
-                base_data.len()
-            } else {
-                start + partition_size
-            };
-
-            let partition_data = if start < base_data.len() {
-                base_data[start..end.min(base_data.len())].to_vec()
-            } else {
-                Vec::new()
-            };
-
-            // Serialize partition data
-            let serialized_partition_data =
-                bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            // Create ShuffleMapTask - for now we only support (String, i32) type
-            // In a full implementation, this would be more generic
-            if std::any::TypeId::of::<(K, V)>() == std::any::TypeId::of::<(String, i32)>() {
-                // Cast the operations to the concrete type
-                let concrete_operations: Vec<
-                    crate::operations::SerializableStringI32TupleOperation,
-                > = unsafe { std::mem::transmute(operations.clone()) };
-
-                let task = crate::distributed::task::ShuffleMapTask::<(String, i32)>::new(
-                    serialized_partition_data,
-                    concrete_operations,
-                    shuffle_id,
-                    num_reduce_partitions,
-                    self.config.shuffle_config.clone(),
-                );
-
-                let task_id = format!("shuffle-map-{}-{}", shuffle_id, partition_index);
-                let stage_id = format!("shuffle-map-stage-{}", shuffle_id);
-
-                // Submit task to driver
-                let future = self
-                    .driver
-                    .as_ref()
-                    .unwrap()
-                    .submit_task(task_id, stage_id, partition_index, Box::new(task), None)
-                    .await
-                    .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?;
-
-                map_task_futures.push((partition_index, future));
-            } else {
-                return Err(crate::traits::RddError::ContextError(
-                    "Unsupported type for shuffle map task. Only (String, i32) is currently supported.".to_string()
-                ));
-            }
-        }
-
-        // Collect results from all map tasks
-        let mut map_output_locations_map: std::collections::HashMap<
-            String,
-            Vec<(u32, barks_network_shuffle::traits::MapStatus)>,
-        > = std::collections::HashMap::new();
-        for (partition_index, future) in map_task_futures {
-            match future
-                .await
-                .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?
-            {
-                (crate::distributed::driver::TaskResult::Success(bytes), executor_id) => {
-                    let (map_status, _): (barks_network_shuffle::traits::MapStatus, _) =
-                        bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
-                            |e| crate::traits::RddError::SerializationError(e.to_string()),
-                        )?;
-
-                    map_output_locations_map
-                        .entry(executor_id)
-                        .or_default()
-                        .push((partition_index as u32, map_status));
-                }
-                (crate::distributed::driver::TaskResult::Failure(err), executor_id) => {
-                    return Err(crate::traits::RddError::ComputationError(format!(
-                        "Map task failed on executor {}: {}",
-                        executor_id, err
-                    )));
-                }
-            }
-        }
-
-        let map_output_locations: Vec<(
-            String,
-            Vec<(u32, barks_network_shuffle::traits::MapStatus)>,
-        )> = map_output_locations_map.into_iter().collect();
-
-        info!(
-            "Map stage completed successfully with {} map outputs",
-            map_output_locations.len()
-        );
-        Ok(map_output_locations)
-    }
-
-    /// Helper to execute the reduce stage of a shuffle.
-    async fn execute_reduce_stage<K, V, C>(
-        &self,
-        shuffle_id: u32,
-        map_output_locations: Vec<(String, Vec<(u32, barks_network_shuffle::traits::MapStatus)>)>,
-        aggregator_data: Vec<u8>,
-        partitioner: Arc<dyn crate::shuffle::Partitioner<K>>,
-    ) -> RddResult<Vec<Vec<(K, C)>>>
-    where
-        K: crate::traits::Data + std::hash::Hash,
-        V: crate::traits::Data,
-        C: crate::traits::Data,
-        (K, C): crate::operations::RddDataType,
-        crate::rdd::ShuffledRdd<K, V, C>: crate::traits::RddBase<Item = (K, C)>,
-    {
-        let driver = self.driver.as_ref().unwrap();
-        let num_reduce_partitions = partitioner.num_partitions() as usize;
-        let mut reduce_task_futures = Vec::new();
-
-        // First, resolve all executor IDs to shuffle addresses to avoid repeated lookups.
-        let mut executor_shuffle_addrs = std::collections::HashMap::new();
-        for (exec_id, _) in &map_output_locations {
-            if !executor_shuffle_addrs.contains_key(exec_id) {
-                if let Some(info) = driver.get_executor_info(exec_id).await {
-                    let addr = format!("{}:{}", info.host, info.shuffle_port);
-                    executor_shuffle_addrs.insert(exec_id.clone(), addr);
-                } else {
-                    return Err(crate::traits::RddError::ContextError(format!(
-                        "Could not find info for executor {}",
-                        exec_id
-                    )));
-                }
-            }
-        }
-
-        // Build the complete list of map output locations for the reduce tasks.
-        // This is the same for all reduce tasks.
-        let locations_for_task: Vec<(String, u32)> = map_output_locations
-            .iter()
-            .flat_map(|(exec_id, map_statuses)| {
-                let addr = executor_shuffle_addrs.get(exec_id).unwrap().clone();
-                map_statuses
-                    .iter()
-                    .map(move |(map_id, _map_status)| (addr.clone(), *map_id))
-            })
-            .collect();
-
-        // Create and submit ShuffleReduceTasks for each reduce partition
-        for reduce_partition_id in 0..num_reduce_partitions {
-            // Due to `typetag` limitations, we use a type check. A full implementation
-            // would require a more advanced task serialization system.
-            if std::any::TypeId::of::<(K, C)>() == std::any::TypeId::of::<(String, i32)>() {
-                let task = crate::distributed::task::ShuffleReduceTask::<
-                    String,
-                    i32,
-                    i32,
-                    crate::shuffle::ReduceAggregator<i32>,
-                >::new(
-                    shuffle_id,
-                    reduce_partition_id as u32,
-                    locations_for_task.clone(),
-                    aggregator_data.clone(),
-                );
-
-                let task_id = format!("shuffle-reduce-{}-{}", shuffle_id, reduce_partition_id);
-                let stage_id = format!("shuffle-reduce-stage-{}", shuffle_id);
-
-                let future = driver
-                    .submit_task(task_id, stage_id, reduce_partition_id, Box::new(task), None)
-                    .await
-                    .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?;
-
-                reduce_task_futures.push(future);
-            } else {
-                return Err(crate::traits::RddError::ContextError(
-                    "Unsupported type for shuffle reduce task. Only (String, i32) is currently supported."
-                        .to_string(),
-                ));
-            }
-        }
-
-        // Collect results from all reduce tasks
-        let mut reduce_results = Vec::new();
-        for future in reduce_task_futures {
-            match future
-                .await
-                .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?
-            {
-                (crate::distributed::driver::TaskResult::Success(bytes), _executor_id) => {
-                    let (partition_result, _): (Vec<(K, C)>, _) =
-                        bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
-                            |e| crate::traits::RddError::SerializationError(e.to_string()),
-                        )?;
-                    reduce_results.push(partition_result);
-                }
-                (crate::distributed::driver::TaskResult::Failure(err), executor_id) => {
-                    return Err(crate::traits::RddError::ComputationError(format!(
-                        "Reduce task failed on executor {}: {}",
-                        executor_id, err
-                    )));
-                }
-            }
-        }
-
-        info!(
-            "Reduce stage completed successfully with {} partitions",
-            reduce_results.len()
-        );
-        Ok(reduce_results)
     }
 
     /// Run RDD computation in local mode
