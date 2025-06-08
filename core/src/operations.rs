@@ -317,50 +317,6 @@ impl StringPredicate for MinLengthPredicate {
     }
 }
 
-/// Identity operation for i32 that returns the item unchanged
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct I32IdentityOperation;
-
-#[typetag::serde]
-impl I32Operation for I32IdentityOperation {
-    fn execute(&self, item: i32) -> i32 {
-        item
-    }
-}
-
-/// Always true predicate for i32
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct I32AlwaysTruePredicate;
-
-#[typetag::serde]
-impl I32Predicate for I32AlwaysTruePredicate {
-    fn test(&self, _item: &i32) -> bool {
-        true
-    }
-}
-
-/// Identity operation for String that returns the item unchanged
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StringIdentityOperation;
-
-#[typetag::serde]
-impl StringOperation for StringIdentityOperation {
-    fn execute(&self, item: String) -> String {
-        item
-    }
-}
-
-/// Always true predicate for String
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StringAlwaysTruePredicate;
-
-#[typetag::serde]
-impl StringPredicate for StringAlwaysTruePredicate {
-    fn test(&self, _item: &str) -> bool {
-        true
-    }
-}
-
 /// Trait for serializable operations on (String, i32) tuple values
 #[typetag::serde(tag = "type")]
 pub trait StringI32TupleOperation: Send + Sync + Debug + DynClone {
@@ -393,28 +349,6 @@ impl From<Box<dyn StringI32TupleOperation>> for SerializableStringI32TupleOperat
 impl From<Box<dyn StringI32TuplePredicate>> for SerializableStringI32TupleOperation {
     fn from(pred: Box<dyn StringI32TuplePredicate>) -> Self {
         SerializableStringI32TupleOperation::Filter(pred)
-    }
-}
-
-/// Identity operation for (String, i32) tuples that returns the item unchanged
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StringI32TupleIdentityOperation;
-
-#[typetag::serde]
-impl StringI32TupleOperation for StringI32TupleIdentityOperation {
-    fn execute(&self, item: (String, i32)) -> (String, i32) {
-        item
-    }
-}
-
-/// Always true predicate for (String, i32) tuples
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StringI32TupleAlwaysTruePredicate;
-
-#[typetag::serde]
-impl StringI32TuplePredicate for StringI32TupleAlwaysTruePredicate {
-    fn test(&self, _item: &(String, i32)) -> bool {
-        true
     }
 }
 
@@ -487,28 +421,6 @@ impl From<Box<dyn I32StringTupleOperation>> for SerializableI32StringTupleOperat
 impl From<Box<dyn I32StringTuplePredicate>> for SerializableI32StringTupleOperation {
     fn from(pred: Box<dyn I32StringTuplePredicate>) -> Self {
         SerializableI32StringTupleOperation::Filter(pred)
-    }
-}
-
-/// Identity operation for (i32, String) tuples that returns the item unchanged
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct I32StringTupleIdentityOperation;
-
-#[typetag::serde]
-impl I32StringTupleOperation for I32StringTupleIdentityOperation {
-    fn execute(&self, item: (i32, String)) -> (i32, String) {
-        item
-    }
-}
-
-/// Always true predicate for (i32, String) tuples
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct I32StringTupleAlwaysTruePredicate;
-
-#[typetag::serde]
-impl I32StringTuplePredicate for I32StringTupleAlwaysTruePredicate {
-    fn test(&self, _item: &(i32, String)) -> bool {
-        true
     }
 }
 

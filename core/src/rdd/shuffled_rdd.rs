@@ -71,14 +71,7 @@ where
             std::collections::HashMap::new();
 
         for (key, value) in all_data {
-            // Determine which partition this key belongs to using hash partitioning
-            let key_partition = {
-                use std::hash::Hasher;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
-
+            let key_partition = self.partitioner.get_partition(&key) as usize;
             // Only include data that belongs to the current partition
             if key_partition == partition_index {
                 partitioned_data.entry(key).or_default().push(value);

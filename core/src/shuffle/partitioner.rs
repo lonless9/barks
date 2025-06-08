@@ -32,38 +32,18 @@ impl HashPartitioner {
     }
 }
 
-impl<K: Hash + Send + Sync + HashPartitionable> Partitioner<K> for HashPartitioner {
+impl<K: Hash + Send + Sync> Partitioner<K> for HashPartitioner {
     fn num_partitions(&self) -> u32 {
         self.num_partitions
     }
 
     fn get_partition(&self, key: &K) -> u32 {
-        key.get_partition_with_seed(self.num_partitions, self.seed)
-    }
-}
-
-/// A specific partitioner for types that implement Hash
-pub trait HashPartitionable: Hash + Send + Sync {
-    fn get_partition(&self, num_partitions: u32) -> u32 {
-        self.get_partition_with_seed(num_partitions, 0)
-    }
-
-    fn get_partition_with_seed(&self, num_partitions: u32, seed: u64) -> u32 {
         let mut s = std::collections::hash_map::DefaultHasher::new();
-        seed.hash(&mut s);
-        self.hash(&mut s);
-        (s.finish() % num_partitions as u64) as u32
+        self.seed.hash(&mut s);
+        key.hash(&mut s);
+        (s.finish() % self.num_partitions as u64) as u32
     }
 }
-
-// Implement for common types
-impl HashPartitionable for i32 {}
-impl HashPartitionable for i64 {}
-impl HashPartitionable for u32 {}
-impl HashPartitionable for u64 {}
-impl HashPartitionable for String {}
-impl HashPartitionable for &str {}
-impl<T: Hash + Send + Sync> HashPartitionable for Vec<T> {}
 
 /// A range partitioner that distributes keys based on sorted ranges.
 /// This is essential for sortByKey operations and provides better data locality.
@@ -126,14 +106,6 @@ where
             _phantom: PhantomData,
         }
     }
-
-    fn get_partition(&self, key: &K) -> u32 {
-        // Binary search to find the appropriate partition
-        match self.range_bounds.binary_search(key) {
-            Ok(index) => index as u32,
-            Err(index) => index as u32,
-        }
-    }
 }
 
 impl<K> Partitioner<K> for RangePartitioner<K>
@@ -178,10 +150,6 @@ where
         let partition = (self.partition_func)(key);
         partition % self.num_partitions
     }
-
-    fn get_partition(&self, key: &K) -> u32 {
-        self.get_partition_for(key)
-    }
 }
 
 impl<K> Partitioner<K> for CustomPartitioner<K>
@@ -203,5 +171,124 @@ impl<K> std::fmt::Debug for CustomPartitioner<K> {
             .field("num_partitions", &self.num_partitions)
             .field("partition_func", &"<function>")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_partitioner() {
+        let partitioner = HashPartitioner::new(10);
+        assert_eq!(
+            <HashPartitioner as Partitioner<String>>::num_partitions(&partitioner),
+            10
+        );
+
+        let key1 = "hello".to_string();
+        let key2 = "world".to_string();
+
+        let p1 = <HashPartitioner as Partitioner<String>>::get_partition(&partitioner, &key1);
+        let p2 = <HashPartitioner as Partitioner<String>>::get_partition(&partitioner, &key2);
+        let p1_again = <HashPartitioner as Partitioner<String>>::get_partition(&partitioner, &key1);
+
+        assert_eq!(p1, p1_again);
+        assert_ne!(p1, p2);
+        assert!(p1 < 10);
+        assert!(p2 < 10);
+    }
+
+    #[test]
+    fn test_hash_partitioner_with_seed() {
+        let partitioner1 = HashPartitioner::new(10);
+        let partitioner2 = HashPartitioner::with_seed(10, 12345);
+
+        let key = "test_key";
+        let p1 = <HashPartitioner as Partitioner<&str>>::get_partition(&partitioner1, &key);
+        let p2 = <HashPartitioner as Partitioner<&str>>::get_partition(&partitioner2, &key);
+
+        // With very high probability, different seeds should produce different partitions
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_hash_partitioner_zero_partitions() {
+        HashPartitioner::new(0);
+    }
+
+    #[test]
+    fn test_range_partitioner_from_sample() {
+        let samples = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let partitioner = RangePartitioner::from_sample(5, samples);
+
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::num_partitions(&partitioner),
+            5
+        );
+
+        // Bounds should be [30, 50, 70, 90] (step=2, indices 2,4,6,8)
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &5),
+            0
+        );
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &30),
+            0
+        ); // a key equal to a bound goes to the lower partition
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &31),
+            1
+        );
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &50),
+            1
+        );
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &51),
+            2
+        );
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &101),
+            4
+        );
+    }
+
+    #[test]
+    fn test_range_partitioner_empty_sample() {
+        let partitioner = RangePartitioner::<i32>::from_sample(5, vec![]);
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::num_partitions(&partitioner),
+            5
+        );
+        assert_eq!(
+            <RangePartitioner<i32> as Partitioner<i32>>::get_partition(&partitioner, &100),
+            0
+        ); // everything goes to partition 0
+    }
+
+    #[test]
+    fn test_custom_partitioner() {
+        let partitioner = CustomPartitioner::new(4, |key: &String| key.len() as u32);
+
+        assert_eq!(
+            <CustomPartitioner<String> as Partitioner<String>>::num_partitions(&partitioner),
+            4
+        );
+        assert_eq!(
+            <CustomPartitioner<String> as Partitioner<String>>::get_partition(
+                &partitioner,
+                &"a".to_string()
+            ),
+            1 % 4
+        ); // len 1
+        assert_eq!(
+            <CustomPartitioner<String> as Partitioner<String>>::get_partition(
+                &partitioner,
+                &"abcd".to_string()
+            ),
+            4 % 4
+        ); // len 4 -> partition 0
     }
 }

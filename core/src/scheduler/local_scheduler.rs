@@ -160,3 +160,90 @@ impl Default for LocalScheduler {
         Self::with_default_threads()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::BasicPartition;
+
+    fn create_test_tasks(num_tasks: usize) -> Vec<Task<i32>> {
+        (0..num_tasks)
+            .map(|i| {
+                let compute_fn = Arc::new(move |p: &dyn Partition| {
+                    Ok(vec![(p.index() * 10) as i32, (p.index() * 10 + 1) as i32])
+                });
+                Task::new(Box::new(BasicPartition::new(i)), compute_fn)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_local_scheduler_new() {
+        let scheduler = LocalScheduler::new(4);
+        assert_eq!(scheduler.num_threads(), 4);
+    }
+
+    #[test]
+    fn test_local_scheduler_with_default_threads() {
+        let scheduler = LocalScheduler::with_default_threads();
+        assert!(scheduler.num_threads() > 0);
+    }
+
+    #[test]
+    fn test_execute_tasks() {
+        let scheduler = LocalScheduler::default();
+        let tasks = create_test_tasks(3);
+        let results = scheduler.execute_tasks(tasks).unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], vec![0, 1]);
+        assert_eq!(results[1], vec![10, 11]);
+        assert_eq!(results[2], vec![20, 21]);
+    }
+
+    #[test]
+    fn test_execute_and_collect() {
+        let scheduler = LocalScheduler::default();
+        let tasks = create_test_tasks(3);
+        let result = scheduler.execute_and_collect(tasks).unwrap();
+
+        assert_eq!(result, vec![0, 1, 10, 11, 20, 21]);
+    }
+
+    #[test]
+    fn test_execute_and_count() {
+        let scheduler = LocalScheduler::default();
+        let tasks = create_test_tasks(5);
+        let count = scheduler.execute_and_count(tasks).unwrap();
+
+        assert_eq!(count, 10); // 5 tasks * 2 items/task
+    }
+
+    #[test]
+    fn test_execute_and_reduce() {
+        let scheduler = LocalScheduler::default();
+        let tasks = create_test_tasks(4); // [0,1], [10,11], [20,21], [30,31]
+        let sum = scheduler
+            .execute_and_reduce(tasks, 0, |acc, item| acc + item, |a, b| a + b)
+            .unwrap();
+
+        // Sum = (0+1) + (10+11) + (20+21) + (30+31) = 1 + 21 + 41 + 61 = 124
+        assert_eq!(sum, 124);
+    }
+
+    #[test]
+    fn test_execute_foreach() {
+        let scheduler = LocalScheduler::default();
+        let tasks = create_test_tasks(3);
+        let sum = Arc::new(std::sync::atomic::AtomicI32::new(0));
+
+        let sum_clone = sum.clone();
+        scheduler
+            .execute_foreach(tasks, move |item| {
+                sum_clone.fetch_add(*item, std::sync::atomic::Ordering::SeqCst);
+            })
+            .unwrap();
+
+        assert_eq!(sum.load(std::sync::atomic::Ordering::SeqCst), 63); // (0+1) + (10+11) + (20+21) = 1 + 21 + 41 = 63
+    }
+}

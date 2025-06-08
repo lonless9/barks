@@ -75,29 +75,16 @@ where
         let mut left_partitioned: std::collections::HashMap<K, Vec<V>> =
             std::collections::HashMap::new();
         for (key, value) in left_data {
-            let key_partition = {
-                use std::hash::Hasher;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
-
+            let key_partition = self.partitioner.get_partition(&key) as usize;
             if key_partition == partition_index {
                 left_partitioned.entry(key).or_default().push(value);
             }
         }
 
-        // Group right data by key and partition
         let mut right_partitioned: std::collections::HashMap<K, Vec<W>> =
             std::collections::HashMap::new();
         for (key, value) in right_data {
-            let key_partition = {
-                use std::hash::Hasher;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
-
+            let key_partition = self.partitioner.get_partition(&key) as usize;
             if key_partition == partition_index {
                 right_partitioned.entry(key).or_default().push(value);
             }
@@ -233,29 +220,16 @@ where
         let mut left_partitioned: std::collections::HashMap<K, Vec<V>> =
             std::collections::HashMap::new();
         for (key, value) in left_data {
-            let key_partition = {
-                use std::hash::Hasher;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
-
+            let key_partition = self.partitioner.get_partition(&key) as usize;
             if key_partition == partition_index {
                 left_partitioned.entry(key).or_default().push(value);
             }
         }
 
-        // Group right data by key and partition
         let mut right_partitioned: std::collections::HashMap<K, Vec<W>> =
             std::collections::HashMap::new();
         for (key, value) in right_data {
-            let key_partition = {
-                use std::hash::Hasher;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
-            };
-
+            let key_partition = self.partitioner.get_partition(&key) as usize;
             if key_partition == partition_index {
                 right_partitioned.entry(key).or_default().push(value);
             }
