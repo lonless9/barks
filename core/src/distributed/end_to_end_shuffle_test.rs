@@ -22,7 +22,7 @@ mod tests {
         let rdd_arc: Arc<dyn RddBase<Item = i32>> = Arc::new(rdd);
 
         // Test the create_tasks method - this should now work for i32!
-        let result = rdd_arc.create_tasks("test-stage".to_string());
+        let result = rdd_arc.create_tasks("test-stage".to_string(), None);
 
         // Should succeed for i32 type
         assert!(result.is_ok());
@@ -45,7 +45,7 @@ mod tests {
         let rdd_arc: Arc<dyn RddBase<Item = (String, i32)>> = Arc::new(rdd);
 
         // Test the create_tasks method - this should now work for (String, i32)!
-        let result = rdd_arc.create_tasks("test-stage".to_string());
+        let result = rdd_arc.create_tasks("test-stage".to_string(), None);
 
         // Should succeed for (String, i32) type
         assert!(result.is_ok());

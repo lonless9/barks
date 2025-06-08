@@ -92,6 +92,14 @@ pub trait RddBase: Send + Sync + Debug + Any {
     fn create_tasks(
         &self,
         stage_id: crate::distributed::types::StageId,
+        // Add this parameter to pass information from the driver.
+        // It contains, for each parent dependency, a Vec of outputs from each map task.
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
 }
 

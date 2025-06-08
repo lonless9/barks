@@ -403,6 +403,12 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
         // This generic implementation uses the `RddDataType` trait to create tasks,
         // removing the need for type-specific checks and `unsafe` code.

@@ -123,9 +123,20 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // SortedRdd task creation is not yet implemented
-        unimplemented!("SortedRdd::create_tasks needs implementation")
+        unimplemented!(
+            "SortedRdd task creation is not implemented. A distributed sort requires two stages: \
+            1. A shuffle stage to repartition data by key ranges (using RangePartitioner). The tasks for this \
+               would be ShuffleMapTasks. \
+            2. A sort stage that reads the shuffled data and sorts each partition locally. This would \
+               require a dedicated `SortTask` or for `ShuffleReduceTask` to be enhanced with sorting logic."
+        )
     }
 }
 

@@ -394,11 +394,19 @@ impl DistributedContext {
 
                         // Create tasks for the stage. This needs parent results for shuffle dependencies.
                         // Note: The downcast here assumes the RDD item type is consistent, a limitation of the current design.
+
+                        // TODO: Properly construct map_output_info from completed_map_outputs and executor information
+                        // For now, pass None as a placeholder. A full implementation would need to:
+                        // 1. Track which executor ran each map task
+                        // 2. Combine MapStatus with ExecutorInfo for each parent stage
+                        // 3. Pass this information to create_tasks for shuffle dependencies
+                        let map_output_info = None;
+
                         let tasks = stage
                             .rdd
                             .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
                             .unwrap()
-                            .create_tasks(stage_id_str.clone())?;
+                            .create_tasks(stage_id_str.clone(), map_output_info)?;
 
                         let mut futures = Vec::new();
                         for (i, task) in tasks.into_iter().enumerate() {

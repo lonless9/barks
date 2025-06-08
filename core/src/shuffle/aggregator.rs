@@ -12,7 +12,10 @@ use std::fmt::Debug;
 ///
 /// Note: We use a trait object approach without typetag for generics
 /// since typetag doesn't support generic trait deserialization
-pub trait Aggregator<K, V, C>: Send + Sync + Debug {
+pub trait Aggregator<K, V, C>: Send + Sync + Debug + std::any::Any {
+    /// Downcast self to a `&dyn Any`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Create a combiner from the first value for a key.
     fn create_combiner(&self, v: V) -> C;
 
@@ -40,6 +43,10 @@ where
     K: Send + Sync + Clone + Debug + 'static,
     V: Send + Sync + Clone + Debug + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, v: V) -> V {
         v
     }
@@ -81,6 +88,10 @@ where
     V: Send + Sync + Clone + Debug + 'static,
     C: Send + Sync + Clone + Debug + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, v: V) -> C {
         (self.create_combiner)(v)
     }
@@ -119,6 +130,10 @@ where
     K: Send + Sync + Clone + Debug + 'static,
     V: Send + Sync + Clone + Debug + std::ops::Add<Output = V> + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, v: V) -> V {
         v
     }
@@ -157,6 +172,10 @@ where
     K: Send + Sync + Clone + Debug + 'static,
     V: Send + Sync + Clone + Debug + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, _v: V) -> u64 {
         1
     }
@@ -202,6 +221,10 @@ where
     K: Send + Sync + Clone + Debug + 'static,
     V: Send + Sync + Clone + Debug + std::ops::Add<Output = V> + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, v: V) -> AverageCombiner<V> {
         AverageCombiner { sum: v, count: 1 }
     }
@@ -250,6 +273,10 @@ where
     K: Send + Sync + Clone + Debug + 'static,
     V: Send + Sync + Clone + Debug + 'static,
 {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn create_combiner(&self, v: V) -> Vec<V> {
         vec![v]
     }

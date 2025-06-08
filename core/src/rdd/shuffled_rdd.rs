@@ -1,8 +1,12 @@
 //! RDD that represents a shuffle dependency.
 
-use crate::shuffle::{Aggregator, Partitioner};
+use crate::distributed::task::ShuffleReduceTask;
+use crate::shuffle::{
+    Aggregator, GroupByKeyAggregator, Partitioner, ReduceAggregator, SerializableAggregator,
+};
 use crate::traits::{
-    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+    Data, Dependency, Partition, PartitionerType, RddBase, RddError, RddResult,
+    ShuffleDependencyInfo,
 };
 use std::sync::Arc;
 
@@ -123,16 +127,85 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // For ShuffledRdd, we need to create ShuffleReduceTask instances
-        // This is a placeholder implementation - in a real system, this would create
-        // reduce tasks that read shuffle data from map tasks
+        let parent_map_info = map_output_info
+            .and_then(|infos| infos.get(0))
+            .ok_or_else(|| {
+                RddError::ShuffleError("Could not find map outputs for shuffle".to_string())
+            })?;
 
-        // For now, return an error indicating this needs to be implemented
-        Err(crate::traits::RddError::ContextError(
-            "ShuffledRdd task creation not yet implemented - requires shuffle reduce tasks"
-                .to_string(),
-        ))
+        let map_locations: Vec<(String, u32)> = parent_map_info
+            .iter()
+            .enumerate() // gives map_id (partition index of map task)
+            .map(|(map_id, (_map_status, exec_info))| {
+                let shuffle_addr = format!("{}:{}", exec_info.host, exec_info.shuffle_port);
+                (shuffle_addr, map_id as u32)
+            })
+            .collect();
+
+        // This is a workaround due to the aggregator being a non-serializable trait object.
+        // A better design would be to store a serializable representation of the aggregator.
+        let aggregator_data = if let Some(_) = self
+            .aggregator
+            .as_any()
+            .downcast_ref::<ReduceAggregator<i32>>()
+        {
+            SerializableAggregator::AddI32
+                .serialize()
+                .map_err(|e| RddError::SerializationError(e))?
+        } else if let Some(_) = self
+            .aggregator
+            .as_any()
+            .downcast_ref::<ReduceAggregator<String>>()
+        {
+            SerializableAggregator::ConcatString
+                .serialize()
+                .map_err(|e| RddError::SerializationError(e))?
+        } else if let Some(_) = self
+            .aggregator
+            .as_any()
+            .downcast_ref::<GroupByKeyAggregator<i32>>()
+        {
+            SerializableAggregator::GroupI32
+                .serialize()
+                .map_err(|e| RddError::SerializationError(e))?
+        } else {
+            return Err(RddError::SerializationError(
+                "Unsupported aggregator type for task creation".to_string(),
+            ));
+        };
+
+        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
+
+        // This part uses downcasting to create the correctly typed task, which is consistent
+        // with other parts of the codebase but indicates a lack of true generics.
+        if let Some(_) = self
+            .as_any()
+            .downcast_ref::<ShuffledRdd<String, i32, i32>>()
+        {
+            for i in 0..self.num_partitions() {
+                let task = ShuffleReduceTask::<String, i32, i32, ReduceAggregator<i32>>::new(
+                    self.id as u32,
+                    i as u32,
+                    map_locations.clone(),
+                    aggregator_data.clone(),
+                );
+                tasks.push(Box::new(task));
+            }
+        } else {
+            return Err(RddError::ContextError(format!(
+                "Task creation for ShuffledRdd with item type {:?} is not supported yet.",
+                std::any::type_name::<Self::Item>()
+            )));
+        }
+
+        Ok(tasks)
     }
 }
 

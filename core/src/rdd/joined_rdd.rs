@@ -144,9 +144,19 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // JoinedRdd task creation is not yet implemented
-        unimplemented!("JoinedRdd::create_tasks needs implementation")
+        unimplemented!(
+            "JoinedRdd task creation is not implemented. It requires a `CoGroupTask` that can read \
+            from multiple shuffle dependencies (one for each parent RDD). The current `ShuffleReduceTask` \
+            only supports a single shuffle dependency. This is a necessary future enhancement for \
+            implementing distributed joins."
+        )
     }
 }
 
@@ -304,9 +314,19 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // CogroupedRdd task creation is not yet implemented
-        unimplemented!("CogroupedRdd::create_tasks needs implementation")
+        unimplemented!(
+            "CogroupedRdd task creation is not implemented. It requires a `CoGroupTask` that can read \
+            from multiple shuffle dependencies (one for each parent RDD). The current `ShuffleReduceTask` \
+            only supports a single shuffle dependency. This is a necessary future enhancement for \
+            implementing distributed joins and cogroups."
+        )
     }
 }
 
