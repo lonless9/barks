@@ -13,20 +13,26 @@ This project is a learning exercise and is **extremely immature**. It is not sui
 
 Key limitations include:
 *   **Placeholder Modules:** Most high-level modules like `sql`, `streaming`, and `mllib` are just empty skeletons.
-*   **Limited Fault Tolerance:** The system does not handle node or task failures gracefully.
+*   **Basic Fault Tolerance:** The system has basic fault tolerance, including task retries and executor failure detection, but lacks advanced recovery strategies like stage-level retries or checkpointing.
 *   **Basic Scheduler:** The task scheduler is very simple and lacks advanced features like speculation or fairness.
-*   **Incomplete API:** The RDD API is minimal and missing many common transformations and actions.
+*   **Incomplete API:** The RDD API is minimal and missing many common transformations and actions compared to Spark.
 *   **No Web UI:** There is no monitoring interface.
 
 ## ✨ Features (What's Implemented)
 
 Despite its limitations, `barks` has a basic foundation for distributed computation:
 
-*   **RDD Abstractions:** A `SimpleRdd` for local execution and a `DistributedRdd` for cluster execution.
-*   **Local Parallelism:** `FlowContext` uses a local thread pool (`rayon`) to run computations in parallel.
-*   **Distributed Execution Model:** A basic Driver/Executor architecture using gRPC for communication.
-*   **Serializable Tasks:** Operations on `DistributedRdd` are serializable, allowing them to be sent across the network for execution.
-*   **Shuffle Mechanism:** A foundational shuffle service for wide-dependency operations like `reduceByKey`.
+*   **Generic RDD Abstraction:** The core abstraction is `DistributedRdd<T>`, a generic Resilient Distributed Dataset. It supports any data type `T` that implements the `RddDataType` trait, enabling type-safe distributed collections.
+*   **Serializable & Extensible Tasks:** The framework uses a `Task` trait with `typetag` for serialization. This allows custom computations to be packaged, sent over the network, and executed remotely, avoiding the limitations of closures in a distributed environment.
+*   **Local Parallelism:** `FlowContext` provides a local execution environment that leverages `rayon` to run computations in parallel on a single machine, mirroring Spark's local mode.
+*   **Distributed Execution Model:** A robust Driver/Executor architecture using gRPC for communication.
+    *   Resilient executor registration with connection retries.
+    *   Executor liveness monitoring via heartbeats and automatic re-scheduling of tasks from failed executors.
+*   **Shuffle Mechanism:** A foundational shuffle system for wide-dependency operations.
+    *   An HTTP-based shuffle service (using `axum`) for transferring intermediate data.
+    *   Specialized `ShuffleMapTask` and `ShuffleReduceTask` for orchestrating shuffles.
+    *   Pair RDD operations like `reduceByKey`, `groupByKey`, and `join` are implemented on top of this system.
+*   **Optimized Shuffle Writer:** A `HashShuffleWriter` that can spill to disk and sort data to improve shuffle performance.
 
 ## 🏗️ Building and Testing
 
