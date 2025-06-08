@@ -3,7 +3,8 @@
 //! This example shows how to use the new shuffle-based RDD operations
 //! that require wide dependencies and data redistribution.
 
-use barks_core::rdd::{PairRdd, VecRdd};
+use barks_core::rdd::transformations::PairRdd;
+use barks_core::rdd::SimpleRdd;
 use barks_core::shuffle::HashPartitioner;
 use barks_core::traits::RddBase;
 use std::sync::Arc;
@@ -25,8 +26,8 @@ fn main() {
     ];
     println!("   Original data: {:?}", data);
 
-    // Create VecRdd with the data
-    let rdd = VecRdd::new(1, data, 2);
+    // Create an RDD with the data
+    let rdd = SimpleRdd::from_vec_with_partitions(data, 2);
     println!("   Created RDD with {} partitions", rdd.num_partitions());
 
     // Create a hash partitioner for the shuffle
@@ -56,7 +57,7 @@ fn main() {
     ];
     println!("   Original data: {:?}", data2);
 
-    let rdd2 = VecRdd::new(2, data2, 2);
+    let rdd2 = SimpleRdd::from_vec_with_partitions(data2, 2);
     let partitioner2 = Arc::new(HashPartitioner::new(3));
 
     let grouped_rdd = rdd2.group_by_key(partitioner2);

@@ -7,9 +7,8 @@
 //! 3. Reduce stage: Aggregate values for each key
 
 use barks_core::distributed::task::{ShuffleMapTask, Task};
-use barks_core::rdd::{PairRdd, VecRdd};
+use barks_core::rdd::SimpleRdd;
 use barks_core::shuffle::{HashPartitioner, Partitioner};
-use barks_core::traits::RddBase;
 use barks_network_shuffle::traits::MapStatus;
 use std::sync::Arc;
 
@@ -63,13 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("color".to_string(), "red".to_string()),
     ];
 
-    let rdd = VecRdd::new(1, data.clone(), 2);
-    let partitioner = Arc::new(HashPartitioner::new(3));
+    let rdd = SimpleRdd::from_vec_with_partitions(data, 2);
+    let _partitioner = Arc::new(HashPartitioner::new(3));
 
     // Create a shuffled RDD using reduceByKey
-    let original_partitions = rdd.num_partitions();
-    let original_dependencies = rdd.dependencies().len();
+    let _original_partitions = rdd.num_partitions();
 
+    // TODO: This part needs the PairRdd trait to be implemented for SimpleRdd
+    /*
     fn concat_strings(a: String, b: String) -> String {
         format!("{},{}", a, b)
     }
@@ -81,10 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shuffled_rdd.num_partitions()
     );
     println!(
-        "   Dependencies: {} -> {}",
-        original_dependencies,
-        shuffled_rdd.dependencies().len()
+        "   Shuffled RDD would have a shuffle dependency on the original RDD"
     );
+    */
 
     // Demo 3: Show partitioner behavior
     println!("\n3. Hash Partitioner Behavior:");

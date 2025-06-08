@@ -17,7 +17,7 @@ pub enum Stage {
     /// A map stage that produces shuffle output
     ShuffleMap {
         stage_id: StageId,
-        rdd: Arc<dyn RddBase>,
+        rdd: Arc<dyn RddBase<Item = (String, i32)>>, // Use concrete types for now
         shuffle_id: u32,
         num_reduce_partitions: u32,
     },
@@ -31,7 +31,7 @@ pub enum Stage {
     /// A regular stage without shuffle dependencies
     Regular {
         stage_id: StageId,
-        rdd: Arc<dyn RddBase>,
+        rdd: Arc<dyn RddBase<Item = (String, i32)>>, // Use concrete types for now
     },
 }
 
@@ -223,7 +223,7 @@ impl StageManager {
     /// Get partition data for a given RDD partition (placeholder implementation)
     async fn get_partition_data(
         &self,
-        _rdd: &Arc<dyn RddBase>,
+        _rdd: &Arc<dyn RddBase<Item = (String, i32)>>,
         _partition_index: usize,
     ) -> Vec<u8> {
         // In a real implementation, this would extract the actual partition data

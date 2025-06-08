@@ -1,7 +1,7 @@
 //! RDD that represents a shuffle dependency.
 
 use crate::shuffle::{Aggregator, Partitioner};
-use crate::traits::{Data, Dependency, Partition, Rdd, RddBase, RddResult};
+use crate::traits::{Data, Dependency, Partition, RddBase, RddResult};
 use std::sync::Arc;
 
 /// ShuffledRdd is an RDD that has a shuffle dependency on its parent.
@@ -13,7 +13,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ShuffledRdd<K: Data, V: Data, C: Data> {
     id: usize,
-    parent: Arc<dyn RddBase>,
+    parent: Arc<dyn RddBase<Item = (K, V)>>,
     aggregator: Arc<dyn Aggregator<K, V, C>>,
     partitioner: Arc<dyn Partitioner>,
 }
@@ -21,7 +21,7 @@ pub struct ShuffledRdd<K: Data, V: Data, C: Data> {
 impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {
     pub fn new(
         id: usize,
-        parent: Arc<dyn RddBase>,
+        parent: Arc<dyn RddBase<Item = (K, V)>>,
         aggregator: Arc<dyn Aggregator<K, V, C>>,
         partitioner: Arc<dyn Partitioner>,
     ) -> Self {
@@ -35,8 +35,18 @@ impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {
 }
 
 impl<K: Data, V: Data, C: Data> RddBase for ShuffledRdd<K, V, C> {
-    fn id(&self) -> usize {
-        self.id
+    type Item = (K, C);
+
+    fn compute(
+        &self,
+        _partition: &dyn Partition,
+    ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
+        // In a real distributed execution, the ShuffleReader would be used here to fetch
+        // data from remote executors based on MapStatus from the driver.
+        // For local simulation, we can perform a mock shuffle.
+        unimplemented!(
+            "ShuffledRdd::compute is for distributed execution and requires shuffle data."
+        );
     }
 
     fn num_partitions(&self) -> usize {
@@ -48,16 +58,8 @@ impl<K: Data, V: Data, C: Data> RddBase for ShuffledRdd<K, V, C> {
         // For now, we'll use a placeholder
         vec![Dependency::Shuffle(Arc::new(()))]
     }
-}
 
-impl<K: Data, V: Data, C: Data> Rdd<(K, C)> for ShuffledRdd<K, V, C> {
-    /// Computing a partition of a ShuffledRdd involves reading shuffle data.
-    fn compute(&self, _partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = (K, C)>>> {
-        // In a real distributed execution, the ShuffleReader would be used here to fetch
-        // data from remote executors based on MapStatus from the driver.
-        // For local simulation, we can perform a mock shuffle.
-        unimplemented!(
-            "ShuffledRdd::compute is for distributed execution and requires shuffle data."
-        );
+    fn id(&self) -> usize {
+        self.id
     }
 }

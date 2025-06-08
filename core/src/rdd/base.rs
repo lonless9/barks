@@ -1,8 +1,6 @@
 //! Base RDD implementations
 //!
 //! This module contains the fundamental RDD types.
-// Import traits for the new RDD implementations
-use crate::traits::{Data, Dependency, Rdd, RddBase};
 
 use crate::traits::{BasicPartition, Partition, RddError, RddResult};
 use serde::{Deserialize, Serialize};
@@ -249,134 +247,62 @@ where
     }
 }
 
-/// The most basic RDD, created from an in-memory collection.
-#[derive(Clone, Debug)]
-pub struct VecRdd<T: Data> {
-    data: Arc<Vec<T>>,
-    num_partitions: usize,
-    id: usize,
-}
+impl<T> crate::traits::RddBase for SimpleRdd<T>
+where
+    T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+{
+    type Item = T;
 
-impl<T: Data> VecRdd<T> {
-    pub fn new(id: usize, data: Vec<T>, num_partitions: usize) -> Self {
-        let num_partitions = if num_partitions == 0 {
-            1
-        } else {
-            num_partitions
-        };
-        Self {
-            id,
-            data: Arc::new(data),
-            num_partitions,
-        }
-    }
-}
-
-impl<T: Data> RddBase for VecRdd<T> {
-    fn id(&self) -> usize {
-        self.id
+    fn compute(&self, partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = T>>> {
+        let data = self.compute(partition)?;
+        Ok(Box::new(data.into_iter()))
     }
 
     fn num_partitions(&self) -> usize {
-        self.num_partitions
-    }
-
-    fn dependencies(&self) -> Vec<Dependency> {
-        vec![]
-    }
-}
-
-impl<T: Data> Rdd<T> for VecRdd<T> {
-    fn compute(&self, partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = T>>> {
-        let partition_index = partition.index();
-        if partition_index >= self.num_partitions {
-            return Err(RddError::InvalidPartition(partition_index));
-        }
-
-        let data_len = self.data.len();
-        let partition_size = (data_len + self.num_partitions - 1) / self.num_partitions;
-        let start = partition_index * partition_size;
-        let end = std::cmp::min(start + partition_size, data_len);
-
-        let data_slice = if start >= data_len {
-            Vec::new()
-        } else {
-            self.data[start..end].to_vec()
-        };
-
-        Ok(Box::new(data_slice.into_iter()))
-    }
-}
-
-/// An extension trait for RDDs of key-value pairs.
-pub trait PairRdd<K: Data, V: Data>: Rdd<(K, V)>
-where
-    Self: Sized,
-{
-    /// Groups values by key and applies a reduction function.
-    /// This is a wide transformation that triggers a shuffle.
-    fn reduce_by_key(
-        self,
-        reduce_func: fn(V, V) -> V,
-        partitioner: Arc<dyn crate::shuffle::Partitioner>,
-    ) -> crate::rdd::ShuffledRdd<K, V, V> {
-        let aggregator = Arc::new(crate::shuffle::ReduceAggregator::new(reduce_func));
-        crate::rdd::ShuffledRdd::new(0, Arc::new(self), aggregator, partitioner)
-    }
-
-    /// Groups all values for a key into a single sequence.
-    /// This is a wide transformation that triggers a shuffle.
-    fn group_by_key(
-        self,
-        partitioner: Arc<dyn crate::shuffle::Partitioner + 'static>,
-    ) -> crate::rdd::ShuffledRdd<K, V, Vec<V>> {
-        #[derive(Clone, Debug)]
-        struct GroupByAggregator<V: Data>(std::marker::PhantomData<V>);
-
-        impl<K: Data, V: Data> crate::shuffle::Aggregator<K, V, Vec<V>> for GroupByAggregator<V> {
-            fn create_combiner(&self, v: V) -> Vec<V> {
-                vec![v]
-            }
-            fn merge_value(&self, mut c: Vec<V>, v: V) -> Vec<V> {
-                c.push(v);
-                c
-            }
-            fn merge_combiners(&self, mut c1: Vec<V>, mut c2: Vec<V>) -> Vec<V> {
-                c1.append(&mut c2);
-                c1
+        match self {
+            SimpleRdd::Vec { num_partitions, .. } => *num_partitions,
+            SimpleRdd::Map { parent, .. } | SimpleRdd::Filter { parent, .. } => {
+                parent.num_partitions()
             }
         }
-
-        crate::rdd::ShuffledRdd::new(
-            0,
-            Arc::new(self),
-            Arc::new(GroupByAggregator(std::marker::PhantomData)),
-            partitioner,
-        )
     }
 
-    /// Return an RDD containing all pairs of elements with matching keys in `self` and `other`.
-    fn join<W: Data>(
-        self,
-        _other: Arc<dyn Rdd<(K, W)>>,
-        _partitioner: Arc<dyn crate::shuffle::Partitioner + 'static>,
-    ) -> Arc<dyn Rdd<(K, (V, W))>> {
-        // The implementation of join is based on cogroup.
-        // For now, this is a placeholder as cogroup itself is a complex shuffle operation.
-        unimplemented!(
-            "join is not yet implemented. It requires a cogroup shuffle implementation."
-        );
+    fn dependencies(&self) -> Vec<crate::traits::Dependency> {
+        match self {
+            SimpleRdd::Vec { .. } => vec![],
+            SimpleRdd::Map { parent, .. } | SimpleRdd::Filter { parent, .. } => {
+                vec![crate::traits::Dependency::Narrow(Arc::new(
+                    parent.as_ref().clone(),
+                ))]
+            }
+        }
     }
 
-    /// Return an RDD with the elements sorted by key.
-    fn sort_by_key(self, _ascending: bool) -> Arc<dyn Rdd<(K, V)>>
-    where
-        K: Ord,
-    {
-        // A full implementation requires a custom RangePartitioner and sampling the RDD.
-        // This is a placeholder for the API.
-        unimplemented!("sort_by_key is not yet implemented. It requires a RangePartitioner.");
+    fn id(&self) -> usize {
+        // For now, use a simple hash-based ID
+        //TODO this would be managed by the Context
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        match self {
+            SimpleRdd::Vec {
+                data,
+                num_partitions,
+            } => {
+                "Vec".hash(&mut hasher);
+                data.as_ptr().hash(&mut hasher);
+                num_partitions.hash(&mut hasher);
+            }
+            SimpleRdd::Map { parent, .. } => {
+                "Map".hash(&mut hasher);
+                parent.id().hash(&mut hasher);
+            }
+            SimpleRdd::Filter { parent, .. } => {
+                "Filter".hash(&mut hasher);
+                parent.id().hash(&mut hasher);
+            }
+        }
+        hasher.finish() as usize
     }
 }
-
-impl<K: Data, V: Data, R: Rdd<(K, V)>> PairRdd<K, V> for R {}

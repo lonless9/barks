@@ -60,21 +60,20 @@ impl Partition for BasicPartition {
     }
 }
 
-/// Core RDD trait that defines the fundamental operations for Resilient Distributed Datasets
-/// This trait is object-safe and contains only the essential methods for computation
-pub trait Rdd<T: Data>: RddBase {
-    /// Compute the elements of this RDD for the given partition
-    fn compute(&self, partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = T>>>;
-
-    /// An iterator over the elements of this RDD.
-    /// This is a convenience method that triggers a computation.
-    fn iterator(&self, partition: &dyn Partition) -> RddResult<Box<dyn Iterator<Item = T>>> {
-        self.compute(partition)
-    }
-}
-
 /// Base trait for all RDDs, containing non-generic methods.
 pub trait RddBase: Send + Sync + Debug + Any {
+    type Item: Data;
+
+    /// Compute the elements of this RDD for the given partition
+    fn compute(&self, partition: &dyn Partition)
+        -> RddResult<Box<dyn Iterator<Item = Self::Item>>>;
+
+    /// Get the number of partitions
+    fn num_partitions(&self) -> usize;
+
+    /// Get dependencies of this RDD (for lineage tracking)
+    fn dependencies(&self) -> Vec<Dependency>;
+
     /// Get a unique ID for this RDD.
     fn id(&self) -> usize;
 
@@ -84,12 +83,6 @@ pub trait RddBase: Send + Sync + Debug + Any {
             .map(|i| Arc::new(BasicPartition::new(i)) as Arc<dyn Partition>)
             .collect()
     }
-
-    /// Get the number of partitions
-    fn num_partitions(&self) -> usize;
-
-    /// Get dependencies of this RDD (for lineage tracking)
-    fn dependencies(&self) -> Vec<Dependency>;
 }
 
 /// A data type that can be used in an RDD.
@@ -106,7 +99,7 @@ impl<T> Data for T where
 #[derive(Clone)]
 pub enum Dependency {
     /// A one-to-one dependency where each partition of the child RDD depends on a single partition of the parent.
-    Narrow(Arc<dyn RddBase>),
+    Narrow(Arc<dyn Any + Send + Sync>), // Use Any for now to avoid associated type issues
     /// A shuffle dependency where partitions of the child RDD depend on multiple partitions of the parent.
     Shuffle(Arc<dyn Any + Send + Sync>), // Placeholder with Any for now
 }
