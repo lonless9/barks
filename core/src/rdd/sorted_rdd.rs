@@ -48,24 +48,54 @@ where
 
 impl<K: Data, V: Data> RddBase for SortedRdd<K, V>
 where
-    K: Ord + std::fmt::Debug,
+    K: Ord + std::fmt::Debug + std::hash::Hash,
 {
     type Item = (K, V);
 
     fn compute(
         &self,
-        _partition: &dyn Partition,
+        partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
-        // In a real distributed execution, this would:
-        // 1. Fetch shuffle data for this partition from the shuffle service
-        // 2. Sort the data within the partition (since range partitioning ensures global order)
-        // 3. Return the sorted iterator
+        // TODO For local execution, we simulate the sort by collecting all data
+        // and sorting it. In a distributed environment, this would use
+        // range partitioning and fetch shuffle blocks.
 
-        // The actual implementation would use a ShuffleReader to get the data
-        // and then sort it locally within each partition
-        unimplemented!(
-            "SortedRdd::compute requires distributed shuffle execution with ShuffleReader"
-        );
+        let partition_index = partition.index();
+
+        // Get all data from parent partitions (simulating shuffle read)
+        let mut all_data = Vec::new();
+        for i in 0..self.parent.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            let parent_data = self.parent.compute(&parent_partition)?;
+            all_data.extend(parent_data);
+        }
+
+        // Filter data that belongs to this partition based on range partitioning
+        let mut partition_data: Vec<(K, V)> = Vec::new();
+
+        for (key, value) in all_data {
+            // TODO Use hash partitioning here instead of range partitioning
+            // This would use the RangePartitioner
+            let key_partition = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut hasher);
+                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
+            };
+
+            if key_partition == partition_index {
+                partition_data.push((key, value));
+            }
+        }
+
+        // Sort the data within this partition
+        if self.ascending {
+            partition_data.sort_by(|a, b| a.0.cmp(&b.0));
+        } else {
+            partition_data.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+
+        Ok(Box::new(partition_data.into_iter()))
     }
 
     fn num_partitions(&self) -> usize {
@@ -79,6 +109,22 @@ where
 
     fn id(&self) -> usize {
         self.id
+    }
+}
+
+impl<K: Data, V: Data> SortedRdd<K, V>
+where
+    K: Ord + std::fmt::Debug + std::hash::Hash,
+{
+    /// Collect all elements from all partitions into a vector
+    pub fn collect(&self) -> crate::traits::RddResult<Vec<(K, V)>> {
+        let mut result = Vec::new();
+        for i in 0..self.num_partitions() {
+            let partition = crate::traits::BasicPartition::new(i);
+            let partition_data = self.compute(&partition)?;
+            result.extend(partition_data);
+        }
+        Ok(result)
     }
 }
 

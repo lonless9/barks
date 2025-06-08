@@ -72,9 +72,11 @@ where
 
     fn group_by_key(
         self,
-        _partitioner: Arc<dyn Partitioner + 'static>,
+        partitioner: Arc<dyn Partitioner + 'static>,
     ) -> ShuffledRdd<K, V, Vec<V>> {
-        unimplemented!("group_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
+        let aggregator = Arc::new(crate::shuffle::GroupByKeyAggregator::new());
+        let new_rdd_id = self.id().saturating_add(2);
+        ShuffledRdd::new(new_rdd_id, Arc::new(self), aggregator, partitioner)
     }
 
     fn join<W: Data>(
@@ -86,11 +88,22 @@ where
         JoinedRdd::new(new_rdd_id, Arc::new(self), other, partitioner)
     }
 
-    fn sort_by_key(self, _ascending: bool) -> SortedRdd<K, V>
+    fn sort_by_key(self, ascending: bool) -> SortedRdd<K, V>
     where
         K: Ord + std::fmt::Debug,
     {
-        unimplemented!("sort_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
+        let new_rdd_id = self.id().saturating_add(4);
+        let num_partitions = self.num_partitions() as u32;
+
+        // Create a range partitioner with empty sample keys
+        // TODO Sample the RDD to determine range bounds
+        let sample_keys = Vec::new();
+        let partitioner = Arc::new(crate::shuffle::RangePartitioner::from_sample(
+            num_partitions,
+            sample_keys,
+        ));
+
+        SortedRdd::new(new_rdd_id, Arc::new(self), partitioner, ascending)
     }
 
     fn cogroup<W: Data>(

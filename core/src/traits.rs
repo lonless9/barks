@@ -103,3 +103,12 @@ pub enum Dependency {
     /// A shuffle dependency where partitions of the child RDD depend on multiple partitions of the parent.
     Shuffle(Arc<dyn Any + Send + Sync>), // Placeholder with Any for now
 }
+
+impl std::fmt::Debug for Dependency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Dependency::Narrow(_) => write!(f, "Narrow(...)"),
+            Dependency::Shuffle(_) => write!(f, "Shuffle(...)"),
+        }
+    }
+}

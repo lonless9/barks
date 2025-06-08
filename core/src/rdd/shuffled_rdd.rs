@@ -36,19 +36,65 @@ impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {
     }
 }
 
-impl<K: Data, V: Data, C: Data> RddBase for ShuffledRdd<K, V, C> {
+impl<K: Data, V: Data, C: Data> RddBase for ShuffledRdd<K, V, C>
+where
+    K: std::hash::Hash + Eq,
+{
     type Item = (K, C);
 
     fn compute(
         &self,
-        _partition: &dyn Partition,
+        partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
-        // In a real distributed execution, the ShuffleReader would be used here to fetch
-        // data from remote executors based on MapStatus from the driver.
-        // For local simulation, we can perform a mock shuffle.
-        unimplemented!(
-            "ShuffledRdd::compute is for distributed execution and requires shuffle data."
-        );
+        // For local execution, we simulate the shuffle by computing the parent RDD
+        // and applying the aggregator locally. In a distributed environment,
+        // this would fetch shuffle blocks from remote executors.
+
+        let partition_index = partition.index();
+
+        // Get all data from parent partitions (simulating shuffle read)
+        let mut all_data = Vec::new();
+        for i in 0..self.parent.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            let parent_data = self.parent.compute(&parent_partition)?;
+            all_data.extend(parent_data);
+        }
+
+        // Group data by key and partition
+        let mut partitioned_data: std::collections::HashMap<K, Vec<V>> =
+            std::collections::HashMap::new();
+
+        for (key, value) in all_data {
+            // Determine which partition this key belongs to
+            let key_partition = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut hasher);
+                (hasher.finish() % self.partitioner.num_partitions() as u64) as usize
+            };
+
+            // Only include data that belongs to the current partition
+            if key_partition == partition_index {
+                partitioned_data.entry(key).or_default().push(value);
+            }
+        }
+
+        // Apply aggregator to combine values for each key
+        let aggregated_data: Vec<(K, C)> = partitioned_data
+            .into_iter()
+            .map(|(key, values)| {
+                let mut combined = None;
+                for value in values {
+                    combined = Some(match combined {
+                        None => self.aggregator.create_combiner(value),
+                        Some(c) => self.aggregator.merge_value(c, value),
+                    });
+                }
+                (key, combined.unwrap())
+            })
+            .collect();
+
+        Ok(Box::new(aggregated_data.into_iter()))
     }
 
     fn num_partitions(&self) -> usize {
@@ -63,5 +109,21 @@ impl<K: Data, V: Data, C: Data> RddBase for ShuffledRdd<K, V, C> {
 
     fn id(&self) -> usize {
         self.id
+    }
+}
+
+impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C>
+where
+    K: std::hash::Hash + Eq,
+{
+    /// Collect all elements from all partitions into a vector
+    pub fn collect(&self) -> crate::traits::RddResult<Vec<(K, C)>> {
+        let mut result = Vec::new();
+        for i in 0..self.num_partitions() {
+            let partition = crate::traits::BasicPartition::new(i);
+            let partition_data = self.compute(&partition)?;
+            result.extend(partition_data);
+        }
+        Ok(result)
     }
 }

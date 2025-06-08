@@ -9,6 +9,9 @@ pub mod shuffled_rdd;
 pub mod sorted_rdd;
 pub mod transformations;
 
+#[cfg(test)]
+mod shuffle_tests;
+
 pub use distributed::*;
 pub use joined_rdd::*;
 pub use shuffled_rdd::*;

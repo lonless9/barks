@@ -223,3 +223,43 @@ where
         }
     }
 }
+
+/// Group-by-key aggregator that collects all values for a key into a vector
+#[derive(Clone, Debug)]
+pub struct GroupByKeyAggregator<V> {
+    _phantom: std::marker::PhantomData<V>,
+}
+
+impl<V> GroupByKeyAggregator<V> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V> Default for GroupByKeyAggregator<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Aggregator<K, V, Vec<V>> for GroupByKeyAggregator<V>
+where
+    K: Send + Sync + Clone + Debug + 'static,
+    V: Send + Sync + Clone + Debug + 'static,
+{
+    fn create_combiner(&self, v: V) -> Vec<V> {
+        vec![v]
+    }
+
+    fn merge_value(&self, mut c: Vec<V>, v: V) -> Vec<V> {
+        c.push(v);
+        c
+    }
+
+    fn merge_combiners(&self, mut c1: Vec<V>, mut c2: Vec<V>) -> Vec<V> {
+        c1.append(&mut c2);
+        c1
+    }
+}
