@@ -403,8 +403,9 @@ impl DistributedContext {
                         let mut futures = Vec::new();
                         for (i, task) in tasks.into_iter().enumerate() {
                             let task_id = format!("task-{}-{}", stage_id_str, i);
+                            // TODO: Determine preferred locations based on shuffle dependency outputs.
                             let future = driver
-                                .submit_task(task_id, stage_id_str.clone(), i, task, None)
+                                .submit_task(task_id, stage_id_str.clone(), i, task, vec![])
                                 .await
                                 .map_err(|e| {
                                     RddError::ContextError(format!("Failed to submit task: {}", e))

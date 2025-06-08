@@ -98,7 +98,7 @@ async fn test_task_submission() {
             vec![], // Empty operations for a simple collect
         ));
 
-        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
+        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, vec![]).await;
     }
 
     // Verify pending tasks
@@ -140,7 +140,7 @@ async fn test_rdd_task_submission() {
 
         let task: Box<dyn Task> = Box::new(ChainedTask::<i32>::new(serialized_data, ops));
 
-        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, None).await;
+        let _result_receiver = driver.submit_task(task_id, stage_id, i, task, vec![]).await;
     }
 
     // Verify pending tasks

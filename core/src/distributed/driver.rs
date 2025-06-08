@@ -860,7 +860,7 @@ impl Driver {
         stage_id: StageId,
         partition_index: usize,
         task: Box<dyn Task>,
-        preferred_executor: Option<ExecutorId>,
+        preferred_locations: Vec<ExecutorId>,
     ) -> Result<oneshot::Receiver<(TaskResult, ExecutorId)>, anyhow::Error> {
         // Serialize the task object using `serde_json` because `typetag` works well with it.
         // The inner data (`partition_data`) is still efficiently serialized with bincode.
@@ -880,8 +880,9 @@ impl Driver {
                 stage_id,
                 partition_index,
                 serialized_task,
-                preferred_executor,
+                preferred_locations,
                 retries: 0,
+                attempt: 0, // Original task attempt
             })
             .await;
 

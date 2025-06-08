@@ -236,8 +236,9 @@ pub struct PendingTask {
     pub partition_index: usize,
     // This will now be the serialized `Box<dyn Task>`
     pub serialized_task: Vec<u8>,
-    pub preferred_executor: Option<ExecutorId>,
+    pub preferred_locations: Vec<ExecutorId>,
     pub retries: u32,
+    pub attempt: u32, // For speculation. Original is 0, first speculative is 1, etc.
 }
 
 impl TaskScheduler {
@@ -292,16 +293,53 @@ impl TaskScheduler {
             return None;
         }
 
-        // Pass 1: Find a task with a matching locality preference.
-        // We search from the front to maintain FIFO for local tasks.
+        let executors_guard = self.executors.lock().await;
+        let host = executors_guard
+            .get(executor_id)
+            .map(|info| info.host.clone());
+
+        // Level 1: PROCESS_LOCAL - task wants to run on this specific executor.
         if let Some(pos) = pending_tasks
             .iter()
-            .position(|t| t.preferred_executor.as_ref() == Some(executor_id))
+            .position(|t| t.preferred_locations.contains(executor_id))
         {
+            debug!("Found PROCESS_LOCAL task for executor {}", executor_id);
             return pending_tasks.remove(pos);
         }
 
-        // Pass 2: If no local task is found, return the next task from the front of the queue.
+        // Level 2: NODE_LOCAL - task wants to run on any executor on the same host.
+        if let Some(host) = host {
+            if let Some(pos) = pending_tasks.iter().position(|t| {
+                !t.preferred_locations.is_empty()
+                    && t.preferred_locations.iter().any(|pref_exec_id| {
+                        executors_guard
+                            .get(pref_exec_id)
+                            .map_or(false, |info| info.host == host)
+                    })
+            }) {
+                debug!(
+                    "Found NODE_LOCAL task for executor {} on host {}",
+                    executor_id, host
+                );
+                return pending_tasks.remove(pos);
+            }
+        }
+
+        // Level 3: NO_PREFERENCE - task has no locality preference.
+        if let Some(pos) = pending_tasks
+            .iter()
+            .position(|t| t.preferred_locations.is_empty())
+        {
+            debug!("Found NO_PREFERENCE task for executor {}", executor_id);
+            return pending_tasks.remove(pos);
+        }
+
+        // Level 4: ANY - no local or preference-free task available.
+        // Take a task with a non-matching preference as a last resort to avoid starvation.
+        debug!(
+            "No local task found for executor {}, taking oldest available task.",
+            executor_id
+        );
         pending_tasks.pop_front()
     }
 
@@ -454,6 +492,106 @@ mod tests {
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
         assert_eq!(result, vec![1, 4, 9, 16, 25]);
+    }
+
+    #[tokio::test]
+    async fn test_locality_aware_scheduling() {
+        let scheduler = TaskScheduler::new();
+
+        // Register two executors on different hosts
+        let executor1 = ExecutorInfo::new(
+            "executor-1".to_string(),
+            "host-1".to_string(),
+            8080,
+            8081,
+            2,
+            1024,
+        );
+        let executor2 = ExecutorInfo::new(
+            "executor-2".to_string(),
+            "host-2".to_string(),
+            8080,
+            8081,
+            2,
+            1024,
+        );
+        let executor3 = ExecutorInfo::new(
+            "executor-3".to_string(),
+            "host-1".to_string(), // Same host as executor-1
+            8082,
+            8083,
+            2,
+            1024,
+        );
+
+        scheduler.register_executor(executor1).await;
+        scheduler.register_executor(executor2).await;
+        scheduler.register_executor(executor3).await;
+
+        // Create tasks with different locality preferences
+        let task1 = PendingTask {
+            task_id: "task-1".to_string(),
+            stage_id: "stage-1".to_string(),
+            partition_index: 0,
+            serialized_task: vec![],
+            preferred_locations: vec!["executor-1".to_string()], // PROCESS_LOCAL preference
+            retries: 0,
+            attempt: 0,
+        };
+
+        let task2 = PendingTask {
+            task_id: "task-2".to_string(),
+            stage_id: "stage-1".to_string(),
+            partition_index: 1,
+            serialized_task: vec![],
+            preferred_locations: vec!["executor-2".to_string()], // Different host preference
+            retries: 0,
+            attempt: 0,
+        };
+
+        let task3 = PendingTask {
+            task_id: "task-3".to_string(),
+            stage_id: "stage-1".to_string(),
+            partition_index: 2,
+            serialized_task: vec![],
+            preferred_locations: vec![], // NO_PREFERENCE
+            retries: 0,
+            attempt: 0,
+        };
+
+        // Submit tasks
+        scheduler.submit_pending_task(task1).await;
+        scheduler.submit_pending_task(task2).await;
+        scheduler.submit_pending_task(task3).await;
+
+        // Test PROCESS_LOCAL: executor-1 should get task-1
+        let task_for_executor1 = scheduler
+            .get_next_task_for_executor(&"executor-1".to_string())
+            .await;
+        assert!(task_for_executor1.is_some());
+        assert_eq!(task_for_executor1.unwrap().task_id, "task-1");
+
+        // Test NODE_LOCAL: executor-3 (same host as executor-1) should get task-2
+        // since task-1 is already taken and task-2 prefers executor-2 (different host)
+        // but task-3 has no preference, so it should get task-3
+        let task_for_executor3 = scheduler
+            .get_next_task_for_executor(&"executor-3".to_string())
+            .await;
+        assert!(task_for_executor3.is_some());
+        assert_eq!(task_for_executor3.unwrap().task_id, "task-3");
+
+        // Test remaining task goes to executor-2
+        let task_for_executor2 = scheduler
+            .get_next_task_for_executor(&"executor-2".to_string())
+            .await;
+        assert!(task_for_executor2.is_some());
+        assert_eq!(task_for_executor2.unwrap().task_id, "task-2");
+
+        // No more tasks
+        let no_task = scheduler
+            .get_next_task_for_executor(&"executor-1".to_string())
+            .await;
+        assert!(no_task.is_none());
     }
 }
 
