@@ -365,7 +365,7 @@ impl DistributedContext {
     /// Executes a single-stage job that doesn't involve a shuffle.
     async fn run_result_stage<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
     where
-        T: crate::operations::RddDataType,
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
         let (base_data, num_partitions, operations) = rdd.analyze_lineage();
         info!(
@@ -457,117 +457,6 @@ impl DistributedContext {
         rdd.collect()
     }
 
-    /// Run distributed RDD computation in distributed mode
-    async fn run_distributed_rdd<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
-    where
-        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
-    {
-        if let Some(driver) = &self.driver {
-            // Check if we have any executors
-            let executor_count = driver.executor_count().await;
-            if executor_count == 0 {
-                warn!("No executors available, cannot run distributed job");
-                return Err(crate::traits::RddError::ContextError(
-                    "No executors available. Cannot run distributed job.".to_string(),
-                ));
-            }
-            info!(
-                "Running RDD computation in distributed mode with {} executor(s)",
-                executor_count
-            );
-
-            // 1. Analyze the RDD lineage to get base data and the chain of operations.
-            let (base_data, num_partitions, operations) = rdd.analyze_lineage();
-            info!(
-                "RDD lineage analyzed: {} operations found.",
-                operations.len()
-            );
-
-            // Get available executor IDs for locality-aware scheduling (round-robin for now)
-            let executor_ids = driver.get_executor_ids().await;
-            if executor_ids.is_empty() {
-                warn!("No executors available to assign preferred location.");
-            }
-
-            // 2. Partition the base data for distribution.
-            // Iterate through partitions and clone only the necessary slice for each task.
-            let stage_id = format!("stage-{}", uuid::Uuid::new_v4());
-            let data_slice = base_data.as_ref();
-            let num_items = data_slice.len();
-            let effective_num_partitions = std::cmp::min(num_partitions, num_items.max(1));
-            let partition_size =
-                (num_items + effective_num_partitions - 1) / effective_num_partitions;
-
-            let mut result_futures = Vec::new();
-
-            // 3. For each partition, create a task with the data and the *full* operation chain.
-            for i in 0..effective_num_partitions {
-                let start = i * partition_size;
-                let end = std::cmp::min(start + partition_size, num_items);
-                if start >= end {
-                    continue;
-                }
-
-                let chunk = data_slice[start..end].to_vec();
-                let task_id = format!("task-{}-{}", stage_id, i);
-
-                let serialized_partition_data =
-                    bincode::encode_to_vec(&chunk, bincode::config::standard())
-                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-                // Create the new generic chained task. It contains the data for one partition
-                // and the entire sequence of operations to be applied to it.
-                let task: Box<dyn crate::distributed::task::Task> =
-                    Self::create_task_for_type::<T>(serialized_partition_data, operations.clone())?;
-
-                // Assign a preferred executor in a round-robin fashion to test locality
-                let preferred_executor = if !executor_ids.is_empty() {
-                    executor_ids.get(i % executor_ids.len()).cloned()
-                } else {
-                    None
-                };
-
-                let result_future = driver
-                    .submit_task(task_id, stage_id.clone(), i, task, preferred_executor)
-                    .await
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-                result_futures.push(result_future);
-            }
-
-            info!("Submitted {} tasks for execution", result_futures.len());
-
-            // 4. Wait for all results and aggregate them.
-            let mut collected_results = Vec::new();
-            for future in result_futures {
-                match future.await {
-                    Ok(crate::distributed::driver::TaskResult::Success(bytes)) => {
-                        let (partition_result, _): (Vec<T>, _) =
-                            bincode::decode_from_slice(&bytes, bincode::config::standard())
-                                .map_err(|e| {
-                                    crate::traits::RddError::SerializationError(e.to_string())
-                                })?;
-                        collected_results.extend(partition_result);
-                    }
-                    Ok(crate::distributed::driver::TaskResult::Failure(err_msg)) => {
-                        return Err(crate::traits::RddError::ComputationError(err_msg));
-                    }
-                    Err(e) => {
-                        return Err(crate::traits::RddError::ContextError(format!(
-                            "Driver communication failed: {}",
-                            e
-                        )));
-                    }
-                }
-            }
-
-            Ok(collected_results)
-        } else {
-            Err(crate::traits::RddError::ContextError(
-                "No driver instance available".to_string(),
-            ))
-        }
-    }
-
     /// Get driver statistics (for driver mode)
     pub async fn get_driver_stats(&self) -> Option<DriverStats> {
         if let Some(driver) = &self.driver {
@@ -578,19 +467,6 @@ impl DistributedContext {
         } else {
             None
         }
-    }
-
-    /// Create a task for the given type T using a trait-based approach
-    /// This eliminates hardcoded type checks by leveraging the RddDataType trait
-    fn create_task_for_type<T>(
-        serialized_partition_data: Vec<u8>,
-        operations: Vec<T::SerializableOperation>,
-    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>>
-    where
-        T: crate::operations::RddDataType + 'static,
-    {
-        // Use a trait-based approach to create tasks
-        T::create_chained_task(serialized_partition_data, operations)
     }
 }
 

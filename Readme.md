@@ -1,4 +1,4 @@
-# barks 🦀
+# barks
 
 [![CI](https://github.com/lonless9/barks/actions/workflows/rust.yml/badge.svg)](https://github.com/lonless9/barks/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/lonless9/barks/graph/badge.svg)](https://codecov.io/gh/lonless9/barks)
