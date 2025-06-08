@@ -20,6 +20,7 @@ pub enum Stage {
         rdd: Arc<dyn RddBase<Item = (String, i32)>>, // Use concrete types for now
         shuffle_id: u32,
         num_reduce_partitions: u32,
+        partitioner_info: String, // Serialized partitioner information
     },
     /// A reduce stage that consumes shuffle input
     ShuffleReduce {
@@ -27,11 +28,18 @@ pub enum Stage {
         shuffle_id: u32,
         reduce_partition_id: u32,
         map_statuses: Vec<MapStatus>,
+        aggregator_info: String, // Serialized aggregator information
     },
     /// A regular stage without shuffle dependencies
     Regular {
         stage_id: StageId,
         rdd: Arc<dyn RddBase<Item = (String, i32)>>, // Use concrete types for now
+    },
+    /// A result stage that produces final output
+    Result {
+        stage_id: StageId,
+        rdd: Arc<dyn RddBase<Item = (String, i32)>>,
+        output_partitions: Vec<u32>,
     },
 }
 
@@ -41,6 +49,7 @@ impl Stage {
             Stage::ShuffleMap { stage_id, .. } => stage_id,
             Stage::ShuffleReduce { stage_id, .. } => stage_id,
             Stage::Regular { stage_id, .. } => stage_id,
+            Stage::Result { stage_id, .. } => stage_id,
         }
     }
 
@@ -49,6 +58,7 @@ impl Stage {
             Stage::ShuffleMap { rdd, .. } => rdd.num_partitions(),
             Stage::ShuffleReduce { .. } => 1, // Each reduce task processes one partition
             Stage::Regular { rdd, .. } => rdd.num_partitions(),
+            Stage::Result { rdd, .. } => rdd.num_partitions(),
         }
     }
 }
@@ -215,6 +225,16 @@ impl StageManager {
                 // For regular stages, we would create normal computation tasks
                 // This is a placeholder implementation
                 warn!("Regular stage task creation not implemented yet");
+                Vec::new()
+            }
+            Stage::Result {
+                rdd,
+                output_partitions,
+                ..
+            } => {
+                // For result stages, create tasks to collect final output
+                // This is a placeholder implementation
+                warn!("Result stage task creation not implemented yet");
                 Vec::new()
             }
         }

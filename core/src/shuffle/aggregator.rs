@@ -92,3 +92,134 @@ where
         (self.merge_combiners)(c1, c2)
     }
 }
+
+/// Statistical aggregators for common operations
+#[derive(Clone, Debug)]
+pub struct SumAggregator<V> {
+    _phantom: std::marker::PhantomData<V>,
+}
+
+impl<V> SumAggregator<V> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V> Default for SumAggregator<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Aggregator<K, V, V> for SumAggregator<V>
+where
+    K: Send + Sync + Clone + Debug + 'static,
+    V: Send + Sync + Clone + Debug + std::ops::Add<Output = V> + 'static,
+{
+    fn create_combiner(&self, v: V) -> V {
+        v
+    }
+
+    fn merge_value(&self, c: V, v: V) -> V {
+        c + v
+    }
+
+    fn merge_combiners(&self, c1: V, c2: V) -> V {
+        c1 + c2
+    }
+}
+
+/// Count aggregator that counts the number of values per key
+#[derive(Clone, Debug)]
+pub struct CountAggregator<V> {
+    _phantom: std::marker::PhantomData<V>,
+}
+
+impl<V> CountAggregator<V> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V> Default for CountAggregator<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Aggregator<K, V, u64> for CountAggregator<V>
+where
+    K: Send + Sync + Clone + Debug + 'static,
+    V: Send + Sync + Clone + Debug + 'static,
+{
+    fn create_combiner(&self, _v: V) -> u64 {
+        1
+    }
+
+    fn merge_value(&self, c: u64, _v: V) -> u64 {
+        c + 1
+    }
+
+    fn merge_combiners(&self, c1: u64, c2: u64) -> u64 {
+        c1 + c2
+    }
+}
+
+/// Average aggregator that computes the average of values per key
+#[derive(Clone, Debug)]
+pub struct AverageAggregator<V> {
+    _phantom: std::marker::PhantomData<V>,
+}
+
+impl<V> AverageAggregator<V> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V> Default for AverageAggregator<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Combiner for average calculation: (sum, count)
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AverageCombiner<V> {
+    pub sum: V,
+    pub count: u64,
+}
+
+impl<K, V> Aggregator<K, V, AverageCombiner<V>> for AverageAggregator<V>
+where
+    K: Send + Sync + Clone + Debug + 'static,
+    V: Send + Sync + Clone + Debug + std::ops::Add<Output = V> + 'static,
+{
+    fn create_combiner(&self, v: V) -> AverageCombiner<V> {
+        AverageCombiner { sum: v, count: 1 }
+    }
+
+    fn merge_value(&self, c: AverageCombiner<V>, v: V) -> AverageCombiner<V> {
+        AverageCombiner {
+            sum: c.sum + v,
+            count: c.count + 1,
+        }
+    }
+
+    fn merge_combiners(
+        &self,
+        c1: AverageCombiner<V>,
+        c2: AverageCombiner<V>,
+    ) -> AverageCombiner<V> {
+        AverageCombiner {
+            sum: c1.sum + c2.sum,
+            count: c1.count + c2.count,
+        }
+    }
+}

@@ -210,10 +210,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "barks-core",
+ "barks-network-shuffle",
  "barks-utils",
  "bincode",
  "clap",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

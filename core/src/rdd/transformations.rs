@@ -1,6 +1,6 @@
 //! RDD transformation implementations.
 
-use crate::rdd::ShuffledRdd;
+use crate::rdd::{CogroupedRdd, JoinedRdd, ShuffledRdd, SortedRdd};
 use crate::shuffle::Partitioner;
 use crate::traits::Data;
 use std::sync::Arc;
@@ -26,25 +26,29 @@ where
     /// Return an RDD containing all pairs of elements with matching keys in `self` and `other`.
     fn join<W: Data>(
         self,
-        _other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
-        _partitioner: Arc<dyn Partitioner + 'static>,
-    ) -> Arc<dyn crate::traits::RddBase<Item = (K, (V, W))>> {
-        // The implementation of join is based on cogroup.
-        // For now, this is a placeholder as cogroup itself is a complex shuffle operation.
-        unimplemented!(
-            "join is not yet implemented. It requires a cogroup shuffle implementation."
-        );
-    }
+        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
+        partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> JoinedRdd<K, V, W>;
 
     /// Return an RDD with the elements sorted by key.
-    fn sort_by_key(self, _ascending: bool) -> Arc<dyn crate::traits::RddBase<Item = (K, V)>>
+    fn sort_by_key(self, ascending: bool) -> SortedRdd<K, V>
     where
-        K: Ord,
-    {
-        // A full implementation requires a custom RangePartitioner and sampling the RDD.
-        // This is a placeholder for the API.
-        unimplemented!("sort_by_key is not yet implemented. It requires a RangePartitioner.");
-    }
+        K: Ord + std::fmt::Debug;
+
+    /// Return an RDD that groups data from both RDDs by key.
+    /// This is the foundation for join operations.
+    fn cogroup<W: Data>(
+        self,
+        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
+        partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> CogroupedRdd<K, V, W>;
+
+    /// Combine values with the same key using a custom aggregator.
+    fn combine_by_key<C: Data>(
+        self,
+        aggregator: Arc<dyn crate::shuffle::Aggregator<K, V, C>>,
+        partitioner: Arc<dyn Partitioner>,
+    ) -> ShuffledRdd<K, V, C>;
 }
 
 // Implementation of PairRdd for SimpleRdd with key-value pairs
@@ -85,5 +89,45 @@ impl<K: Data, V: Data> PairRdd<K, V> for crate::rdd::SimpleRdd<(K, V)> {
             Arc::new(GroupByAggregator(std::marker::PhantomData)),
             partitioner,
         )
+    }
+
+    fn join<W: Data>(
+        self,
+        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
+        partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> JoinedRdd<K, V, W> {
+        JoinedRdd::new(0, Arc::new(self), other, partitioner)
+    }
+
+    fn sort_by_key(self, ascending: bool) -> SortedRdd<K, V>
+    where
+        K: Ord + std::fmt::Debug,
+    {
+        // For now, create a sorted RDD with a simple range partitioner
+        // In a real implementation, we would sample the data first
+        let num_partitions = self.num_partitions() as u32;
+        crate::rdd::sorted_rdd::create_sorted_rdd(
+            0,
+            Arc::new(self),
+            num_partitions,
+            ascending,
+            1000,
+        )
+    }
+
+    fn cogroup<W: Data>(
+        self,
+        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
+        partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> CogroupedRdd<K, V, W> {
+        CogroupedRdd::new(0, Arc::new(self), other, partitioner)
+    }
+
+    fn combine_by_key<C: Data>(
+        self,
+        aggregator: Arc<dyn crate::shuffle::Aggregator<K, V, C>>,
+        partitioner: Arc<dyn Partitioner>,
+    ) -> ShuffledRdd<K, V, C> {
+        ShuffledRdd::new(0, Arc::new(self), aggregator, partitioner)
     }
 }
