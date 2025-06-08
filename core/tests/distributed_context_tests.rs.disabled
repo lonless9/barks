@@ -2,7 +2,7 @@
 //!
 //! These tests verify the fixes implemented for the distributed computing framework
 
-use barks_core::{DistributedConfig, DistributedContext, ExecutionMode, SimpleRdd};
+use barks_core::{DistributedConfig, DistributedContext, DistributedRdd, ExecutionMode};
 
 #[tokio::test]
 async fn test_distributed_context_rejects_transformed_rdds() {

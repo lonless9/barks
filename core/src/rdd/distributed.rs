@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// It is generic over the data type `T`.
 ///
 /// To support a new data type, one must implement the `RddDataType` trait for it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DistributedRdd<T: RddDataType> {
     /// RDD backed by a vector of data
     Vec {
@@ -237,6 +237,154 @@ impl<T: RddDataType> DistributedRdd<T> {
             }
             Ok(result)
         }
+    }
+
+    /// Count the number of elements in the RDD.
+    pub fn count(&self) -> crate::traits::RddResult<usize> {
+        use rayon::prelude::*;
+        let partitions = self.partitions();
+
+        if partitions.len() <= 1 {
+            // Single partition: use sequential execution
+            let mut count = 0;
+            for partition in partitions {
+                let partition_data = self.compute(partition.as_ref())?;
+                count += partition_data.len();
+            }
+            Ok(count)
+        } else {
+            // Multiple partitions: use parallel execution with rayon
+            let counts: crate::traits::RddResult<Vec<usize>> = partitions
+                .into_par_iter()
+                .map(|p| self.compute(p.as_ref()).map(|data| data.len()))
+                .collect();
+            Ok(counts?.into_iter().sum())
+        }
+    }
+
+    /// Take the first n elements from the RDD.
+    pub fn take(&self, n: usize) -> crate::traits::RddResult<Vec<T>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut result = Vec::new();
+        let partitions = self.partitions();
+
+        for partition in partitions {
+            if result.len() >= n {
+                break;
+            }
+            let partition_data = self.compute(partition.as_ref())?;
+            let remaining = n - result.len();
+            if partition_data.len() <= remaining {
+                result.extend(partition_data);
+            } else {
+                result.extend(partition_data.into_iter().take(remaining));
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Get the first element of the RDD, if any.
+    pub fn first(&self) -> crate::traits::RddResult<Option<T>> {
+        let partitions = self.partitions();
+
+        for partition in partitions {
+            let partition_data = self.compute(partition.as_ref())?;
+            if !partition_data.is_empty() {
+                return Ok(Some(partition_data.into_iter().next().unwrap()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Reduce the elements of the RDD using the specified function.
+    pub fn reduce<F>(&self, f: F) -> crate::traits::RddResult<Option<T>>
+    where
+        F: Fn(T, T) -> T + Send + Sync + Clone,
+    {
+        use rayon::prelude::*;
+        let partitions = self.partitions();
+
+        if partitions.len() <= 1 {
+            // Single partition: use sequential execution
+            let mut result: Option<T> = None;
+            for partition in partitions {
+                let partition_data = self.compute(partition.as_ref())?;
+                for item in partition_data {
+                    result = Some(match result {
+                        None => item,
+                        Some(acc) => f(acc, item),
+                    });
+                }
+            }
+            Ok(result)
+        } else {
+            // Multiple partitions: use parallel execution with rayon
+            let partition_results: crate::traits::RddResult<Vec<Option<T>>> = partitions
+                .into_par_iter()
+                .map(|p| {
+                    let partition_data = self.compute(p.as_ref())?;
+                    Ok(partition_data.into_iter().reduce(f.clone()))
+                })
+                .collect();
+
+            let results = partition_results?;
+            Ok(results.into_iter().flatten().reduce(f))
+        }
+    }
+}
+
+// Implement RddBase trait for DistributedRdd to support shuffle operations
+impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
+    type Item = T;
+
+    fn compute(
+        &self,
+        partition: &dyn crate::traits::Partition,
+    ) -> crate::traits::RddResult<Box<dyn Iterator<Item = T>>> {
+        let data = self.compute(partition)?;
+        Ok(Box::new(data.into_iter()))
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.num_partitions()
+    }
+
+    fn dependencies(&self) -> Vec<crate::traits::Dependency> {
+        // For now, return empty dependencies to avoid lifetime issues
+        // In a full implementation, this would track parent RDD dependencies
+        vec![]
+    }
+
+    fn id(&self) -> usize {
+        // For now, use a simple hash-based ID
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        match self {
+            Self::Vec {
+                data,
+                num_partitions,
+            } => {
+                "Vec".hash(&mut hasher);
+                data.as_ptr().hash(&mut hasher);
+                num_partitions.hash(&mut hasher);
+            }
+            Self::Map { parent, .. } => {
+                "Map".hash(&mut hasher);
+                parent.id().hash(&mut hasher);
+            }
+            Self::Filter { parent, .. } => {
+                "Filter".hash(&mut hasher);
+                parent.id().hash(&mut hasher);
+            }
+        }
+        hasher.finish() as usize
     }
 }
 

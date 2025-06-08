@@ -260,6 +260,39 @@ impl I32Predicate for GreaterThanPredicate {
     }
 }
 
+/// Map operation that squares an integer
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SquareMapOperation;
+
+#[typetag::serde]
+impl I32Operation for SquareMapOperation {
+    fn execute(&self, item: i32) -> i32 {
+        item * item
+    }
+}
+
+/// Map operation that divides an integer by 2
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DivideByTwoOperation;
+
+#[typetag::serde]
+impl I32Operation for DivideByTwoOperation {
+    fn execute(&self, item: i32) -> i32 {
+        item / 2
+    }
+}
+
+/// Filter predicate that checks if a number is even
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EvenFilterPredicate;
+
+#[typetag::serde]
+impl I32Predicate for EvenFilterPredicate {
+    fn test(&self, item: &i32) -> bool {
+        item % 2 == 0
+    }
+}
+
 /// Generic map operation for string transformations
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToUpperCaseOperation;
@@ -325,6 +358,100 @@ pub struct StringAlwaysTruePredicate;
 impl StringPredicate for StringAlwaysTruePredicate {
     fn test(&self, _item: &str) -> bool {
         true
+    }
+}
+
+/// Trait for serializable operations on (String, i32) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringI32TupleOperation: Send + Sync + Debug + DynClone {
+    /// Execute the operation on a single tuple item
+    fn execute(&self, item: (String, i32)) -> (String, i32);
+}
+dyn_clone::clone_trait_object!(StringI32TupleOperation);
+
+/// Trait for serializable predicates on (String, i32) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringI32TuplePredicate: Send + Sync + Debug + DynClone {
+    /// Execute the predicate on a single tuple item
+    fn test(&self, item: &(String, i32)) -> bool;
+}
+dyn_clone::clone_trait_object!(StringI32TuplePredicate);
+
+/// Enum to hold different kinds of serializable (String, i32) tuple operations.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SerializableStringI32TupleOperation {
+    Map(Box<dyn StringI32TupleOperation>),
+    Filter(Box<dyn StringI32TuplePredicate>),
+}
+
+impl From<Box<dyn StringI32TupleOperation>> for SerializableStringI32TupleOperation {
+    fn from(op: Box<dyn StringI32TupleOperation>) -> Self {
+        SerializableStringI32TupleOperation::Map(op)
+    }
+}
+
+impl From<Box<dyn StringI32TuplePredicate>> for SerializableStringI32TupleOperation {
+    fn from(pred: Box<dyn StringI32TuplePredicate>) -> Self {
+        SerializableStringI32TupleOperation::Filter(pred)
+    }
+}
+
+/// Identity operation for (String, i32) tuples that returns the item unchanged
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StringI32TupleIdentityOperation;
+
+#[typetag::serde]
+impl StringI32TupleOperation for StringI32TupleIdentityOperation {
+    fn execute(&self, item: (String, i32)) -> (String, i32) {
+        item
+    }
+}
+
+/// Always true predicate for (String, i32) tuples
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StringI32TupleAlwaysTruePredicate;
+
+#[typetag::serde]
+impl StringI32TuplePredicate for StringI32TupleAlwaysTruePredicate {
+    fn test(&self, _item: &(String, i32)) -> bool {
+        true
+    }
+}
+
+/// Implement RddDataType for (String, i32) tuple
+impl RddDataType for (String, i32) {
+    type MapOperation = Box<dyn StringI32TupleOperation>;
+    type FilterPredicate = Box<dyn StringI32TuplePredicate>;
+    type SerializableOperation = SerializableStringI32TupleOperation;
+
+    fn apply_operation(
+        op: &Self::SerializableOperation,
+        data: Vec<Self>,
+        _arena: &Bump,
+    ) -> Vec<Self> {
+        match op {
+            SerializableStringI32TupleOperation::Map(map_op) => data
+                .par_iter()
+                .map(|item| map_op.execute(item.clone()))
+                .collect(),
+            SerializableStringI32TupleOperation::Filter(filter_op) => data
+                .par_iter()
+                .filter(|item| filter_op.test(item))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn create_chained_task(
+        serialized_partition_data: Vec<u8>,
+        operations: Vec<Self::SerializableOperation>,
+    ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
+        Ok(Box::new(crate::distributed::task::ChainedTask::<(
+            String,
+            i32,
+        )>::new(
+            serialized_partition_data, operations
+        )))
     }
 }
 

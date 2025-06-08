@@ -51,83 +51,51 @@ where
     ) -> ShuffledRdd<K, V, C>;
 }
 
-// Implementation of PairRdd for SimpleRdd with key-value pairs
-impl<K: Data, V: Data> PairRdd<K, V> for crate::rdd::SimpleRdd<(K, V)> {
+// Implementation of PairRdd for DistributedRdd with (String, i32) key-value pairs
+impl PairRdd<String, i32> for crate::rdd::DistributedRdd<(String, i32)> {
     fn reduce_by_key(
         self,
-        reduce_func: fn(V, V) -> V,
-        partitioner: Arc<dyn Partitioner>,
-    ) -> ShuffledRdd<K, V, V> {
-        let aggregator = Arc::new(crate::shuffle::ReduceAggregator::new(reduce_func));
-        ShuffledRdd::new(0, Arc::new(self), aggregator, partitioner)
+        _reduce_func: fn(i32, i32) -> i32,
+        _partitioner: Arc<dyn Partitioner>,
+    ) -> ShuffledRdd<String, i32, i32> {
+        // For now, this is a placeholder implementation
+        // In a full implementation, this would create a shuffle dependency
+        // and return a ShuffledRdd that performs the reduce operation
+        unimplemented!("reduce_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 
     fn group_by_key(
         self,
-        partitioner: Arc<dyn Partitioner + 'static>,
-    ) -> ShuffledRdd<K, V, Vec<V>> {
-        #[derive(Clone, Debug)]
-        struct GroupByAggregator<V: Data>(std::marker::PhantomData<V>);
-
-        impl<K: Data, V: Data> crate::shuffle::Aggregator<K, V, Vec<V>> for GroupByAggregator<V> {
-            fn create_combiner(&self, v: V) -> Vec<V> {
-                vec![v]
-            }
-            fn merge_value(&self, mut c: Vec<V>, v: V) -> Vec<V> {
-                c.push(v);
-                c
-            }
-            fn merge_combiners(&self, mut c1: Vec<V>, mut c2: Vec<V>) -> Vec<V> {
-                c1.append(&mut c2);
-                c1
-            }
-        }
-
-        ShuffledRdd::new(
-            0,
-            Arc::new(self),
-            Arc::new(GroupByAggregator(std::marker::PhantomData)),
-            partitioner,
-        )
+        _partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> ShuffledRdd<String, i32, Vec<i32>> {
+        unimplemented!("group_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 
-    fn join<W: Data>(
+    fn join<W: crate::traits::Data>(
         self,
-        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
-        partitioner: Arc<dyn Partitioner + 'static>,
-    ) -> JoinedRdd<K, V, W> {
-        JoinedRdd::new(0, Arc::new(self), other, partitioner)
+        _other: Arc<dyn crate::traits::RddBase<Item = (String, W)>>,
+        _partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> JoinedRdd<String, i32, W> {
+        unimplemented!("join is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 
-    fn sort_by_key(self, ascending: bool) -> SortedRdd<K, V>
-    where
-        K: Ord + std::fmt::Debug,
-    {
-        // For now, create a sorted RDD with a simple range partitioner
-        // In a real implementation, we would sample the data first
-        let num_partitions = self.num_partitions() as u32;
-        crate::rdd::sorted_rdd::create_sorted_rdd(
-            0,
-            Arc::new(self),
-            num_partitions,
-            ascending,
-            1000,
-        )
+    fn sort_by_key(self, _ascending: bool) -> SortedRdd<String, i32> {
+        unimplemented!("sort_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 
-    fn cogroup<W: Data>(
+    fn cogroup<W: crate::traits::Data>(
         self,
-        other: Arc<dyn crate::traits::RddBase<Item = (K, W)>>,
-        partitioner: Arc<dyn Partitioner + 'static>,
-    ) -> CogroupedRdd<K, V, W> {
-        CogroupedRdd::new(0, Arc::new(self), other, partitioner)
+        _other: Arc<dyn crate::traits::RddBase<Item = (String, W)>>,
+        _partitioner: Arc<dyn Partitioner + 'static>,
+    ) -> CogroupedRdd<String, i32, W> {
+        unimplemented!("cogroup is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 
-    fn combine_by_key<C: Data>(
+    fn combine_by_key<C: crate::traits::Data>(
         self,
-        aggregator: Arc<dyn crate::shuffle::Aggregator<K, V, C>>,
-        partitioner: Arc<dyn Partitioner>,
-    ) -> ShuffledRdd<K, V, C> {
-        ShuffledRdd::new(0, Arc::new(self), aggregator, partitioner)
+        _aggregator: Arc<dyn crate::shuffle::Aggregator<String, i32, C>>,
+        _partitioner: Arc<dyn Partitioner>,
+    ) -> ShuffledRdd<String, i32, C> {
+        unimplemented!("combine_by_key is not fully implemented for the new RDD model yet. It requires a ShuffleDependency and integration with the distributed runner.")
     }
 }

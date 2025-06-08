@@ -27,14 +27,16 @@ tempfile.workspace = true
 name = "local_rdd_api"
 path = "local_rdd_api.rs"
 
-[[bin]]
-name = "shuffle_api"
-path = "shuffle_api.rs"
+# Disabled until shuffle functionality is implemented
+# [[bin]]
+# name = "shuffle_api"
+# path = "shuffle_api.rs"
 
 [[bin]]
 name = "distributed_app"
 path = "distributed_app.rs"
 
-[[bin]]
-name = "enhanced_shuffle_demo"
-path = "enhanced_shuffle_demo.rs"
+# Disabled until shuffle functionality is implemented
+# [[bin]]
+# name = "enhanced_shuffle_demo"
+# path = "enhanced_shuffle_demo.rs"

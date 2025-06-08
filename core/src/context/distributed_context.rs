@@ -7,16 +7,16 @@ use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
 
 use crate::distributed::types::*;
-use crate::rdd::{DistributedRdd, SimpleRdd};
+use crate::rdd::DistributedRdd;
 use crate::traits::RddResult;
-use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Distributed context for managing RDD operations across a cluster
@@ -249,19 +249,18 @@ impl DistributedContext {
         &self,
         data: Vec<T>,
         num_partitions: usize,
-    ) -> SimpleRdd<T>
+    ) -> DistributedRdd<T>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
-        // For now, create a simple RDD regardless of mode
-        // In a full implementation, this would create distributed RDDs in cluster mode
-        SimpleRdd::from_vec_with_partitions(data, num_partitions)
+        // Create a distributed RDD that can be executed locally or in cluster mode
+        DistributedRdd::from_vec_with_partitions(data, num_partitions)
     }
 
     /// Create an RDD from a vector of data
-    pub fn parallelize<T>(&self, data: Vec<T>) -> SimpleRdd<T>
+    pub fn parallelize<T>(&self, data: Vec<T>) -> DistributedRdd<T>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
         self.parallelize_with_partitions(data, self.config.default_parallelism)
     }
@@ -276,36 +275,21 @@ impl DistributedContext {
     }
 
     /// Run an RDD computation and collect results
-    pub async fn run<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
+    pub async fn run<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
     where
-        T: Send
-            + Sync
-            + Clone
-            + Serialize
-            + for<'de> Deserialize<'de>
-            + Debug
-            + 'static
-            + bincode::Encode
-            + bincode::Decode<()>,
+        T: crate::operations::RddDataType + bincode::Encode + bincode::Decode<()>,
     {
         match &self.mode {
             ExecutionMode::Driver => {
                 if let Some(driver) = &self.driver {
                     let executor_count = driver.executor_count().await;
-                    // If we have executors and the RDD has non-serializable transformations, it's an error.
-                    if executor_count > 0 && rdd.is_transformed() {
-                        error!("Attempted to run a transformed SimpleRdd in a distributed context with active executors.");
-                        Err(crate::traits::RddError::ContextError(
-                            "SimpleRdd with non-serializable closures cannot be executed in distributed mode. \
-                             Use DistributedRdd with context.run_distributed() instead.".to_string(),
-                        ))
+                    // DistributedRdd can be executed in distributed mode
+                    if executor_count > 0 {
+                        // Run in distributed mode using the driver
+                        Arc::new(self).run_distributed_simple(rdd).await
                     } else {
-                        // Otherwise, run locally. This covers:
-                        // 1. Base SimpleRdd (Vec) which is always local to the driver.
-                        // 2. No executors are available, so we fall back to local execution.
-                        if executor_count == 0 {
-                            warn!("No executors available. Running SimpleRdd job locally on the driver.");
-                        }
+                        // No executors available, fall back to local execution
+                        warn!("No executors available. Running DistributedRdd job locally on the driver.");
                         self.run_local(rdd).await
                     }
                 } else {
@@ -450,9 +434,9 @@ impl DistributedContext {
     }
 
     /// Run RDD computation in local mode
-    async fn run_local<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
+    async fn run_local<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
         debug!("Running RDD computation in local mode");
         rdd.collect()

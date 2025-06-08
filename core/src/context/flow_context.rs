@@ -3,12 +3,9 @@
 //! This module provides a simple, non-distributed context for managing
 //! RDD operations in a single-threaded environment.
 
-use crate::rdd::SimpleRdd;
-use crate::scheduler::{LocalScheduler, Task};
-use crate::traits::{Partition, RddResult};
-use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
-use std::sync::Arc;
+use crate::rdd::DistributedRdd;
+use crate::scheduler::LocalScheduler;
+use crate::traits::RddResult;
 
 /// FlowContext manages RDD operations in a local environment with unified parallel/sequential execution
 #[derive(Debug)]
@@ -61,11 +58,11 @@ impl FlowContext {
 
     /// Create an RDD from a vector of data using default parallelism
     /// Similar to Spark's parallelize() without numSlices parameter
-    pub fn parallelize<T>(&self, data: Vec<T>) -> SimpleRdd<T>
+    pub fn parallelize<T>(&self, data: Vec<T>) -> DistributedRdd<T>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
-        SimpleRdd::from_vec_with_partitions(data, self.default_parallelism)
+        DistributedRdd::from_vec_with_partitions(data, self.default_parallelism)
     }
 
     /// Create an RDD from a vector with specified number of partitions
@@ -77,9 +74,9 @@ impl FlowContext {
         &self,
         data: Vec<T>,
         num_slices: Option<usize>,
-    ) -> SimpleRdd<T>
+    ) -> DistributedRdd<T>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
         let num_partitions = num_slices.unwrap_or(self.default_parallelism);
         // Ensure minimum of 2 partitions for parallel processing unless explicitly set to 1
@@ -88,7 +85,7 @@ impl FlowContext {
         } else {
             num_partitions
         };
-        SimpleRdd::from_vec_with_partitions(data, num_partitions)
+        DistributedRdd::from_vec_with_partitions(data, num_partitions)
     }
 
     /// Create an RDD from a vector with specified number of partitions
@@ -97,32 +94,20 @@ impl FlowContext {
         &self,
         data: Vec<T>,
         num_partitions: usize,
-    ) -> SimpleRdd<T>
+    ) -> DistributedRdd<T>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
-        SimpleRdd::from_vec_with_partitions(data, num_partitions)
+        DistributedRdd::from_vec_with_partitions(data, num_partitions)
     }
 
     /// Run an RDD computation in parallel and collect the results
-    pub fn run<T>(&self, rdd: SimpleRdd<T>) -> RddResult<Vec<T>>
+    pub fn run<T>(&self, rdd: DistributedRdd<T>) -> RddResult<Vec<T>>
     where
-        T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Debug + 'static,
+        T: crate::operations::RddDataType,
     {
-        // Create tasks for each partition
-        let partitions = rdd.partitions();
-        let rdd_arc = Arc::new(rdd);
-        let tasks: Vec<Task<T>> = partitions
-            .into_iter()
-            .map(|partition| {
-                let rdd_clone = Arc::clone(&rdd_arc);
-                let compute_fn = Arc::new(move |p: &dyn Partition| rdd_clone.compute(p));
-                Task::new(partition, compute_fn)
-            })
-            .collect();
-
-        // Execute tasks in parallel using the scheduler
-        self.scheduler.execute_and_collect(tasks)
+        // Use the DistributedRdd's built-in collect method which handles local execution
+        rdd.collect()
     }
 }
 

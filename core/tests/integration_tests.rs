@@ -2,21 +2,22 @@
 //!
 //! These tests verify the complete pipeline: map -> filter -> collect
 
-use barks_core::{FlowContext, SimpleRdd};
+use barks_core::operations::{DoubleOperation, EvenPredicate};
+use barks_core::rdd::DistributedRdd;
 
 #[test]
-fn test_simple_rdd_creation() {
+fn test_distributed_rdd_creation() {
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = SimpleRdd::from_vec(data.clone());
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data.clone());
 
     let result = rdd.collect().unwrap();
     assert_eq!(result, data);
 }
 
 #[test]
-fn test_simple_rdd_with_partitions() {
+fn test_distributed_rdd_with_partitions() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
-    let rdd = SimpleRdd::from_vec_with_partitions(data.clone(), 3);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data.clone(), 3);
 
     assert_eq!(rdd.num_partitions(), 3);
     let result = rdd.collect().unwrap();
@@ -26,9 +27,9 @@ fn test_simple_rdd_with_partitions() {
 #[test]
 fn test_map_transformation() {
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
-    let mapped_rdd = rdd.map(|x| x * 2);
+    let mapped_rdd = rdd.map(Box::new(DoubleOperation));
     let result = mapped_rdd.collect().unwrap();
 
     assert_eq!(result, vec![2, 4, 6, 8, 10]);
@@ -37,9 +38,9 @@ fn test_map_transformation() {
 #[test]
 fn test_filter_transformation() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
-    let filtered_rdd = rdd.filter(|&x| x % 2 == 0);
+    let filtered_rdd = rdd.filter(Box::new(EvenPredicate));
     let result = filtered_rdd.collect().unwrap();
 
     assert_eq!(result, vec![2, 4, 6, 8, 10]);
@@ -47,11 +48,15 @@ fn test_filter_transformation() {
 
 #[test]
 fn test_map_filter_chain() {
+    use barks_core::operations::GreaterThanPredicate;
+
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     // Map: multiply by 2, then filter: keep only numbers > 10
-    let result_rdd = rdd.map(|x| x * 2).filter(|&x| x > 10);
+    let result_rdd = rdd
+        .map(Box::new(DoubleOperation))
+        .filter(Box::new(GreaterThanPredicate { threshold: 10 }));
 
     let result = result_rdd.collect().unwrap();
     assert_eq!(result, vec![12, 14, 16, 18, 20]);
@@ -59,20 +64,24 @@ fn test_map_filter_chain() {
 
 #[test]
 fn test_filter_map_chain() {
-    let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = SimpleRdd::from_vec(data);
+    use barks_core::operations::AddConstantOperation;
 
-    // Filter: keep only even numbers, then map: multiply by 3
-    let result_rdd = rdd.filter(|&x| x % 2 == 0).map(|x| x * 3);
+    let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
+
+    // Filter: keep only even numbers, then map: add 1
+    let result_rdd = rdd
+        .filter(Box::new(EvenPredicate))
+        .map(Box::new(AddConstantOperation { constant: 1 }));
 
     let result = result_rdd.collect().unwrap();
-    assert_eq!(result, vec![6, 12, 18, 24, 30]);
+    assert_eq!(result, vec![3, 5, 7, 9, 11]);
 }
 
 #[test]
 fn test_count_action() {
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     let count = rdd.count().unwrap();
     assert_eq!(count, 5);
@@ -81,7 +90,7 @@ fn test_count_action() {
 #[test]
 fn test_take_action() {
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     let result = rdd.take(3).unwrap();
     assert_eq!(result, vec![1, 2, 3]);
@@ -90,7 +99,7 @@ fn test_take_action() {
 #[test]
 fn test_first_action() {
     let data = vec![10, 20, 30];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     let first = rdd.first().unwrap();
     assert_eq!(first, Some(10));
@@ -99,7 +108,7 @@ fn test_first_action() {
 #[test]
 fn test_first_action_empty() {
     let data: Vec<i32> = vec![];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     let first = rdd.first().unwrap();
     assert_eq!(first, None);
@@ -107,6 +116,8 @@ fn test_first_action_empty() {
 
 #[test]
 fn test_flow_context() {
+    use barks_core::FlowContext;
+
     let context = FlowContext::new("test-app");
     assert_eq!(context.app_name(), "test-app");
 
@@ -119,6 +130,8 @@ fn test_flow_context() {
 
 #[test]
 fn test_flow_context_with_partitions() {
+    use barks_core::FlowContext;
+
     let context = FlowContext::new("test-app");
 
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
@@ -131,6 +144,9 @@ fn test_flow_context_with_partitions() {
 
 #[test]
 fn test_complete_pipeline() {
+    use barks_core::operations::GreaterThanPredicate;
+    use barks_core::FlowContext;
+
     // This is the main test for the complete map->filter->collect pipeline
     let context = FlowContext::new("barks-phase0-test");
 
@@ -140,8 +156,8 @@ fn test_complete_pipeline() {
 
     // Apply transformations: map (x * 2) -> filter (x > 15) -> collect
     let result = rdd
-        .map(|x| x * 2) // [2, 4, 6, 8, ..., 40]
-        .filter(|&x| x > 15) // [16, 18, 20, ..., 40]
+        .map(Box::new(DoubleOperation)) // [2, 4, 6, 8, ..., 40]
+        .filter(Box::new(GreaterThanPredicate { threshold: 15 })) // [16, 18, 20, ..., 40]
         .collect()
         .unwrap();
 
@@ -151,22 +167,26 @@ fn test_complete_pipeline() {
     // Verify count
     let count_rdd = context
         .parallelize((1..=20).collect())
-        .map(|x| x * 2)
-        .filter(|&x| x > 15);
+        .map(Box::new(DoubleOperation))
+        .filter(Box::new(GreaterThanPredicate { threshold: 15 }));
 
     assert_eq!(count_rdd.count().unwrap(), 13);
 }
 
 #[test]
 fn test_lazy_evaluation() {
+    use barks_core::operations::{AddConstantOperation, GreaterThanPredicate};
+
     // Test that transformations are lazy and only executed on actions
     let data = vec![1, 2, 3, 4, 5];
-    let rdd = SimpleRdd::from_vec(data);
+    let rdd: DistributedRdd<i32> = DistributedRdd::from_vec(data);
 
     // These transformations should not execute until an action is called
-    let transformed_rdd = rdd.map(|x| x * 10).filter(|&x| x > 25);
+    let transformed_rdd = rdd
+        .map(Box::new(AddConstantOperation { constant: 20 }))
+        .filter(Box::new(GreaterThanPredicate { threshold: 22 }));
 
     // Only now should the computation happen
     let result = transformed_rdd.collect().unwrap();
-    assert_eq!(result, vec![30, 40, 50]);
+    assert_eq!(result, vec![23, 24, 25]);
 }

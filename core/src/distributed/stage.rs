@@ -228,8 +228,8 @@ impl StageManager {
                 Vec::new()
             }
             Stage::Result {
-                rdd,
-                output_partitions,
+                
+                
                 ..
             } => {
                 // For result stages, create tasks to collect final output
