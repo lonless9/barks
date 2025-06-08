@@ -3,6 +3,7 @@
 //! This module provides serializable operation types that can replace
 //! closures in RDD transformations, enabling distributed execution.
 
+use bumpalo::Bump;
 use dyn_clone::DynClone;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,12 @@ pub trait RddDataType:
         + From<Self::FilterPredicate>;
 
     /// Applies a serializable operation to a vector of data.
-    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self>;
+    /// The arena parameter provides efficient memory allocation for intermediate computations.
+    fn apply_operation(
+        op: &Self::SerializableOperation,
+        data: Vec<Self>,
+        arena: &Bump,
+    ) -> Vec<Self>;
 
     /// Creates a chained task for distributed execution
     fn create_chained_task(
@@ -125,7 +131,14 @@ impl RddDataType for i32 {
     type FilterPredicate = Box<dyn I32Predicate>;
     type SerializableOperation = SerializableI32Operation;
 
-    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self> {
+    fn apply_operation(
+        op: &Self::SerializableOperation,
+        data: Vec<Self>,
+        _arena: &Bump,
+    ) -> Vec<Self> {
+        // For primitive types like i32, we don't need to use the arena for intermediate allocations
+        // since the data is small and the operations are simple. However, the arena is available
+        // for more complex operations that might benefit from bump allocation.
         match op {
             SerializableI32Operation::Map(map_op) => {
                 data.par_iter().map(|item| map_op.execute(*item)).collect()
@@ -155,7 +168,13 @@ impl RddDataType for String {
     type FilterPredicate = Box<dyn StringPredicate>;
     type SerializableOperation = SerializableStringOperation;
 
-    fn apply_operation(op: &Self::SerializableOperation, data: Vec<Self>) -> Vec<Self> {
+    fn apply_operation(
+        op: &Self::SerializableOperation,
+        data: Vec<Self>,
+        _arena: &Bump,
+    ) -> Vec<Self> {
+        // For String operations, we could potentially use the arena for intermediate string
+        // allocations in more complex scenarios. For now, we use standard allocation.
         match op {
             SerializableStringOperation::Map(map_op) => data
                 .par_iter()

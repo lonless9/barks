@@ -5,6 +5,7 @@
 
 use crate::operations::RddDataType;
 use crate::traits::{BasicPartition, Partition};
+use bumpalo::Bump;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -197,12 +198,16 @@ impl<T: RddDataType> DistributedRdd<T> {
             Self::Map { parent, operation } => {
                 let parent_data = parent.compute(partition)?;
                 let serializable_op: T::SerializableOperation = (*operation).clone().into();
-                Ok(T::apply_operation(&serializable_op, parent_data))
+                // Create a temporary arena for local execution
+                let arena = Bump::new();
+                Ok(T::apply_operation(&serializable_op, parent_data, &arena))
             }
             Self::Filter { parent, predicate } => {
                 let parent_data = parent.compute(partition)?;
                 let serializable_op: T::SerializableOperation = (*predicate).clone().into();
-                Ok(T::apply_operation(&serializable_op, parent_data))
+                // Create a temporary arena for local execution
+                let arena = Bump::new();
+                Ok(T::apply_operation(&serializable_op, parent_data, &arena))
             }
         }
     }

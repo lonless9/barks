@@ -7,6 +7,7 @@ use crate::distributed::proto::driver::TaskState;
 use crate::distributed::types::*;
 use crate::operations::RddDataType;
 use anyhow::Result;
+use bumpalo::Bump;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,7 +37,8 @@ use barks_network_shuffle::traits::MapStatus;
 pub trait Task: Send + Sync {
     /// Executes the task logic on a partition's data and returns the result as serialized bytes.
     /// This method encapsulates the entire computation for a single partition.
-    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, String>;
+    /// The arena parameter provides efficient memory allocation for intermediate computations.
+    fn execute(&self, partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String>;
 }
 
 /// A generic task that executes a chain of serializable operations on data of type T.
@@ -69,7 +71,7 @@ impl<T: crate::operations::RddDataType> ChainedTask<T> {
 
 #[typetag::serde(name = "ChainedTaskI32")]
 impl Task for ChainedTask<i32> {
-    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
         // 1. Deserialize the initial partition data.
         let (mut current_data, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
@@ -78,7 +80,7 @@ impl Task for ChainedTask<i32> {
         // 2. Apply each operation in the chain sequentially. The output of one
         //    operation becomes the input for the next.
         for op in &self.operations {
-            current_data = i32::apply_operation(op, current_data);
+            current_data = i32::apply_operation(op, current_data, arena);
         }
 
         // 3. Serialize the final result.
@@ -89,7 +91,7 @@ impl Task for ChainedTask<i32> {
 
 #[typetag::serde(name = "ChainedTaskString")]
 impl Task for ChainedTask<String> {
-    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+    fn execute(&self, _partition_index: usize, arena: &Bump) -> Result<Vec<u8>, String> {
         // 1. Deserialize the initial partition data.
         let (mut current_data, _): (Vec<String>, _) =
             bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
@@ -97,7 +99,7 @@ impl Task for ChainedTask<String> {
 
         // 2. Apply each operation in the chain sequentially.
         for op in &self.operations {
-            current_data = String::apply_operation(op, current_data);
+            current_data = String::apply_operation(op, current_data, arena);
         }
 
         // 3. Serialize the final result.
@@ -199,7 +201,11 @@ impl TaskRunner {
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
         let execution_start = Instant::now();
-        let result_bytes = task.execute(partition_index)?; // Errors are now String
+
+        // Create a new Bump arena for this specific task.
+        let arena = Bump::new();
+        // Pass the arena to the execute method.
+        let result_bytes = task.execute(partition_index, &arena)?; // Errors are now String
 
         metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
         metrics.result_size_bytes = result_bytes.len() as u64;
@@ -348,7 +354,8 @@ mod tests {
             operations,
         );
 
-        let result_bytes = task.execute(0).unwrap();
+        let arena = Bump::new();
+        let result_bytes = task.execute(0, &arena).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -380,7 +387,8 @@ mod tests {
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
         // Execute the deserialized task
-        let result_bytes = deserialized_task.execute(0).unwrap();
+        let arena = Bump::new();
+        let result_bytes = deserialized_task.execute(0, &arena).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
 
@@ -395,7 +403,7 @@ mod tests {
 
     #[typetag::serde]
     impl Task for CustomSquareTask {
-        fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+        fn execute(&self, _partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
             let (data, _): (Vec<i32>, usize) =
                 bincode::decode_from_slice(&self.partition_data, bincode::config::standard())
                     .map_err(|e| format!("Failed to deserialize partition data: {}", e))?;
@@ -425,7 +433,8 @@ mod tests {
         // Deserialize it
         let deserialized_task: Box<dyn Task> = serde_json::from_slice(&serialized_task).unwrap();
 
-        let result_bytes = deserialized_task.execute(0).unwrap();
+        let arena = Bump::new();
+        let result_bytes = deserialized_task.execute(0, &arena).unwrap();
         let (result, _): (Vec<i32>, _) =
             bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
         assert_eq!(result, vec![1, 4, 9, 16, 25]);
@@ -469,7 +478,7 @@ where
 // Specific implementations for concrete types
 #[typetag::serde(name = "ShuffleMapTaskStringI32")]
 impl Task for ShuffleMapTask<String, i32> {
-    fn execute(&self, partition_index: usize) -> Result<Vec<u8>, String> {
+    fn execute(&self, partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
         // In a real executor, the block manager would be injected/retrieved from context.
         // For this task, we assume a local temp directory for shuffle files.
         let temp_dir = tempfile::tempdir()
@@ -587,7 +596,7 @@ where
 
 #[typetag::serde(name = "ShuffleReduceTaskStringI32")]
 impl Task for ShuffleReduceTask<String, i32, i32, crate::shuffle::ReduceAggregator<i32>> {
-    fn execute(&self, _partition_index: usize) -> Result<Vec<u8>, String> {
+    fn execute(&self, _partition_index: usize, _arena: &Bump) -> Result<Vec<u8>, String> {
         // In a real implementation, this would:
         // 1. Use map_output_locations to fetch shuffle blocks from remote executors
         // 2. Deserialize the aggregator from aggregator_data

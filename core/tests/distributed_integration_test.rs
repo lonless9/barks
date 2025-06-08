@@ -224,8 +224,10 @@ fn test_task_serialization() {
 
     // We can't directly compare the tasks, but we can test that they work the same way
     // by executing them and comparing results
-    let original_result = task.execute(0).unwrap();
-    let deserialized_result = deserialized_task.execute(0).unwrap();
+    let arena = bumpalo::Bump::new();
+    let original_result = task.execute(0, &arena).unwrap();
+    let arena2 = bumpalo::Bump::new();
+    let deserialized_result = deserialized_task.execute(0, &arena2).unwrap();
 
     assert_eq!(original_result, deserialized_result);
 

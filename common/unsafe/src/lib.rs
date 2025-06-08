@@ -2,9 +2,9 @@
 //!
 //! This module provides safe wrappers around unsafe operations
 //! needed for performance-critical code paths.
+//!
+//! Note: The previous manual memory management has been replaced by `bumpalo`.
 
-pub mod memory;
 pub mod traits;
 
-pub use memory::*;
 pub use traits::*;

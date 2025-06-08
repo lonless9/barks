@@ -27,6 +27,7 @@ barks-network-shuffle = { path = "../common/network-shuffle", features = ["serve
 barks-utils = { path = "../common/utils" }
 reqwest.workspace = true
 tempfile.workspace = true
+bumpalo = "3.14"
 
 [build-dependencies]
 tonic-build.workspace = true

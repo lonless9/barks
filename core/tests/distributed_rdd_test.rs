@@ -24,7 +24,8 @@ async fn test_map_operation_task() {
     );
 
     // Execute the task directly to test its logic
-    let result_bytes = task.execute(0).unwrap();
+    let arena = bumpalo::Bump::new();
+    let result_bytes = task.execute(0, &arena).unwrap();
 
     // Verify the result
     let result_data: Vec<i32> =
@@ -50,7 +51,8 @@ async fn test_filter_operation_task() {
     );
 
     // Execute the task
-    let result_bytes = task.execute(0).unwrap();
+    let arena = bumpalo::Bump::new();
+    let result_bytes = task.execute(0, &arena).unwrap();
 
     // Verify the result (should be even numbers: [2, 4, 6, 8, 10])
     let (result_data, _): (Vec<i32>, _) =
@@ -77,7 +79,8 @@ async fn test_chained_operation_task() {
         ],
     );
 
-    let result_bytes = task.execute(0).unwrap();
+    let arena = bumpalo::Bump::new();
+    let result_bytes = task.execute(0, &arena).unwrap();
     let (result_data, _): (Vec<i32>, _) =
         bincode::decode_from_slice(&result_bytes, bincode::config::standard()).unwrap();
     assert_eq!(result_data, vec![12, 14, 16, 18, 20]);

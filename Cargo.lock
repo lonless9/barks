@@ -183,6 +183,7 @@ dependencies = [
  "barks-network-shuffle",
  "barks-utils",
  "bincode",
+ "bumpalo",
  "dyn-clone",
  "futures",
  "num_cpus",
