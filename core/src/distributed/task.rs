@@ -701,65 +701,9 @@ macro_rules! impl_shuffle_reduce_task {
     };
 }
 
-// Additional type implementations for more key-value pairs
-// NOTE: This implementation is now broken because it depends on the old ShuffleMapTask structure.
-// A full implementation would require (i32, String) to implement RddDataType fully
-// and then ShuffleMapTask<(i32, String)> would be implemented similarly to ShuffleMapTask<(String, i32)>.
-// For the purpose of this request, we will focus on the (String, i32) case and remove this broken implementation.
-/*
-#[typetag::serde(name = "ShuffleMapTaskI32String")]
-#[async_trait::async_trait]
-impl Task for ShuffleMapTask<i32, String> {
-    async fn execute(
-        &self,
-        partition_index: usize,
-        block_manager: Arc<dyn ShuffleBlockManager>,
-    ) -> Result<Vec<u8>, String> {
-        // 1. Run parent computation
-        let parent_result = tokio::task::spawn_blocking({
-            let partition_data = self.parent_partition_data.clone();
-            let operations = self.parent_operations.clone();
-            move || {
-                // This block requires (i32, String) to be a full RddDataType
-                // which is beyond the scope of the current request.
-                // We assume it's implemented for demonstration.
-                // ... computation logic ...
-                Err("Computation for (i32, String) not fully implemented".to_string())
-            }
-        }).await.map_err(|e| format!("Task panicked: {}", e))??;
-
-        // 2. Shuffle write
-        let partitioner = Arc::new(crate::shuffle::HashPartitioner::new(
-            self.num_reduce_partitions,
-        ));
-        let mut writer: barks_network_shuffle::optimizations::HashShuffleWriter<i32, String> =
-            barks_network_shuffle::optimizations::HashShuffleWriter::new(
-                self.shuffle_id,
-                partition_index as u32,
-                partitioner,
-                block_manager,
-                barks_network_shuffle::optimizations::ShuffleConfig::default(),
-            );
-
-        for record in parent_result {
-            writer
-                .write(record)
-                .await
-                .map_err(|e| format!("Failed to write shuffle record: {}", e))?;
-        }
-
-        let map_status = writer
-            .close()
-            .await
-            .map_err(|e| format!("Failed to close shuffle writer: {}", e))?;
-
-        bincode::encode_to_vec(&map_status, bincode::config::standard())
-            .map_err(|e| format!("Failed to serialize MapStatus: {}", e))
-    }
-}*/
-
 // Implement the macros for specific types
 impl_shuffle_map_task!((String, i32), String, i32, "ShuffleMapTaskStringI32");
+impl_shuffle_map_task!((i32, String), i32, String, "ShuffleMapTaskI32String");
 
 impl_shuffle_reduce_task!(
     String,

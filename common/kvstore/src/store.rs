@@ -87,8 +87,24 @@ pub struct FileKVStore<K, V> {
 
 impl<K, V> FileKVStore<K, V>
 where
-    K: Clone + Send + Sync + std::hash::Hash + Eq + Serialize + DeserializeOwned + 'static,
-    V: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    K: Clone
+        + Send
+        + Sync
+        + std::hash::Hash
+        + Eq
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
+    V: Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
 {
     /// Creates a new `FileKVStore`. If the file at `path` exists, it will be loaded.
     /// Otherwise, an empty store is created.
@@ -110,8 +126,24 @@ where
 #[async_trait]
 impl<K, V> KVStore for FileKVStore<K, V>
 where
-    K: Clone + Send + Sync + std::hash::Hash + Eq + Serialize + DeserializeOwned + 'static,
-    V: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    K: Clone
+        + Send
+        + Sync
+        + std::hash::Hash
+        + Eq
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
+    V: Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
 {
     type Key = K;
     type Value = V;
@@ -148,18 +180,34 @@ where
 #[async_trait]
 impl<K, V> PersistentKVStore for FileKVStore<K, V>
 where
-    K: Clone + Send + Sync + std::hash::Hash + Eq + Serialize + DeserializeOwned + 'static,
-    V: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    K: Clone
+        + Send
+        + Sync
+        + std::hash::Hash
+        + Eq
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
+    V: Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static,
 {
     async fn persist(&self) -> Result<()> {
         let data_map = self.store.data.read().await;
-        let json = serde_json::to_string(&*data_map)?;
+        let bytes = bincode::encode_to_vec(&*data_map, bincode::config::standard())?;
 
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let mut file = File::create(&self.path).await?;
-        file.write_all(json.as_bytes()).await?;
+        file.write_all(&bytes).await?;
         Ok(())
     }
 
@@ -172,8 +220,8 @@ where
             // Handle empty file case, initialize with empty map
             *self.store.data.write().await = HashMap::new();
         } else {
-            let json_str = String::from_utf8(buffer)?;
-            let decoded: HashMap<K, V> = serde_json::from_str(&json_str)?;
+            let (decoded, _): (HashMap<K, V>, _) =
+                bincode::decode_from_slice(&buffer, bincode::config::standard())?;
             *self.store.data.write().await = decoded;
         }
         Ok(())

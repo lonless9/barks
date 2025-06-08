@@ -409,117 +409,31 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
         &self,
         _stage_id: crate::distributed::types::StageId,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // This is a type-specific implementation that demonstrates the concept
-        // In a real system, we would need implementations for each supported type
-
-        use std::any::TypeId;
-
-        // Check if this is an i32 RDD and handle it specifically
-        if TypeId::of::<T>() == TypeId::of::<i32>() {
-            return self.create_tasks_for_i32(_stage_id);
-        }
-
-        // Check if this is a (String, i32) RDD and handle it specifically
-        if TypeId::of::<T>() == TypeId::of::<(String, i32)>() {
-            return self.create_tasks_for_string_i32_tuple(_stage_id);
-        }
-
-        // For other types, we still use unimplemented for now
-        // In a complete system, we would add more type-specific implementations
-        unimplemented!(
-            "DistributedRdd::create_tasks needs implementation for type {:?}",
-            std::any::type_name::<T>()
-        )
-    }
-}
-
-impl<T> DistributedRdd<T>
-where
-    T: crate::operations::RddDataType,
-{
-    /// Create tasks specifically for i32 RDDs
-    fn create_tasks_for_i32(
-        &self,
-        _stage_id: crate::distributed::types::StageId,
-    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        use crate::distributed::task::ChainedTask;
-
-        // This is safe because we've already checked the type
-        let self_as_i32 =
-            unsafe { std::mem::transmute::<&DistributedRdd<T>, &DistributedRdd<i32>>(self) };
-
-        // Analyze the lineage to get base data and operations - clone to avoid move
-        let (base_data, num_partitions, operations) = self_as_i32.clone().analyze_lineage();
+        // This generic implementation uses the `RddDataType` trait to create tasks,
+        // removing the need for type-specific checks and `unsafe` code.
+        let (base_data, num_partitions, operations) = self.clone().analyze_lineage();
 
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
-        // Create a task for each partition
         for partition_index in 0..num_partitions {
-            // Calculate partition data for this specific partition
-            let partition_size = base_data.len() / num_partitions;
+            let data_len = base_data.len();
+            let partition_size = data_len.div_ceil(num_partitions);
             let start = partition_index * partition_size;
-            let end = if partition_index == num_partitions - 1 {
-                base_data.len()
+            let end = std::cmp::min(start + partition_size, data_len);
+
+            let partition_data = if start >= data_len {
+                Vec::new()
             } else {
-                start + partition_size
+                base_data[start..end].to_vec()
             };
 
-            let partition_data = base_data[start..end].to_vec();
-
-            // Serialize the partition data
             let serialized_partition_data =
                 bincode::encode_to_vec(&partition_data, bincode::config::standard())
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            // Create the chained task for i32
-            let task = ChainedTask::<i32>::new(serialized_partition_data, operations.clone());
-
-            tasks.push(Box::new(task));
-        }
-
-        Ok(tasks)
-    }
-
-    /// Create tasks specifically for (String, i32) RDDs
-    fn create_tasks_for_string_i32_tuple(
-        &self,
-        _stage_id: crate::distributed::types::StageId,
-    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        use crate::distributed::task::ChainedTask;
-
-        // This is safe because we've already checked the type
-        let self_as_tuple = unsafe {
-            std::mem::transmute::<&DistributedRdd<T>, &DistributedRdd<(String, i32)>>(self)
-        };
-
-        // Analyze the lineage to get base data and operations - clone to avoid move
-        let (base_data, num_partitions, operations) = self_as_tuple.clone().analyze_lineage();
-
-        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
-
-        // Create a task for each partition
-        for partition_index in 0..num_partitions {
-            // Calculate partition data for this specific partition
-            let partition_size = base_data.len() / num_partitions;
-            let start = partition_index * partition_size;
-            let end = if partition_index == num_partitions - 1 {
-                base_data.len()
-            } else {
-                start + partition_size
-            };
-
-            let partition_data = base_data[start..end].to_vec();
-
-            // Serialize the partition data
-            let serialized_partition_data =
-                bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            // Create the chained task for (String, i32)
-            let task =
-                ChainedTask::<(String, i32)>::new(serialized_partition_data, operations.clone());
-
-            tasks.push(Box::new(task));
+            tasks.push(T::create_chained_task(
+                serialized_partition_data,
+                operations.clone(),
+            )?);
         }
 
         Ok(tasks)

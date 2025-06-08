@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
 
 /// Compression algorithms supported for shuffle data
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +65,6 @@ impl Default for ShuffleConfig {
 pub struct OptimizedShuffleBlockManager {
     root_dir: PathBuf,
     config: ShuffleConfig,
-    memory_usage: Arc<RwLock<usize>>,
-    spill_files: Arc<RwLock<HashMap<ShuffleBlockId, PathBuf>>>,
 }
 
 impl OptimizedShuffleBlockManager {
@@ -77,8 +74,6 @@ impl OptimizedShuffleBlockManager {
         Ok(Self {
             root_dir: path,
             config,
-            memory_usage: Arc::new(RwLock::new(0)),
-            spill_files: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -87,41 +82,11 @@ impl OptimizedShuffleBlockManager {
             .join(block_id.shuffle_id.to_string())
             .join(format!("{}_{}", block_id.map_id, block_id.reduce_id))
     }
-
-    async fn should_spill(&self, additional_size: usize) -> bool {
-        let current_usage = *self.memory_usage.read().await;
-        current_usage + additional_size > self.config.spill_threshold
-    }
-
-    async fn spill_to_disk(&self, block_id: ShuffleBlockId, data: Vec<u8>) -> Result<()> {
-        let path = self.get_block_path(&block_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        // Compress data if configured
-        let compressed_data = self.config.compression.compress(&data)?;
-
-        let mut file = File::create(&path).await?;
-        file.write_all(&compressed_data).await?;
-
-        // Record spill file location
-        self.spill_files.write().await.insert(block_id, path);
-
-        Ok(())
-    }
 }
 
 #[async_trait]
 impl ShuffleBlockManager for OptimizedShuffleBlockManager {
     async fn get_block(&self, block_id: &ShuffleBlockId) -> Result<Vec<u8>> {
-        // Check if block is spilled to disk
-        if let Some(path) = self.spill_files.read().await.get(block_id) {
-            let compressed_data = fs::read(path).await?;
-            return self.config.compression.decompress(&compressed_data);
-        }
-
-        // If not spilled, read from regular storage
         let path = self.get_block_path(block_id);
         let compressed_data = fs::read(&path)
             .await
@@ -131,35 +96,19 @@ impl ShuffleBlockManager for OptimizedShuffleBlockManager {
     }
 
     async fn put_block(&self, block_id: ShuffleBlockId, data: Vec<u8>) -> Result<()> {
-        // Check if we should spill to disk
-        if self.should_spill(data.len()).await {
-            self.spill_to_disk(block_id, data).await
-        } else {
-            // Store in regular location with compression
-            let path = self.get_block_path(&block_id);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-
-            let compressed_data = self.config.compression.compress(&data)?;
-            let mut file = File::create(&path).await?;
-            file.write_all(&compressed_data).await?;
-
-            // Update memory usage
-            *self.memory_usage.write().await += data.len();
-
-            Ok(())
+        let path = self.get_block_path(&block_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
         }
+
+        let compressed_data = self.config.compression.compress(&data)?;
+        let mut file = File::create(&path).await?;
+        file.write_all(&compressed_data).await?;
+
+        Ok(())
     }
 
     async fn remove_block(&self, block_id: &ShuffleBlockId) -> Result<()> {
-        // Remove from spill files if present
-        if let Some(path) = self.spill_files.write().await.remove(block_id) {
-            if fs::try_exists(&path).await? {
-                fs::remove_file(&path).await?;
-            }
-        }
-
         // Remove from regular storage
         let path = self.get_block_path(block_id);
         if fs::try_exists(&path).await? {
@@ -170,22 +119,12 @@ impl ShuffleBlockManager for OptimizedShuffleBlockManager {
     }
 
     async fn contains_block(&self, block_id: &ShuffleBlockId) -> Result<bool> {
-        // Check spill files first
-        if self.spill_files.read().await.contains_key(block_id) {
-            return Ok(true);
-        }
-
         // Check regular storage
         let path = self.get_block_path(block_id);
         Ok(fs::try_exists(&path).await?)
     }
 
     async fn get_block_size(&self, block_id: &ShuffleBlockId) -> Result<u64> {
-        // Check spill files first
-        if let Some(path) = self.spill_files.read().await.get(block_id) {
-            return Ok(fs::metadata(path).await?.len());
-        }
-
         // Check regular storage
         let path = self.get_block_path(block_id);
         Ok(fs::metadata(&path).await?.len())
@@ -356,25 +295,21 @@ mod tests {
             .await
             .unwrap();
 
-        // This one should not be spilled
-        assert!(!manager.spill_files.read().await.contains_key(&block_id1));
-        assert_eq!(*manager.memory_usage.read().await, 50);
-
         let block_id2 = ShuffleBlockId {
             shuffle_id: 1,
             map_id: 0,
             reduce_id: 1,
         };
-        let data2 = vec![1; 60]; // This will push usage over the threshold
+        let data2 = vec![1; 60];
         manager
             .put_block(block_id2.clone(), data2.clone())
             .await
             .unwrap();
 
-        // This one should be spilled
-        assert!(manager.spill_files.read().await.contains_key(&block_id2));
-        // Memory usage should not have increased because it was spilled
-        assert_eq!(*manager.memory_usage.read().await, 50);
+        // With the fix, the manager simply writes files. There are no "spilled" files.
+        // We just verify that we can get the data back.
+        assert!(manager.contains_block(&block_id1).await.unwrap());
+        assert!(manager.contains_block(&block_id2).await.unwrap());
 
         // Test getting both blocks
         let retrieved1 = manager.get_block(&block_id1).await.unwrap();
@@ -383,10 +318,9 @@ mod tests {
         let retrieved2 = manager.get_block(&block_id2).await.unwrap();
         assert_eq!(retrieved2, data2);
 
-        // Test removing spilled block
+        // Test removing a block
         manager.remove_block(&block_id2).await.unwrap();
         assert!(!manager.contains_block(&block_id2).await.unwrap());
-        assert!(!manager.spill_files.read().await.contains_key(&block_id2));
     }
 
     #[tokio::test]
