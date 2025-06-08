@@ -31,16 +31,6 @@ pub trait KVStore: Send + Sync {
     async fn size(&self) -> Result<usize>;
 }
 
-/// Trait for serializable key-value store
-#[async_trait]
-pub trait SerializableKVStore: KVStore {
-    /// Serialize store to bytes
-    async fn serialize(&self) -> Result<Vec<u8>>;
-
-    /// Deserialize store from bytes
-    async fn deserialize(&mut self, data: &[u8]) -> Result<()>;
-}
-
 /// Trait for persistent key-value store
 #[async_trait]
 pub trait PersistentKVStore: KVStore {
@@ -52,17 +42,4 @@ pub trait PersistentKVStore: KVStore {
 
     /// Get persistence path
     fn persistence_path(&self) -> Option<&str>;
-}
-
-/// Trait for distributed key-value store
-#[async_trait]
-pub trait DistributedKVStore: KVStore {
-    /// Replicate data to other nodes
-    async fn replicate(&self, nodes: &[String]) -> Result<()>;
-
-    /// Sync with other nodes
-    async fn sync(&self, nodes: &[String]) -> Result<()>;
-
-    /// Get replication factor
-    fn replication_factor(&self) -> usize;
 }

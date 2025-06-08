@@ -3,12 +3,12 @@
 //! These tests verify that the Driver and Executor services can communicate
 //! properly and execute tasks in a distributed manner.
 
+use barks_core::DistributedConfig;
 use barks_core::distributed::{
-    task::{ChainedTask, Task},
     Driver, Executor, ExecutorInfo,
+    task::{ChainedTask, Task},
 };
 use barks_core::operations::{DoubleOperation, SerializableI32Operation};
-use barks_core::DistributedConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

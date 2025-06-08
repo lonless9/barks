@@ -1,7 +1,7 @@
 //! Shuffle optimizations including compression, spill management, and sort-based shuffle.
 
 use crate::traits::*;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -146,8 +146,15 @@ pub struct HashShuffleWriter<K, V> {
 
 impl<K, V> HashShuffleWriter<K, V>
 where
-    K: serde::Serialize + Send + Sync + Clone + bincode::Encode + std::hash::Hash + Ord,
-    V: serde::Serialize + Send + Sync + Clone + bincode::Encode,
+    K: serde::Serialize
+        + Send
+        + Sync
+        + Clone
+        + bincode::Encode
+        + bincode::Decode<()>
+        + std::hash::Hash
+        + Ord,
+    V: serde::Serialize + Send + Sync + Clone + bincode::Encode + bincode::Decode<()>,
 {
     pub fn new(
         shuffle_id: u32,
@@ -196,15 +203,26 @@ where
                     buffer.sort_by(|a, b| a.0.cmp(&b.0));
                 }
 
-                // Serialize and write to block manager
-                let serialized = bincode::encode_to_vec(&*buffer, bincode::config::standard())
-                    .map_err(|e| anyhow!("Failed to serialize shuffle buffer: {}", e))?;
-
                 let block_id = ShuffleBlockId {
                     shuffle_id: self.shuffle_id,
                     map_id: self.map_id,
                     reduce_id: *reduce_id,
                 };
+
+                // FIX: Append to existing block data instead of overwriting.
+                // This is an inefficient but correct approach for spilling with the current block manager API.
+                let mut all_records: Vec<(K, V)> =
+                    if self.block_manager.contains_block(&block_id).await? {
+                        let existing_data = self.block_manager.get_block(&block_id).await?;
+                        bincode::decode_from_slice(&existing_data, bincode::config::standard())?.0
+                    } else {
+                        Vec::new()
+                    };
+                all_records.append(buffer);
+
+                // Serialize and write to block manager
+                let serialized = bincode::encode_to_vec(&all_records, bincode::config::standard())
+                    .map_err(|e| anyhow!("Failed to serialize shuffle buffer: {}", e))?;
 
                 self.block_manager.put_block(block_id, serialized).await?;
                 buffer.clear();
@@ -382,5 +400,87 @@ mod tests {
         let (records1, _): (Vec<(String, i32)>, _) =
             bincode::decode_from_slice(&block1_data, bincode::config::standard()).unwrap();
         assert_eq!(records1, vec![("key_for_part_1".to_string(), 200)]);
+    }
+
+    #[tokio::test]
+    async fn test_hash_shuffle_writer_spilling_append() {
+        let block_manager = Arc::new(MemoryShuffleManager::new());
+        let partitioner = Arc::new(SimplePartitioner { num_partitions: 1 });
+
+        // Set a low threshold to force a spill on each write.
+        let config = ShuffleConfig {
+            spill_threshold: 10,       // Spill after ~10 bytes
+            sort_based_shuffle: false, // Disable sort for predictable order
+            ..Default::default()
+        };
+
+        let mut writer =
+            HashShuffleWriter::<String, i32>::new(1, 0, partitioner, block_manager.clone(), config);
+
+        // Write first record, this should trigger a spill.
+        writer.write(("key1".to_string(), 1)).await.unwrap();
+
+        let block_id = ShuffleBlockId {
+            shuffle_id: 1,
+            map_id: 0,
+            reduce_id: 0,
+        };
+        let data1 = block_manager.get_block(&block_id).await.unwrap();
+        let (records1, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&data1, bincode::config::standard()).unwrap();
+        assert_eq!(records1, vec![("key1".to_string(), 1)]);
+
+        // Write second record. This should also trigger a spill and append to the existing block.
+        writer.write(("key2".to_string(), 2)).await.unwrap();
+        let data2 = block_manager.get_block(&block_id).await.unwrap();
+        let (records2, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&data2, bincode::config::standard()).unwrap();
+        assert_eq!(
+            records2,
+            vec![("key1".to_string(), 1), ("key2".to_string(), 2)]
+        );
+
+        // Write a third record, but this one won't spill immediately. It will be flushed by close().
+        // We need to reset the memory usage to prevent another spill for this test.
+        writer.memory_usage = 0;
+        writer.write(("key3".to_string(), 3)).await.unwrap();
+
+        // Verify data before close() - it should still only contain key1 and key2
+        // since key3 should be in the buffer and not yet spilled
+        let data_before_close = block_manager.get_block(&block_id).await.unwrap();
+        let (records_before_close, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&data_before_close, bincode::config::standard()).unwrap();
+        // Note: The test might fail if the memory estimation causes another spill
+        // In that case, we should expect all three records
+        if records_before_close.len() == 2 {
+            assert_eq!(
+                records_before_close,
+                vec![("key1".to_string(), 1), ("key2".to_string(), 2)]
+            );
+        } else {
+            // If it spilled again, we should have all three records
+            assert_eq!(
+                records_before_close,
+                vec![
+                    ("key1".to_string(), 1),
+                    ("key2".to_string(), 2),
+                    ("key3".to_string(), 3)
+                ]
+            );
+        }
+
+        // Close the writer to flush the last record.
+        writer.close().await.unwrap();
+        let data3 = block_manager.get_block(&block_id).await.unwrap();
+        let (records3, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&data3, bincode::config::standard()).unwrap();
+        assert_eq!(
+            records3,
+            vec![
+                ("key1".to_string(), 1),
+                ("key2".to_string(), 2),
+                ("key3".to_string(), 3)
+            ]
+        );
     }
 }

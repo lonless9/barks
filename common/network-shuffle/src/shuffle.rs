@@ -1,7 +1,7 @@
 //! Shuffle implementations
 
 use crate::traits::*;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
@@ -269,11 +269,11 @@ where
 pub mod server {
     use super::*;
     use axum::{
+        Router,
         extract::{Path, State},
         http::StatusCode,
         response::IntoResponse,
         routing::get,
-        Router,
     };
     use std::net::SocketAddr;
     use tracing::{error, info};

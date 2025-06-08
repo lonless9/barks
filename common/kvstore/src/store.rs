@@ -3,7 +3,7 @@
 use crate::traits::*;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -255,10 +255,12 @@ mod tests {
         // Test size and contains_key
         assert_eq!(store.size().await.unwrap(), 1);
         assert!(store.contains_key(&"key1".to_string()).await.unwrap());
-        assert!(!store
-            .contains_key(&"non_existent".to_string())
-            .await
-            .unwrap());
+        assert!(
+            !store
+                .contains_key(&"non_existent".to_string())
+                .await
+                .unwrap()
+        );
 
         // Test remove
         assert_eq!(
@@ -339,5 +341,37 @@ mod tests {
         assert_eq!(store3.get(&"key1".to_string()).await.unwrap(), None);
         assert_eq!(store3.get(&"key2".to_string()).await.unwrap(), Some(200));
         assert_eq!(store3.get(&"key3".to_string()).await.unwrap(), Some(300));
+    }
+
+    #[tokio::test]
+    async fn test_memory_kv_store_concurrency() {
+        let store = Arc::new(MemoryKVStore::<String, usize>::new());
+        let mut handles = Vec::new();
+
+        // Spawn 10 tasks to write concurrently
+        for i in 0..10 {
+            let store_clone = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for j in 0..100 {
+                    let key = format!("key_{}_{}", i, j);
+                    store_clone.put(key, i * 100 + j).await.unwrap();
+                }
+            }));
+        }
+
+        // Wait for all writers to finish
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify the final state
+        assert_eq!(store.size().await.unwrap(), 1000);
+
+        // Verify one key from each task
+        for i in 0..10 {
+            let key = format!("key_{}_50", i);
+            let value = store.get(&key).await.unwrap();
+            assert_eq!(value, Some(i * 100 + 50));
+        }
     }
 }

@@ -5,12 +5,12 @@
 
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
-    driver_service_server::{DriverService, DriverServiceServer},
     ExecutorStatus, HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest,
     RegisterExecutorResponse, TaskState, TaskStatusRequest, TaskStatusResponse,
+    driver_service_server::{DriverService, DriverServiceServer},
 };
 use crate::distributed::proto::executor::{
-    executor_service_client::ExecutorServiceClient, LaunchTaskRequest,
+    LaunchTaskRequest, executor_service_client::ExecutorServiceClient,
 };
 use crate::distributed::task::{PendingTask, Task, TaskScheduler};
 use crate::distributed::types::{ExecutorId, ExecutorInfo, ExecutorMetrics, StageId, TaskId};
@@ -19,8 +19,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tonic::{transport::Server, Request, Response, Status};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
 
 /// Type alias for task completion notifiers to reduce complexity

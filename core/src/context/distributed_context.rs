@@ -13,8 +13,8 @@ use crate::traits::RddResult;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -473,7 +473,9 @@ impl DistributedContext {
             return Ok(final_results);
         }
 
-        warn!("No distributed shuffle implementation found for this RDD type. Falling back to local execution.");
+        warn!(
+            "No distributed shuffle implementation found for this RDD type. Falling back to local execution."
+        );
         self.run_local(rdd).await
     }
 

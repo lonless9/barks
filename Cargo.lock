@@ -289,14 +289,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "barks-unsafe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "thiserror",
-]
-
-[[package]]
 name = "barks-utils"
 version = "0.1.0"
 dependencies = [

@@ -1,7 +1,7 @@
 //! Test for the generalized PairRdd implementation
 
-use barks_core::rdd::transformations::PairRdd;
 use barks_core::rdd::DistributedRdd;
+use barks_core::rdd::transformations::PairRdd;
 use barks_core::shuffle::{HashPartitioner, ReduceAggregator};
 use barks_core::traits::RddBase;
 use std::sync::Arc;

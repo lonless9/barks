@@ -69,7 +69,7 @@ pub trait RddBase: Send + Sync + Debug + Any {
 
     /// Compute the elements of this RDD for the given partition
     fn compute(&self, partition: &dyn Partition)
-        -> RddResult<Box<dyn Iterator<Item = Self::Item>>>;
+    -> RddResult<Box<dyn Iterator<Item = Self::Item>>>;
 
     /// Get the number of partitions
     fn num_partitions(&self) -> usize;

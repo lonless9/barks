@@ -144,8 +144,8 @@ fn test_flow_context_with_partitions() {
 
 #[test]
 fn test_complete_pipeline() {
-    use barks_core::operations::GreaterThanPredicate;
     use barks_core::FlowContext;
+    use barks_core::operations::GreaterThanPredicate;
 
     // This is the main test for the complete map->filter->collect pipeline
     let context = FlowContext::new("barks-phase0-test");
