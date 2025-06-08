@@ -472,6 +472,8 @@ where
     pub shuffle_id: u32,
     /// Number of reduce partitions
     pub num_reduce_partitions: u32,
+    /// Configuration for shuffle optimizations
+    pub shuffle_config: barks_network_shuffle::optimizations::ShuffleConfig,
     /// Phantom data to make the struct generic over T
     #[serde(skip)]
     _marker: std::marker::PhantomData<T>,
@@ -486,12 +488,14 @@ where
         parent_operations: Vec<T::SerializableOperation>,
         shuffle_id: u32,
         num_reduce_partitions: u32,
+        shuffle_config: barks_network_shuffle::optimizations::ShuffleConfig,
     ) -> Self {
         Self {
             parent_partition_data,
             parent_operations,
             shuffle_id,
             num_reduce_partitions,
+            shuffle_config,
             _marker: std::marker::PhantomData,
         }
     }
@@ -545,7 +549,7 @@ macro_rules! impl_shuffle_map_task {
                     partition_index as u32,
                     partitioner,
                     block_manager,
-                    barks_network_shuffle::optimizations::ShuffleConfig::default(), // Use default shuffle config
+                    self.shuffle_config.clone(),
                 );
 
                 // 3. Write all records to the shuffle writer

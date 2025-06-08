@@ -154,6 +154,7 @@ mod tests {
             Vec::new(), // No operations for this test
             1,          // shuffle_id
             2,          // num_reduce_partitions
+            barks_network_shuffle::optimizations::ShuffleConfig::default(), // Use default shuffle config
         );
 
         // Test that we can serialize it as a Task trait object
@@ -201,6 +202,49 @@ mod tests {
         let deserialized_task: Result<Box<dyn crate::distributed::task::Task>, _> =
             serde_json::from_slice(&serialized_bytes);
         assert!(deserialized_task.is_ok());
+    }
+
+    /// Test ShuffleMapTask with custom shuffle configuration
+    #[tokio::test]
+    async fn test_shuffle_map_task_with_custom_config() {
+        // Create test data
+        let data = vec![("key1".to_string(), 1), ("key2".to_string(), 2)];
+        let serialized_data = bincode::encode_to_vec(&data, bincode::config::standard()).unwrap();
+
+        // Create a custom shuffle config
+        let custom_config = barks_network_shuffle::optimizations::ShuffleConfig {
+            compression: barks_network_shuffle::optimizations::CompressionCodec::None,
+            spill_threshold: 32 * 1024 * 1024, // 32MB
+            sort_based_shuffle: false,
+            io_buffer_size: 32 * 1024, // 32KB
+        };
+
+        // Create a ShuffleMapTask with custom config
+        let task = ShuffleMapTask::<(String, i32)>::new(
+            serialized_data,
+            Vec::new(), // No operations for this test
+            1,          // shuffle_id
+            2,          // num_reduce_partitions
+            custom_config.clone(),
+        );
+
+        // Verify the config is stored correctly
+        assert_eq!(task.shuffle_config.spill_threshold, 32 * 1024 * 1024);
+        assert_eq!(task.shuffle_config.sort_based_shuffle, false);
+        assert_eq!(task.shuffle_config.io_buffer_size, 32 * 1024);
+
+        // Test that we can serialize it as a Task trait object
+        let task_box: Box<dyn crate::distributed::task::Task> = Box::new(task);
+        let serialized_task = serde_json::to_vec(&task_box);
+        assert!(serialized_task.is_ok());
+
+        // Test that we can deserialize it back
+        let serialized_bytes = serialized_task.unwrap();
+        let deserialized_task: Result<Box<dyn crate::distributed::task::Task>, _> =
+            serde_json::from_slice(&serialized_bytes);
+        assert!(deserialized_task.is_ok());
+
+        println!("ShuffleMapTask custom config test passed");
     }
 
     /// Integration test demonstrating the complete shuffle pipeline

@@ -3,6 +3,7 @@
 use crate::traits::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 
 /// Compression algorithms supported for shuffle data
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompressionCodec {
     None,
     // Future: Add compression support when dependencies are available
@@ -38,7 +39,7 @@ impl CompressionCodec {
 }
 
 /// Configuration for shuffle optimizations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShuffleConfig {
     /// Compression codec to use
     pub compression: CompressionCodec,

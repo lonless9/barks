@@ -187,6 +187,7 @@ impl StageManager {
                         Vec::new(), // Placeholder operations - in real implementation would be extracted from RDD lineage
                         *shuffle_id,
                         *num_reduce_partitions,
+                        barks_network_shuffle::optimizations::ShuffleConfig::default(), // Use default shuffle config
                     );
 
                     tasks.push(Box::new(task) as Box<dyn Task>);

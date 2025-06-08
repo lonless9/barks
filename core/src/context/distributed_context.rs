@@ -66,6 +66,8 @@ pub struct DistributedConfig {
     pub executor_liveness_timeout_secs: u64,
     /// Maximum number of times a task will be retried on failure
     pub task_max_retries: u32,
+    /// Configuration for shuffle behavior
+    pub shuffle_config: barks_network_shuffle::optimizations::ShuffleConfig,
 }
 
 /// Executor configuration
@@ -91,6 +93,7 @@ impl Default for DistributedConfig {
             executor_heartbeat_interval_secs: 10, // 10 seconds
             executor_liveness_timeout_secs: 30,   // 30 seconds
             task_max_retries: 3,
+            shuffle_config: Default::default(),
         }
     }
 }
@@ -536,6 +539,7 @@ impl DistributedContext {
                     concrete_operations,
                     shuffle_id,
                     num_reduce_partitions,
+                    self.config.shuffle_config.clone(),
                 );
 
                 let task_id = format!("shuffle-map-{}-{}", shuffle_id, partition_index);
