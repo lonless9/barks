@@ -41,7 +41,7 @@ impl<K: Data, V: Data, W: Data> RddBase for JoinedRdd<K, V, W> {
         // 1. Fetch shuffle data for both left and right RDDs from the shuffle service
         // 2. Perform a hash join on the co-located data
         // 3. Return the joined results
-        
+
         // For now, this is a placeholder that would be implemented with actual shuffle readers
         unimplemented!(
             "JoinedRdd::compute requires distributed shuffle execution with ShuffleReader"
@@ -102,7 +102,7 @@ impl<K: Data, V: Data, W: Data> RddBase for CogroupedRdd<K, V, W> {
         // 1. Fetch shuffle data for both left and right RDDs
         // 2. Group values by key from both RDDs
         // 3. Return the cogrouped results as (key, (left_values, right_values))
-        
+
         unimplemented!(
             "CogroupedRdd::compute requires distributed shuffle execution with ShuffleReader"
         );

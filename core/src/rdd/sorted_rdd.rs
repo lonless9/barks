@@ -60,7 +60,7 @@ where
         // 1. Fetch shuffle data for this partition from the shuffle service
         // 2. Sort the data within the partition (since range partitioning ensures global order)
         // 3. Return the sorted iterator
-        
+
         // The actual implementation would use a ShuffleReader to get the data
         // and then sort it locally within each partition
         unimplemented!(
@@ -96,7 +96,7 @@ where
     // 1. Sample a fraction of the RDD data
     // 2. Extract keys from the sampled data
     // 3. Return a representative sample for range partitioning
-    
+
     // For now, return an empty vector as a placeholder
     // The actual implementation would involve running a sampling job
     Vec::new()
@@ -116,7 +116,7 @@ where
 {
     // Sample keys from the parent RDD
     let sample_keys = sample_keys_for_sorting(&parent, sample_size);
-    
+
     // Create the sorted RDD with the sampled keys
     SortedRdd::from_sample(id, parent, num_partitions, sample_keys, ascending)
 }
