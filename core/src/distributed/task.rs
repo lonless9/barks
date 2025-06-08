@@ -331,6 +331,12 @@ impl TaskScheduler {
     pub async fn pending_task_count(&self) -> usize {
         self.pending_tasks.lock().await.len()
     }
+
+    /// Get information about a specific executor.
+    pub async fn get_executor_info(&self, executor_id: &ExecutorId) -> Option<ExecutorInfo> {
+        let executors = self.executors.lock().await;
+        executors.get(executor_id).cloned()
+    }
 }
 
 impl Default for TaskScheduler {

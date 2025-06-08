@@ -577,22 +577,25 @@ impl DistributedContext {
         }
 
         // Collect results from all map tasks
-        let mut map_output_locations = Vec::new();
+        let mut map_output_locations_map: std::collections::HashMap<
+            String,
+            Vec<(u32, barks_network_shuffle::traits::MapStatus)>,
+        > = std::collections::HashMap::new();
         for (partition_index, future) in map_task_futures {
             match future
                 .await
                 .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?
             {
                 (crate::distributed::driver::TaskResult::Success(bytes), executor_id) => {
-                    // Deserialize MapStatus
                     let (map_status, _): (barks_network_shuffle::traits::MapStatus, _) =
                         bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
                             |e| crate::traits::RddError::SerializationError(e.to_string()),
                         )?;
 
-                    // Store the location information
-                    map_output_locations
-                        .push((executor_id, vec![(partition_index as u32, map_status)]));
+                    map_output_locations_map
+                        .entry(executor_id)
+                        .or_default()
+                        .push((partition_index as u32, map_status));
                 }
                 (crate::distributed::driver::TaskResult::Failure(err), executor_id) => {
                     return Err(crate::traits::RddError::ComputationError(format!(
@@ -602,6 +605,11 @@ impl DistributedContext {
                 }
             }
         }
+
+        let map_output_locations: Vec<(
+            String,
+            Vec<(u32, barks_network_shuffle::traits::MapStatus)>,
+        )> = map_output_locations_map.into_iter().collect();
 
         info!(
             "Map stage completed successfully with {} map outputs",
@@ -613,10 +621,10 @@ impl DistributedContext {
     /// Helper to execute the reduce stage of a shuffle.
     async fn execute_reduce_stage<K, V, C>(
         &self,
-        _shuffle_id: u32,
-        _map_output_locations: Vec<(String, Vec<(u32, barks_network_shuffle::traits::MapStatus)>)>,
-        _aggregator_data: Vec<u8>,
-        _partitioner: Arc<dyn crate::shuffle::Partitioner<K>>,
+        shuffle_id: u32,
+        map_output_locations: Vec<(String, Vec<(u32, barks_network_shuffle::traits::MapStatus)>)>,
+        aggregator_data: Vec<u8>,
+        partitioner: Arc<dyn crate::shuffle::Partitioner<K>>,
     ) -> RddResult<Vec<Vec<(K, C)>>>
     where
         K: crate::traits::Data + std::hash::Hash,
@@ -625,26 +633,42 @@ impl DistributedContext {
         (K, C): crate::operations::RddDataType,
         crate::rdd::ShuffledRdd<K, V, C>: crate::traits::RddBase<Item = (K, C)>,
     {
-        // Create and submit ShuffleReduceTasks for each reduce partition
+        let driver = self.driver.as_ref().unwrap();
+        let num_reduce_partitions = partitioner.num_partitions() as usize;
         let mut reduce_task_futures = Vec::new();
-        let num_reduce_partitions = _partitioner.num_partitions() as usize;
 
+        // First, resolve all executor IDs to shuffle addresses to avoid repeated lookups.
+        let mut executor_shuffle_addrs = std::collections::HashMap::new();
+        for (exec_id, _) in &map_output_locations {
+            if !executor_shuffle_addrs.contains_key(exec_id) {
+                if let Some(info) = driver.get_executor_info(exec_id).await {
+                    let addr = format!("{}:{}", info.host, info.shuffle_port);
+                    executor_shuffle_addrs.insert(exec_id.clone(), addr);
+                } else {
+                    return Err(crate::traits::RddError::ContextError(format!(
+                        "Could not find info for executor {}",
+                        exec_id
+                    )));
+                }
+            }
+        }
+
+        // Build the complete list of map output locations for the reduce tasks.
+        // This is the same for all reduce tasks.
+        let locations_for_task: Vec<(String, u32)> = map_output_locations
+            .iter()
+            .flat_map(|(exec_id, map_statuses)| {
+                let addr = executor_shuffle_addrs.get(exec_id).unwrap().clone();
+                map_statuses
+                    .iter()
+                    .map(move |(map_id, _map_status)| (addr.clone(), *map_id))
+            })
+            .collect();
+
+        // Create and submit ShuffleReduceTasks for each reduce partition
         for reduce_partition_id in 0..num_reduce_partitions {
-            // Convert map output locations to the format expected by ShuffleReduceTask
-            let map_output_locations: Vec<(String, u32)> = _map_output_locations
-                .iter()
-                .enumerate()
-                .flat_map(|(executor_idx, (executor_id, map_statuses))| {
-                    map_statuses.iter().map(move |(map_id, _map_status)| {
-                        // In a real implementation, we would use the actual executor address
-                        // For now, we'll use a placeholder format
-                        let executor_address = format!("{}:{}", executor_id, 8001 + executor_idx);
-                        (executor_address, *map_id)
-                    })
-                })
-                .collect();
-
-            // Create ShuffleReduceTask - only support (String, i32, i32) for now
+            // Due to `typetag` limitations, we use a type check. A full implementation
+            // would require a more advanced task serialization system.
             if std::any::TypeId::of::<(K, C)>() == std::any::TypeId::of::<(String, i32)>() {
                 let task = crate::distributed::task::ShuffleReduceTask::<
                     String,
@@ -652,20 +676,16 @@ impl DistributedContext {
                     i32,
                     crate::shuffle::ReduceAggregator<i32>,
                 >::new(
-                    _shuffle_id,
+                    shuffle_id,
                     reduce_partition_id as u32,
-                    map_output_locations,
-                    _aggregator_data.clone(),
+                    locations_for_task.clone(),
+                    aggregator_data.clone(),
                 );
 
-                let task_id = format!("shuffle-reduce-{}-{}", _shuffle_id, reduce_partition_id);
-                let stage_id = format!("shuffle-reduce-stage-{}", _shuffle_id);
+                let task_id = format!("shuffle-reduce-{}-{}", shuffle_id, reduce_partition_id);
+                let stage_id = format!("shuffle-reduce-stage-{}", shuffle_id);
 
-                // Submit task to driver
-                let future = self
-                    .driver
-                    .as_ref()
-                    .unwrap()
+                let future = driver
                     .submit_task(task_id, stage_id, reduce_partition_id, Box::new(task), None)
                     .await
                     .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?;
@@ -673,7 +693,8 @@ impl DistributedContext {
                 reduce_task_futures.push(future);
             } else {
                 return Err(crate::traits::RddError::ContextError(
-                    "Unsupported type for shuffle reduce task. Only (String, i32) is currently supported.".to_string()
+                    "Unsupported type for shuffle reduce task. Only (String, i32) is currently supported."
+                        .to_string(),
                 ));
             }
         }
@@ -686,12 +707,10 @@ impl DistributedContext {
                 .map_err(|e| crate::traits::RddError::ContextError(e.to_string()))?
             {
                 (crate::distributed::driver::TaskResult::Success(bytes), _executor_id) => {
-                    // Deserialize the reduce result
                     let (partition_result, _): (Vec<(K, C)>, _) =
                         bincode::decode_from_slice(&bytes, bincode::config::standard()).map_err(
                             |e| crate::traits::RddError::SerializationError(e.to_string()),
                         )?;
-
                     reduce_results.push(partition_result);
                 }
                 (crate::distributed::driver::TaskResult::Failure(err), executor_id) => {

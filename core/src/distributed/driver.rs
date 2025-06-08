@@ -872,6 +872,11 @@ impl Driver {
         self.task_scheduler.pending_task_count().await
     }
 
+    /// Get information about a specific executor by its ID.
+    pub async fn get_executor_info(&self, executor_id: &ExecutorId) -> Option<ExecutorInfo> {
+        self.task_scheduler.get_executor_info(executor_id).await
+    }
+
     /// Collect results from all executors for a stage
     pub async fn collect_stage_results(
         &self,

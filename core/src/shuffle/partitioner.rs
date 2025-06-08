@@ -281,7 +281,7 @@ mod tests {
                 &partitioner,
                 &"a".to_string()
             ),
-            1 % 4
+            1
         ); // len 1
         assert_eq!(
             <CustomPartitioner<String> as Partitioner<String>>::get_partition(
