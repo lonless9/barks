@@ -16,10 +16,10 @@ use std::sync::Arc;
 pub struct ShuffledRdd<K: Data, V: Data, C: Data> {
     id: usize,
     #[allow(dead_code)]
-    parent: Arc<dyn RddBase<Item = (K, V)>>,
+    pub parent: Arc<dyn RddBase<Item = (K, V)>>,
     #[allow(dead_code)]
-    aggregator: Arc<dyn Aggregator<K, V, C>>,
-    partitioner: Arc<dyn Partitioner<K>>,
+    pub aggregator: Arc<dyn Aggregator<K, V, C>>,
+    pub partitioner: Arc<dyn Partitioner<K>>,
 }
 
 impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C> {

@@ -32,9 +32,10 @@ path = "local_rdd_api.rs"
 # name = "shuffle_api"
 # path = "shuffle_api.rs"
 
-[[bin]]
-name = "distributed_app"
-path = "distributed_app.rs"
+# Disabled as it is now covered by an integration test in `core/tests/distributed_execution.rs`
+# [[bin]]
+# name = "distributed_app"
+# path = "distributed_app.rs"
 
 # Disabled until shuffle functionality is implemented
 # [[bin]]

@@ -26,8 +26,9 @@ async fn test_executor_retry_logic() {
         "test-executor-retry".to_string(),
         executor_addr.ip().to_string(),
         executor_addr.port(),
-        2,    // cores
-        1024, // memory_mb
+        executor_addr.port() + 1000, // shuffle_port
+        2,                           // cores
+        1024,                        // memory_mb
     );
 
     let config = DistributedConfig::default();
@@ -111,8 +112,9 @@ async fn test_executor_immediate_connection() {
         "test-executor-immediate".to_string(),
         executor_addr.ip().to_string(),
         executor_addr.port(),
-        2,    // cores
-        1024, // memory_mb
+        executor_addr.port() + 1000, // shuffle_port
+        2,                           // cores
+        1024,                        // memory_mb
     );
 
     let executor = Executor::new(executor_info, 2, config);

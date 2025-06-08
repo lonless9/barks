@@ -22,6 +22,7 @@ pub struct ExecutorInfo {
     pub executor_id: ExecutorId,
     pub host: String,
     pub port: u16,
+    pub shuffle_port: u16,
     pub cores: u32,
     pub memory_mb: u64,
     pub max_concurrent_tasks: u32,
@@ -34,6 +35,7 @@ impl ExecutorInfo {
         executor_id: ExecutorId,
         host: String,
         port: u16,
+        shuffle_port: u16,
         cores: u32,
         memory_mb: u64,
     ) -> Self {
@@ -41,6 +43,7 @@ impl ExecutorInfo {
             executor_id,
             host,
             port,
+            shuffle_port,
             cores,
             memory_mb,
             max_concurrent_tasks: cores, // Default to number of cores

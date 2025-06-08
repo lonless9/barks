@@ -50,7 +50,7 @@ pub struct DriverServiceImpl {
     /// Tasks that have been scheduled but not yet completed. Key is TaskId.
     active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
     /// Notifiers for waiting tasks
-    completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+    completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>>,
     /// Executor clients cache
     executor_clients:
         Arc<Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>>,
@@ -264,7 +264,7 @@ impl DriverServiceImpl {
         mut task: PendingTask,
         max_retries: u32,
         scheduler: Arc<TaskScheduler>,
-        notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+        notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>>,
         failure_reason: &str,
     ) {
         if task.retries < max_retries {
@@ -279,10 +279,13 @@ impl DriverServiceImpl {
                 "Task {} failed after all retries due to {}.",
                 task.task_id, failure_reason
             );
-            let result = TaskResult::Failure(format!(
-                "Failed to complete task after {} retries",
-                max_retries
-            ));
+            let result = (
+                TaskResult::Failure(format!(
+                    "Failed to complete task after {} retries",
+                    max_retries
+                )),
+                "".to_string(),
+            ); // No executor ID for terminal failure
             if let Some(notifier) = notifiers.lock().await.remove(&task.task_id) {
                 let _ = notifier.send(result);
             }
@@ -390,7 +393,9 @@ impl DriverServiceImpl {
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         task_scheduler: Arc<TaskScheduler>,
         active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
-        completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+        completion_notifiers: Arc<
+            Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>,
+        >,
         executor_tasks: Arc<Mutex<HashMap<ExecutorId, HashSet<TaskId>>>>,
         executor_clients: Arc<
             Mutex<HashMap<ExecutorId, ExecutorServiceClient<tonic::transport::Channel>>>,
@@ -483,7 +488,9 @@ impl DriverServiceImpl {
         executor_id: &ExecutorId,
         task_scheduler: Arc<TaskScheduler>,
         active_tasks: Arc<Mutex<HashMap<TaskId, PendingTask>>>,
-        completion_notifiers: Arc<Mutex<HashMap<TaskId, oneshot::Sender<TaskResult>>>>,
+        completion_notifiers: Arc<
+            Mutex<HashMap<TaskId, oneshot::Sender<(TaskResult, ExecutorId)>>>,
+        >,
         max_retries: u32,
     ) {
         warn!(
@@ -505,10 +512,13 @@ impl DriverServiceImpl {
                         "Task {} on executor {} failed after all retries.",
                         task_id, executor_id
                     );
-                    let result = TaskResult::Failure(format!(
-                        "Task failed on executor {} after {} retries",
-                        executor_id, max_retries
-                    ));
+                    let result = (
+                        TaskResult::Failure(format!(
+                            "Task failed on executor {} after {} retries",
+                            executor_id, max_retries
+                        )),
+                        executor_id.clone(),
+                    );
                     if let Some(notifier) = completion_notifiers.lock().await.remove(&task_id) {
                         let _ = notifier.send(result);
                     }
@@ -588,6 +598,7 @@ impl DriverService for DriverServiceImpl {
             req.executor_id.clone(),
             req.host,
             req.port as u16,
+            req.shuffle_port as u16,
             req.cores,
             req.memory_mb,
         )
@@ -711,7 +722,7 @@ impl DriverService for DriverServiceImpl {
                 // Notify any waiters.
                 if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id)
                 {
-                    let _ = notifier.send(result);
+                    let _ = notifier.send((result, req.executor_id.clone()));
                 }
             }
 
@@ -747,7 +758,7 @@ impl DriverService for DriverServiceImpl {
                         // The task has already been removed from active_tasks.
                         let result = TaskResult::Failure(error_message);
                         if let Some(notifier) = notifiers.lock().await.remove(&req.task_id) {
-                            let _ = notifier.send(result);
+                            let _ = notifier.send((result, req.executor_id.clone()));
                         }
                     }
                 } else {
@@ -766,7 +777,7 @@ impl DriverService for DriverServiceImpl {
                 let result = TaskResult::Failure("Task was killed".to_string());
                 if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id)
                 {
-                    let _ = notifier.send(result);
+                    let _ = notifier.send((result, req.executor_id.clone()));
                 }
             }
 
@@ -819,7 +830,7 @@ impl Driver {
         partition_index: usize,
         task: Box<dyn Task>,
         preferred_executor: Option<ExecutorId>,
-    ) -> Result<oneshot::Receiver<TaskResult>, anyhow::Error> {
+    ) -> Result<oneshot::Receiver<(TaskResult, ExecutorId)>, anyhow::Error> {
         // Serialize the task object using `serde_json` because `typetag` works well with it.
         // The inner data (`partition_data`) is still efficiently serialized with bincode.
         let serialized_task = serde_json::to_vec(&task)

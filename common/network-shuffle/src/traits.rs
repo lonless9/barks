@@ -130,7 +130,7 @@ pub trait Partitioner<K>: Send + Sync + std::fmt::Debug {
 
 /// The status of a completed map task, sent back to the driver.
 /// It contains the locations and sizes of the shuffle blocks written by the task.
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode, Default)]
 pub struct MapStatus {
     // For now, location is implicit (the executor that ran the task).
     // A full implementation would have a `BlockManagerId`.

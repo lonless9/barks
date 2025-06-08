@@ -182,8 +182,9 @@ impl StageManager {
                     // For now, we'll create a placeholder task
                     let partition_data = self.get_partition_data(rdd, partition_index).await;
 
-                    let task = ShuffleMapTask::<String, i32>::new(
+                    let task = ShuffleMapTask::<(String, i32)>::new(
                         partition_data,
+                        Vec::new(), // Placeholder operations - in real implementation would be extracted from RDD lineage
                         *shuffle_id,
                         *num_reduce_partitions,
                     );

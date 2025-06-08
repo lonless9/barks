@@ -40,8 +40,9 @@ async fn test_driver_executor_registration() {
         "test-executor-001".to_string(),
         "127.0.0.1".to_string(),
         executor_addr.port(),
-        2,    // 2 cores
-        4096, // 4GB memory
+        executor_addr.port() + 1000, // shuffle_port
+        2,                           // 2 cores
+        4096,                        // 4GB memory
     );
 
     let executor = Executor::new(executor_info, 2, DistributedConfig::default());
@@ -177,8 +178,9 @@ async fn test_multiple_executors() {
             executor_id.clone(),
             "127.0.0.1".to_string(),
             executor_addr.port(),
-            2,    // 2 cores
-            2048, // 2GB memory
+            executor_addr.port() + 1000, // shuffle_port
+            2,                           // 2 cores
+            2048,                        // 2GB memory
         );
 
         let executor = Executor::new(executor_info, 2, DistributedConfig::default());
