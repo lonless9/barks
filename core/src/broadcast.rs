@@ -70,7 +70,7 @@ impl SerializableBroadcast {
     pub fn from_broadcast<T: Data>(broadcast: &BroadcastVariable<T>) -> Result<Self, String> {
         let data = bincode::encode_to_vec(&*broadcast.value, bincode::config::standard())
             .map_err(|e| format!("Failed to serialize broadcast variable: {}", e))?;
-        
+
         Ok(Self {
             id: broadcast.id.clone(),
             data,
@@ -79,9 +79,10 @@ impl SerializableBroadcast {
 
     /// Deserialize into a broadcast variable
     pub fn to_broadcast<T: Data>(&self) -> Result<BroadcastVariable<T>, String> {
-        let (value, _): (T, _) = bincode::decode_from_slice(&self.data, bincode::config::standard())
-            .map_err(|e| format!("Failed to deserialize broadcast variable: {}", e))?;
-        
+        let (value, _): (T, _) =
+            bincode::decode_from_slice(&self.data, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize broadcast variable: {}", e))?;
+
         Ok(BroadcastVariable {
             id: self.id.clone(),
             value: Arc::new(value),
@@ -105,7 +106,10 @@ impl BroadcastManager {
     }
 
     /// Register a new broadcast variable
-    pub async fn register_broadcast<T: Data>(&self, broadcast: &BroadcastVariable<T>) -> Result<(), String> {
+    pub async fn register_broadcast<T: Data>(
+        &self,
+        broadcast: &BroadcastVariable<T>,
+    ) -> Result<(), String> {
         let serializable = SerializableBroadcast::from_broadcast(broadcast)?;
         let mut broadcasts = self.broadcasts.write().await;
         broadcasts.insert(broadcast.id.clone(), serializable);
@@ -187,9 +191,7 @@ impl BroadcastCache {
         let cache = self.cache.read().await;
         BroadcastCacheStats {
             cached_broadcasts: cache.len(),
-            total_size_bytes: cache.values()
-                .map(|b| b.data.len())
-                .sum(),
+            total_size_bytes: cache.values().map(|b| b.data.len()).sum(),
         }
     }
 }
@@ -211,7 +213,7 @@ mod tests {
     async fn test_broadcast_variable() {
         let value = vec![1, 2, 3, 4, 5];
         let broadcast = BroadcastVariable::new(value.clone());
-        
+
         assert_eq!(broadcast.value(), &value);
         assert!(!broadcast.id().0.is_empty());
     }
@@ -220,10 +222,10 @@ mod tests {
     async fn test_serializable_broadcast() {
         let value = vec![1, 2, 3, 4, 5];
         let broadcast = BroadcastVariable::new(value.clone());
-        
+
         let serializable = SerializableBroadcast::from_broadcast(&broadcast).unwrap();
         let deserialized: BroadcastVariable<Vec<i32>> = serializable.to_broadcast().unwrap();
-        
+
         assert_eq!(deserialized.value(), &value);
         assert_eq!(deserialized.id(), broadcast.id());
     }
@@ -233,20 +235,20 @@ mod tests {
         let manager = BroadcastManager::new();
         let value = vec![1, 2, 3, 4, 5];
         let broadcast = BroadcastVariable::new(value.clone());
-        
+
         // Register broadcast
         manager.register_broadcast(&broadcast).await.unwrap();
-        
+
         // Get broadcast
         let retrieved = manager.get_broadcast(broadcast.id()).await.unwrap();
         let deserialized: BroadcastVariable<Vec<i32>> = retrieved.to_broadcast().unwrap();
         assert_eq!(deserialized.value(), &value);
-        
+
         // List broadcasts
         let broadcasts = manager.list_broadcasts().await;
         assert_eq!(broadcasts.len(), 1);
         assert_eq!(broadcasts[0], *broadcast.id());
-        
+
         // Remove broadcast
         assert!(manager.remove_broadcast(broadcast.id()).await);
         assert!(manager.get_broadcast(broadcast.id()).await.is_none());
@@ -258,23 +260,23 @@ mod tests {
         let value = vec![1, 2, 3, 4, 5];
         let broadcast = BroadcastVariable::new(value.clone());
         let serializable = SerializableBroadcast::from_broadcast(&broadcast).unwrap();
-        
+
         // Cache broadcast
         cache.cache_broadcast(serializable.clone()).await;
-        
+
         // Check if cached
         assert!(cache.contains(broadcast.id()).await);
-        
+
         // Get cached broadcast
         let retrieved = cache.get_broadcast(broadcast.id()).await.unwrap();
         let deserialized: BroadcastVariable<Vec<i32>> = retrieved.to_broadcast().unwrap();
         assert_eq!(deserialized.value(), &value);
-        
+
         // Get stats
         let stats = cache.stats().await;
         assert_eq!(stats.cached_broadcasts, 1);
         assert!(stats.total_size_bytes > 0);
-        
+
         // Remove from cache
         assert!(cache.remove_broadcast(broadcast.id()).await);
         assert!(!cache.contains(broadcast.id()).await);

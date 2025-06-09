@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Defines how an RDD should be cached
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum StorageLevel {
     /// No caching
     #[default]
@@ -77,7 +76,6 @@ impl StorageLevel {
         !matches!(self, StorageLevel::None)
     }
 }
-
 
 /// Cache statistics for monitoring
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

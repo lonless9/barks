@@ -79,26 +79,62 @@ impl<T: Data> RddBase for CachedRdd<T> {
         &self,
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
-        let _block_id = BlockId::new(self.id, partition.index());
+        let block_id = BlockId::new(self.id, partition.index());
 
-        // Try to get from cache first
-        // For now, we'll use a simple synchronous approach
-        // In a real implementation, this would be handled by the executor
-        let cached_data: Result<Option<Vec<T>>, anyhow::Error> = Ok(None); // Simplified for testing
+        // Note: This uses block_on because the Rdd::compute trait is synchronous,
+        // while the BlockManager is asynchronous. A future refactor could make the
+        // compute path fully async.
+        let cached_data = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // We're already in a tokio runtime, use spawn_blocking to avoid blocking the runtime
+            std::thread::scope(|s| {
+                let block_manager = self.block_manager.clone();
+                let block_id = block_id.clone();
+                let handle = s.spawn(move || handle.block_on(block_manager.get_block(&block_id)));
+                handle.join().unwrap()
+            })
+        } else {
+            // No runtime available, create a new one
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(self.block_manager.get_block(&block_id))
+        };
 
         match cached_data {
             Ok(Some(data)) => {
                 // Cache hit - return cached data
                 Ok(Box::new(data.into_iter()))
             }
-            Ok(None) | Err(_) => {
+            _ => {
                 // Cache miss - compute from parent and cache the result
                 let parent_data = self.parent.compute(partition)?;
                 let data: Vec<T> = parent_data.collect();
 
                 // Cache the computed data
-                // For now, we'll skip actual caching to avoid async issues in tests
-                // In a real implementation, this would be handled by the executor
+                let data_to_cache = data.clone();
+                let storage_level = self.storage_level;
+                let cache_result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    // We're already in a tokio runtime, use spawn_blocking to avoid blocking the runtime
+                    std::thread::scope(|s| {
+                        let block_manager = self.block_manager.clone();
+                        let handle = s.spawn(move || {
+                            handle.block_on(block_manager.cache_block(
+                                block_id,
+                                data_to_cache,
+                                storage_level,
+                            ))
+                        });
+                        handle.join().unwrap()
+                    })
+                } else {
+                    // No runtime available, create a new one
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(self.block_manager.cache_block(
+                        block_id,
+                        data_to_cache,
+                        storage_level,
+                    ))
+                };
+                cache_result
+                    .map_err(|e| crate::traits::RddError::ComputationError(e.to_string()))?;
 
                 Ok(Box::new(data.into_iter()))
             }
@@ -245,5 +281,30 @@ mod tests {
         // Should still work but will recompute
         let result = cached_rdd.collect().unwrap();
         assert_eq!(result, data);
+    }
+
+    #[tokio::test]
+    async fn test_cached_rdd_actually_caches() {
+        let data = vec![1, 2, 3, 4, 5];
+        let rdd = Arc::new(DistributedRdd::from_vec(data.clone()));
+
+        // Cache the RDD
+        let cached_rdd = rdd.cache();
+
+        // First access should populate cache
+        let result1 = cached_rdd.collect().unwrap();
+        assert_eq!(result1, data);
+
+        // Check that cache stats show activity
+        let stats = cached_rdd.cache_stats().await;
+        // The cache should have recorded some activity (hits or misses)
+        assert!(stats.hits > 0 || stats.misses > 0);
+
+        // Second access should hit cache
+        let result2 = cached_rdd.collect().unwrap();
+        assert_eq!(result2, data);
+
+        // Verify the results are identical
+        assert_eq!(result1, result2);
     }
 }
