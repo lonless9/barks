@@ -63,25 +63,34 @@ impl Partition for BasicPartition {
     }
 }
 
-/// Base trait for all RDDs, containing non-generic methods.
-pub trait RddBase: Send + Sync + Debug + Any {
-    type Item: Data;
-
-    /// Downcast self to a `&dyn Any`.
+/// Base trait for type-erased RDDs. This allows storing different RDDs in a dependency graph.
+pub trait IsRdd: Send + Sync + Debug + Any {
+    fn id(&self) -> usize;
+    fn dependencies(&self) -> Vec<Dependency>;
+    fn num_partitions(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
+
+    /// Create tasks for a given stage. This method allows type-erased task creation.
+    fn create_tasks_erased(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&ShuffleDependencyInfo>,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
+    ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
+}
+
+/// Base trait for all RDDs, containing generic methods.
+pub trait RddBase: IsRdd {
+    type Item: Data;
 
     /// Compute the elements of this RDD for the given partition
     fn compute(&self, partition: &dyn Partition)
     -> RddResult<Box<dyn Iterator<Item = Self::Item>>>;
-
-    /// Get the number of partitions
-    fn num_partitions(&self) -> usize;
-
-    /// Get dependencies of this RDD (for lineage tracking)
-    fn dependencies(&self) -> Vec<Dependency>;
-
-    /// Get a unique ID for this RDD.
-    fn id(&self) -> usize;
 
     /// Get the list of partitions for this RDD
     fn partitions(&self) -> Vec<Arc<dyn Partition>> {
@@ -106,6 +115,10 @@ pub trait RddBase: Send + Sync + Debug + Any {
             )>],
         >,
     ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
+
+    /// Helper method to get an Arc<dyn IsRdd> from an Arc<dyn RddBase>
+    /// This works around the lack of trait upcasting coercion in Rust
+    fn as_is_rdd(self: Arc<Self>) -> Arc<dyn IsRdd>;
 }
 
 /// A data type that can be used in an RDD.
@@ -121,10 +134,10 @@ impl<T> Data for T where
 /// Represents a dependency of an RDD on its parent(s).
 #[derive(Clone)]
 pub enum Dependency {
-    /// A narrow dependency on a parent RDD. The parent is stored as `Any` to handle different RDD types.
-    Narrow(Arc<dyn Any + Send + Sync>),
+    /// A narrow dependency on a parent RDD.
+    Narrow(Arc<dyn IsRdd>),
     /// A shuffle dependency, which marks a stage boundary. Holds the parent RDD and shuffle metadata.
-    Shuffle(Arc<dyn Any + Send + Sync>, ShuffleDependencyInfo),
+    Shuffle(Arc<dyn IsRdd>, ShuffleDependencyInfo),
 }
 
 /// Represents a shuffle dependency between RDDs

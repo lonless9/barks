@@ -142,15 +142,12 @@ impl DAGScheduler {
     /// Recursively creates parent stages for a given RDD.
     /// It traverses the RDD dependency graph backwards from the given RDD.
     /// A new stage is created at each shuffle boundary.
-    fn get_or_create_parent_stages<T>(
+    fn get_or_create_parent_stages_erased(
         &self,
-        rdd_base: Arc<dyn RddBase<Item = T>>,
+        rdd_base: Arc<dyn crate::traits::IsRdd>,
         job_id: &str,
         rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
-    ) -> Vec<Arc<Stage>>
-    where
-        T: crate::traits::Data,
-    {
+    ) -> Vec<Arc<Stage>> {
         let mut parents = Vec::new();
         let mut waiting = std::collections::VecDeque::new();
         waiting.push_back(rdd_base);
@@ -162,15 +159,9 @@ impl DAGScheduler {
                 let mut shuffle_parents = Vec::new();
                 for dep in rdd.dependencies() {
                     if let Dependency::Shuffle(parent_rdd_any, shuffle_info) = dep {
-                        // Downcast parent RDD to call `RddBase` methods
-                        let parent_rdd_base = parent_rdd_any
-                            .downcast_ref::<Arc<dyn RddBase<Item = T>>>()
-                            .expect("Parent RDD is not a valid RddBase object")
-                            .clone();
-
                         // Create a ShuffleMapStage for this parent.
-                        let shuffle_map_stage = self.get_or_create_shuffle_map_stage(
-                            parent_rdd_base,
+                        let shuffle_map_stage = self.get_or_create_shuffle_map_stage_erased(
+                            parent_rdd_any,
                             job_id,
                             shuffle_info,
                             rdd_to_stage,
@@ -178,11 +169,7 @@ impl DAGScheduler {
                         shuffle_parents.push(Arc::new(shuffle_map_stage.stage.clone()));
                     } else if let Dependency::Narrow(parent_rdd_any) = dep {
                         // Narrow dependency, so continue traversing up the same stage.
-                        let parent_rdd_base = parent_rdd_any
-                            .downcast_ref::<Arc<dyn RddBase<Item = T>>>()
-                            .expect("Parent RDD is not a valid RddBase object")
-                            .clone();
-                        waiting.push_back(parent_rdd_base);
+                        waiting.push_back(parent_rdd_any);
                     }
                 }
                 if !shuffle_parents.is_empty() {
@@ -193,23 +180,37 @@ impl DAGScheduler {
         parents
     }
 
-    /// Creates a `ShuffleMapStage` for a given shuffle dependency, or returns an existing one.
-    fn get_or_create_shuffle_map_stage<T>(
+    /// Recursively creates parent stages for a given RDD.
+    /// It traverses the RDD dependency graph backwards from the given RDD.
+    /// A new stage is created at each shuffle boundary.
+    fn get_or_create_parent_stages<T>(
         &self,
-        parent_rdd_base: Arc<dyn RddBase<Item = T>>,
+        rdd_base: Arc<dyn RddBase<Item = T>>,
         job_id: &str,
-        shuffle_dep: ShuffleDependencyInfo,
         rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
-    ) -> Arc<ShuffleMapStage>
+    ) -> Vec<Arc<Stage>>
     where
         T: crate::traits::Data,
     {
+        // Delegate to the type-erased version
+        self.get_or_create_parent_stages_erased(rdd_base.as_is_rdd(), job_id, rdd_to_stage)
+    }
+
+    /// Creates a `ShuffleMapStage` for a given shuffle dependency, or returns an existing one.
+    /// Type-erased version that works with `Arc<dyn IsRdd>`.
+    fn get_or_create_shuffle_map_stage_erased(
+        &self,
+        parent_rdd_base: Arc<dyn crate::traits::IsRdd>,
+        job_id: &str,
+        shuffle_dep: ShuffleDependencyInfo,
+        rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
+    ) -> Arc<ShuffleMapStage> {
         if let Some(cached_stage) = rdd_to_stage.get(&parent_rdd_base.id()) {
             return cached_stage.clone();
         }
 
         let parents =
-            self.get_or_create_parent_stages(parent_rdd_base.clone(), job_id, rdd_to_stage);
+            self.get_or_create_parent_stages_erased(parent_rdd_base.clone(), job_id, rdd_to_stage);
 
         let task_factory_rdd = parent_rdd_base.clone();
         let shuffle_dep_clone = shuffle_dep.clone();
@@ -229,7 +230,7 @@ impl DAGScheduler {
         > = Arc::new(move |stage_id, shuffle_info, map_output_info| {
             // For ShuffleMapStage, we pass the shuffle dependency info
             let shuffle_info = shuffle_info.or(Some(&shuffle_dep_clone));
-            task_factory_rdd.create_tasks(stage_id, shuffle_info, map_output_info)
+            task_factory_rdd.create_tasks_erased(stage_id, shuffle_info, map_output_info)
         });
 
         let stage = Stage {
@@ -253,6 +254,26 @@ impl DAGScheduler {
             parent_rdd_base.id()
         );
         shuffle_map_stage
+    }
+
+    /// Creates a `ShuffleMapStage` for a given shuffle dependency, or returns an existing one.
+    fn get_or_create_shuffle_map_stage<T>(
+        &self,
+        parent_rdd_base: Arc<dyn RddBase<Item = T>>,
+        job_id: &str,
+        shuffle_dep: ShuffleDependencyInfo,
+        rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
+    ) -> Arc<ShuffleMapStage>
+    where
+        T: crate::traits::Data,
+    {
+        // Delegate to the type-erased version
+        self.get_or_create_shuffle_map_stage_erased(
+            parent_rdd_base.as_is_rdd(),
+            job_id,
+            shuffle_dep,
+            rdd_to_stage,
+        )
     }
 
     fn new_stage_id(&self) -> usize {

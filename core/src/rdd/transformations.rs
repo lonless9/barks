@@ -3,7 +3,7 @@
 use crate::operations::RddDataType;
 use crate::rdd::{CogroupedRdd, JoinedRdd, ShuffledRdd, SortedRdd};
 use crate::shuffle::{Aggregator, Partitioner, ReduceAggregator};
-use crate::traits::{Data, RddBase};
+use crate::traits::{Data, IsRdd, RddBase};
 use std::sync::Arc;
 
 /// An extension trait for RDDs of key-value pairs.

@@ -3,7 +3,7 @@
 use barks_core::rdd::DistributedRdd;
 use barks_core::rdd::transformations::PairRdd;
 use barks_core::shuffle::{HashPartitioner, ReduceAggregator};
-use barks_core::traits::RddBase;
+use barks_core::traits::IsRdd;
 use std::sync::Arc;
 
 #[test]

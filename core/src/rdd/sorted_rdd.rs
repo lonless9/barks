@@ -2,9 +2,8 @@
 
 use crate::shuffle::{Partitioner, RangePartitioner};
 use crate::traits::{
-    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+    Data, Dependency, IsRdd, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// SortedRdd represents an RDD that has been sorted by key.
@@ -49,15 +48,57 @@ where
     }
 }
 
+impl<K: Data, V: Data> crate::traits::IsRdd for SortedRdd<K, V>
+where
+    K: Ord + std::fmt::Debug + std::hash::Hash,
+{
+    fn dependencies(&self) -> Vec<Dependency> {
+        // Sort creates a shuffle dependency on the parent RDD
+        vec![Dependency::Shuffle(
+            self.parent.clone().as_is_rdd(),
+            ShuffleDependencyInfo {
+                shuffle_id: self.id,
+                num_partitions: self.partitioner.num_partitions(),
+                partitioner_type: PartitionerType::Range {
+                    num_partitions: self.partitioner.num_partitions(),
+                },
+            },
+        )]
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.partitioner.num_partitions() as usize
+    }
+
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn create_tasks_erased(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // Delegate to the RddBase implementation
+        self.create_tasks(stage_id, shuffle_info, map_output_info)
+    }
+}
+
 impl<K: Data, V: Data> RddBase for SortedRdd<K, V>
 where
     K: Ord + std::fmt::Debug + std::hash::Hash,
 {
     type Item = (K, V);
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 
     fn compute(
         &self,
@@ -98,32 +139,6 @@ where
         }
 
         Ok(Box::new(partition_data.into_iter()))
-    }
-
-    fn num_partitions(&self) -> usize {
-        self.partitioner.num_partitions() as usize
-    }
-
-    fn dependencies(&self) -> Vec<Dependency> {
-        // Sort creates a shuffle dependency on the parent RDD
-        vec![Dependency::Shuffle(
-            unsafe {
-                std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
-                    self.parent.clone(),
-                )
-            },
-            ShuffleDependencyInfo {
-                shuffle_id: self.id,
-                num_partitions: self.partitioner.num_partitions(),
-                partitioner_type: PartitionerType::Range {
-                    num_partitions: self.partitioner.num_partitions(),
-                },
-            },
-        )]
-    }
-
-    fn id(&self) -> usize {
-        self.id
     }
 
     fn create_tasks(
@@ -167,6 +182,10 @@ where
 
         // Try to create tasks for supported type combinations
         self.create_typed_sort_tasks(shuffle_id, &map_locations)
+    }
+
+    fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
+        self
     }
 }
 

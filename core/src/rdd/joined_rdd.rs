@@ -2,9 +2,8 @@
 
 use crate::shuffle::Partitioner;
 use crate::traits::{
-    Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
+    Data, Dependency, IsRdd, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Type alias for cogrouped data to reduce type complexity
@@ -36,15 +35,71 @@ impl<K: Data, V: Data, W: Data> JoinedRdd<K, V, W> {
     }
 }
 
+impl<K: Data, V: Data, W: Data> crate::traits::IsRdd for JoinedRdd<K, V, W>
+where
+    K: std::hash::Hash + Eq,
+{
+    fn dependencies(&self) -> Vec<Dependency> {
+        // Join creates shuffle dependencies on both parent RDDs
+        vec![
+            Dependency::Shuffle(
+                self.left_rdd.clone().as_is_rdd(),
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id,
+                    num_partitions: self.partitioner.num_partitions(),
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
+                },
+            ),
+            Dependency::Shuffle(
+                self.right_rdd.clone().as_is_rdd(),
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
+                    num_partitions: self.partitioner.num_partitions(),
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
+                },
+            ),
+        ]
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.partitioner.num_partitions() as usize
+    }
+
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn create_tasks_erased(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // Delegate to the RddBase implementation
+        self.create_tasks(stage_id, shuffle_info, map_output_info)
+    }
+}
+
 impl<K: Data, V: Data, W: Data> RddBase for JoinedRdd<K, V, W>
 where
     K: std::hash::Hash + Eq,
 {
     type Item = (K, (V, W));
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 
     fn compute(
         &self,
@@ -95,50 +150,6 @@ where
         Ok(Box::new(joined_data.into_iter()))
     }
 
-    fn num_partitions(&self) -> usize {
-        self.partitioner.num_partitions() as usize
-    }
-
-    fn dependencies(&self) -> Vec<Dependency> {
-        // Join creates shuffle dependencies on both parent RDDs
-        vec![
-            Dependency::Shuffle(
-                unsafe {
-                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
-                        self.left_rdd.clone(),
-                    )
-                },
-                ShuffleDependencyInfo {
-                    shuffle_id: self.id,
-                    num_partitions: self.partitioner.num_partitions(),
-                    partitioner_type: PartitionerType::Hash {
-                        num_partitions: self.partitioner.num_partitions(),
-                        seed: 0,
-                    },
-                },
-            ),
-            Dependency::Shuffle(
-                unsafe {
-                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, W)>>, Arc<dyn Any + Send + Sync>>(
-                        self.right_rdd.clone(),
-                    )
-                },
-                ShuffleDependencyInfo {
-                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
-                    num_partitions: self.partitioner.num_partitions(),
-                    partitioner_type: PartitionerType::Hash {
-                        num_partitions: self.partitioner.num_partitions(),
-                        seed: 0,
-                    },
-                },
-            ),
-        ]
-    }
-
-    fn id(&self) -> usize {
-        self.id
-    }
-
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
@@ -159,6 +170,10 @@ where
             Use CogroupedRdd directly and filter the results for join semantics."
                 .to_string(),
         ))
+    }
+
+    fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
+        self
     }
 }
 
@@ -204,15 +219,71 @@ impl<K: Data, V: Data, W: Data> CogroupedRdd<K, V, W> {
     }
 }
 
+impl<K: Data, V: Data, W: Data> crate::traits::IsRdd for CogroupedRdd<K, V, W>
+where
+    K: std::hash::Hash + Eq,
+{
+    fn dependencies(&self) -> Vec<Dependency> {
+        // Cogroup creates shuffle dependencies on both parent RDDs
+        vec![
+            Dependency::Shuffle(
+                self.left_rdd.clone().as_is_rdd(),
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id,
+                    num_partitions: self.partitioner.num_partitions(),
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
+                },
+            ),
+            Dependency::Shuffle(
+                self.right_rdd.clone().as_is_rdd(),
+                ShuffleDependencyInfo {
+                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
+                    num_partitions: self.partitioner.num_partitions(),
+                    partitioner_type: PartitionerType::Hash {
+                        num_partitions: self.partitioner.num_partitions(),
+                        seed: 0,
+                    },
+                },
+            ),
+        ]
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.partitioner.num_partitions() as usize
+    }
+
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn create_tasks_erased(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // Delegate to the RddBase implementation
+        self.create_tasks(stage_id, shuffle_info, map_output_info)
+    }
+}
+
 impl<K: Data, V: Data, W: Data> RddBase for CogroupedRdd<K, V, W>
 where
     K: std::hash::Hash + Eq,
 {
     type Item = (K, (Vec<V>, Vec<W>));
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 
     fn compute(
         &self,
@@ -264,50 +335,6 @@ where
             .collect();
 
         Ok(Box::new(cogrouped_data.into_iter()))
-    }
-
-    fn num_partitions(&self) -> usize {
-        self.partitioner.num_partitions() as usize
-    }
-
-    fn dependencies(&self) -> Vec<Dependency> {
-        // Cogroup creates shuffle dependencies on both parent RDDs
-        vec![
-            Dependency::Shuffle(
-                unsafe {
-                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
-                        self.left_rdd.clone(),
-                    )
-                },
-                ShuffleDependencyInfo {
-                    shuffle_id: self.id,
-                    num_partitions: self.partitioner.num_partitions(),
-                    partitioner_type: PartitionerType::Hash {
-                        num_partitions: self.partitioner.num_partitions(),
-                        seed: 0,
-                    },
-                },
-            ),
-            Dependency::Shuffle(
-                unsafe {
-                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, W)>>, Arc<dyn Any + Send + Sync>>(
-                        self.right_rdd.clone(),
-                    )
-                },
-                ShuffleDependencyInfo {
-                    shuffle_id: self.id + 1, // Different shuffle ID for right RDD
-                    num_partitions: self.partitioner.num_partitions(),
-                    partitioner_type: PartitionerType::Hash {
-                        num_partitions: self.partitioner.num_partitions(),
-                        seed: 0,
-                    },
-                },
-            ),
-        ]
-    }
-
-    fn id(&self) -> usize {
-        self.id
     }
 
     fn create_tasks(
@@ -362,6 +389,10 @@ where
             vec![self.id as u32, (self.id + 1) as u32],
             vec![left_map_locations, right_map_locations],
         )
+    }
+
+    fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
+        self
     }
 }
 

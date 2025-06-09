@@ -5,7 +5,7 @@
 
 use crate::distributed::task::ShuffleMapTask;
 use crate::operations::RddDataType;
-use crate::traits::{BasicPartition, Partition};
+use crate::traits::{BasicPartition, Partition, RddBase};
 use bumpalo::Bump;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -438,26 +438,8 @@ impl<T: RddDataType> DistributedRdd<T> {
     }
 }
 
-// Implement RddBase trait for DistributedRdd to support shuffle operations
-impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
-    type Item = T;
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn compute(
-        &self,
-        partition: &dyn crate::traits::Partition,
-    ) -> crate::traits::RddResult<Box<dyn Iterator<Item = T>>> {
-        let data = self.compute(partition)?;
-        Ok(Box::new(data.into_iter()))
-    }
-
-    fn num_partitions(&self) -> usize {
-        self.num_partitions()
-    }
-
+// Implement IsRdd trait for DistributedRdd to support type-erased operations
+impl<T: RddDataType> crate::traits::IsRdd for DistributedRdd<T> {
     fn dependencies(&self) -> Vec<crate::traits::Dependency> {
         // Return appropriate dependencies based on the RDD type
         match self {
@@ -467,13 +449,15 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             }
             Self::Map { parent, .. } | Self::Filter { parent, .. } => {
                 // A narrow dependency on the parent RDD.
-                vec![crate::traits::Dependency::Narrow(parent.clone())]
+                vec![crate::traits::Dependency::Narrow(
+                    parent.clone().as_is_rdd(),
+                )]
             }
             Self::Union { left, right } => {
                 // Union has narrow dependencies on both parent RDDs
                 vec![
-                    crate::traits::Dependency::Narrow(left.clone()),
-                    crate::traits::Dependency::Narrow(right.clone()),
+                    crate::traits::Dependency::Narrow(left.clone().as_is_rdd()),
+                    crate::traits::Dependency::Narrow(right.clone().as_is_rdd()),
                 ]
             }
             Self::Distinct {
@@ -490,11 +474,15 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
                     },
                 };
                 vec![crate::traits::Dependency::Shuffle(
-                    parent.clone(),
+                    parent.clone().as_is_rdd(),
                     shuffle_info,
                 )]
             }
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     fn id(&self) -> usize {
@@ -535,6 +523,38 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             }
         }
         hasher.finish() as usize
+    }
+
+    fn num_partitions(&self) -> usize {
+        self.num_partitions()
+    }
+
+    fn create_tasks_erased(
+        &self,
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>,
+        map_output_info: Option<
+            &[Vec<(
+                barks_network_shuffle::traits::MapStatus,
+                crate::distributed::types::ExecutorInfo,
+            )>],
+        >,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // Delegate to the RddBase implementation
+        self.create_tasks(stage_id, shuffle_info, map_output_info)
+    }
+}
+
+// Implement RddBase trait for DistributedRdd to support shuffle operations
+impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
+    type Item = T;
+
+    fn compute(
+        &self,
+        partition: &dyn crate::traits::Partition,
+    ) -> crate::traits::RddResult<Box<dyn Iterator<Item = T>>> {
+        let data = self.compute(partition)?;
+        Ok(Box::new(data.into_iter()))
     }
 
     fn create_tasks(
@@ -604,6 +624,10 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
         }
 
         Ok(tasks)
+    }
+
+    fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
+        self
     }
 }
 
