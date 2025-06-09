@@ -9,7 +9,8 @@ repository.workspace = true
 [dependencies]
 barks-core = { path = "../core" }
 barks-network-shuffle = { path = "../common/network-shuffle" }
-# barks-sql-core = { path = "../sql/core" }
+barks-sql-core = { path = "../sql/core" }
+barks-sql-api = { path = "../sql/api" }
 # barks-streaming = { path = "../streaming" }
 # barks-mllib-local = { path = "../mllib/local" }
 # barks-graphx = { path = "../graphx" }
@@ -22,10 +23,16 @@ bincode.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tempfile.workspace = true
+datafusion.workspace = true
+arrow.workspace = true
 
 [[bin]]
 name = "local_rdd_api"
 path = "local_rdd_api.rs"
+
+[[bin]]
+name = "sql_datafusion_example"
+path = "sql_datafusion_example.rs"
 
 # Disabled until shuffle functionality is implemented
 # [[bin]]

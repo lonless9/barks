@@ -3,9 +3,9 @@ resolver = "3" # default in edition 2024
 members = [
     "common/*",
     "core",
-    # "sql/api",
-    # "sql/catalyst",
-    # "sql/core",
+    "sql/api",
+    "sql/catalyst",
+    "sql/core",
     # "sql/hive",
     # "sql/connect/*",
     # "streaming",
@@ -84,3 +84,7 @@ tempfile = "3.0"
 
 # persistent storage
 rusty-leveldb = "3.0.3"
+
+# SQL query engine
+datafusion = { version = "43.0", features = ["default"] }
+arrow = "53.0"
