@@ -344,6 +344,9 @@ impl DistributedContext {
                 let mut waiting: HashSet<usize> = HashSet::new();
                 let mut running: HashSet<usize> = HashSet::new();
                 let mut completed_map_outputs: HashMap<usize, Vec<MapStatus>> = HashMap::new();
+                // This map will store the (MapStatus, ExecutorInfo) for each map task, needed for shuffle dependencies.
+                let mut stage_output_locations: HashMap<usize, Vec<(MapStatus, ExecutorInfo)>> =
+                    HashMap::new();
                 let mut failed_attempts: HashMap<usize, u32> = HashMap::new(); // stage_id -> attempt_count
 
                 // Helper to traverse the stage graph and populate `all_stages`.
@@ -395,12 +398,28 @@ impl DistributedContext {
                         // Create tasks for the stage. This needs parent results for shuffle dependencies.
                         // Note: The downcast here assumes the RDD item type is consistent, a limitation of the current design.
 
-                        // TODO: Properly construct map_output_info from completed_map_outputs and executor information
-                        // For now, pass None as a placeholder. A full implementation would need to:
-                        // 1. Track which executor ran each map task
-                        // 2. Combine MapStatus with ExecutorInfo for each parent stage
-                        // 3. Pass this information to create_tasks for shuffle dependencies
-                        let map_output_info = None;
+                        // Correctly construct map_output_info for shuffle dependencies.
+                        let parent_locations: Vec<Vec<(MapStatus, ExecutorInfo)>> = stage
+                            .parents
+                            .iter()
+                            .map(|p| {
+                                stage_output_locations
+                                    .get(&p.id)
+                                    .cloned()
+                                    .unwrap_or_default()
+                            })
+                            .collect();
+
+                        // If the stage has shuffle dependencies, it needs the parent locations.
+                        let map_output_info = if stage
+                            .parents
+                            .iter()
+                            .any(|p| completed_map_outputs.contains_key(&p.id))
+                        {
+                            Some(parent_locations.as_slice())
+                        } else {
+                            None
+                        };
 
                         let tasks = stage
                             .rdd
@@ -408,7 +427,9 @@ impl DistributedContext {
                             .unwrap()
                             .create_tasks(stage_id_str.clone(), map_output_info)?;
 
-                        let mut futures = Vec::new();
+                        // Store task futures along with their executor IDs for result processing
+                        let mut task_completion_futures = Vec::new();
+
                         for (i, task) in tasks.into_iter().enumerate() {
                             let task_id = format!("task-{}-{}", stage_id_str, i);
                             // TODO: Determine preferred locations based on shuffle dependency outputs.
@@ -418,14 +439,19 @@ impl DistributedContext {
                                 .map_err(|e| {
                                     RddError::ContextError(format!("Failed to submit task: {}", e))
                                 })?;
-                            futures.push(future);
+                            // We need to associate the future with its task for later result processing.
+                            task_completion_futures.push(future);
                         }
 
-                        let mut task_results = Vec::new();
                         let mut stage_failed = false;
-                        for future in futures {
+                        // Store results with the executor info that produced them.
+                        let mut task_results_with_executors: Vec<(
+                            crate::distributed::driver::TaskResult,
+                            ExecutorInfo,
+                        )> = Vec::new();
+                        for future in task_completion_futures {
                             match future.await {
-                                Ok((result, _)) => {
+                                Ok((result, exec_id)) => {
                                     if let crate::distributed::driver::TaskResult::Failure(err) =
                                         &result
                                     {
@@ -436,7 +462,12 @@ impl DistributedContext {
                                         stage_failed = true;
                                         break;
                                     }
-                                    task_results.push(result);
+                                    // Find the executor info for the successful task
+                                    if let Some(exec_info) =
+                                        driver.get_executor_info(&exec_id).await
+                                    {
+                                        task_results_with_executors.push((result, exec_info));
+                                    }
                                 }
                                 Err(e) => {
                                     error!("Task future failed for stage {}: {}", stage.id, e);
@@ -471,6 +502,7 @@ impl DistributedContext {
                             while let Some(s_id) = q.pop_front() {
                                 waiting.insert(s_id);
                                 completed_map_outputs.remove(&s_id); // Invalidate parent results
+                                stage_output_locations.remove(&s_id); // Invalidate stage output locations
                                 if let Some(s) = all_stages.get(&s_id) {
                                     for p in &s.parents {
                                         q.push_back(p.id);
@@ -481,9 +513,10 @@ impl DistributedContext {
                             // Stage succeeded. Process results.
                             let is_final_stage = stage.id == final_stage.stage.id;
                             if is_final_stage {
-                                let collected_results = task_results
+                                // This is the final stage, collect the results and return.
+                                let collected_results = task_results_with_executors
                                     .iter()
-                                    .flat_map(|task_result| match task_result {
+                                    .flat_map(|(task_result, _)| match task_result {
                                         crate::distributed::driver::TaskResult::Success(bytes) => {
                                             let (partition_result, _): (Vec<T>, _) =
                                                 bincode::decode_from_slice(
@@ -498,26 +531,35 @@ impl DistributedContext {
                                     .collect();
                                 return Ok(collected_results);
                             } else {
-                                // It's a ShuffleMapStage, collect MapStatus
-                                let map_statuses = task_results
-                                    .into_iter()
-                                    .map(|r| {
-                                        match r {
-                                            crate::distributed::driver::TaskResult::Success(
-                                                bytes,
-                                            ) => {
-                                                bincode::decode_from_slice(
-                                                    &bytes,
-                                                    bincode::config::standard(),
-                                                )
-                                                .unwrap()
-                                                .0
+                                // This is a ShuffleMapStage. Collect MapStatus and ExecutorInfo.
+                                let stage_outputs: Vec<(MapStatus, ExecutorInfo)> =
+                                    task_results_with_executors
+                                        .into_iter()
+                                        .map(|(result, exec_info)| {
+                                            match result {
+                                                crate::distributed::driver::TaskResult::Success(
+                                                    bytes,
+                                                ) => {
+                                                    let (map_status, _): (MapStatus, _) =
+                                                        bincode::decode_from_slice(
+                                                            &bytes,
+                                                            bincode::config::standard(),
+                                                        )
+                                                        .expect("Failed to deserialize MapStatus");
+                                                    (map_status, exec_info)
+                                                }
+                                                _ => unreachable!(), // Failures are handled above
                                             }
-                                            _ => unreachable!(), // Failures are handled above
-                                        }
-                                    })
-                                    .collect();
-                                completed_map_outputs.insert(stage.id, map_statuses);
+                                        })
+                                        .collect();
+
+                                // Store map statuses without executor info for simple completion tracking
+                                completed_map_outputs.insert(
+                                    stage.id,
+                                    stage_outputs.iter().map(|(s, _)| s.clone()).collect(),
+                                );
+                                // Store map statuses WITH executor info for passing to child stages
+                                stage_output_locations.insert(stage.id, stage_outputs);
                             }
                         }
                     }
