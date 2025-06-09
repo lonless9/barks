@@ -389,18 +389,20 @@ impl ExecutorService for ExecutorServiceImpl {
 
         info!("Received request to clean up shuffle {}", shuffle_id);
 
-        // For now, we'll just return success since we don't have access to the shuffle block manager here
-        // In a real implementation, we would need to pass the block manager to the executor service
-        // or implement a cleanup mechanism through the executor
-        Ok(Response::new(
-            super::proto::executor::CleanupShuffleResponse {
-                success: true,
-                message: format!(
-                    "Shuffle {} cleanup requested (placeholder implementation).",
-                    shuffle_id
-                ),
-            },
-        ))
+        match self.block_manager.remove_shuffle(shuffle_id).await {
+            Ok(_) => Ok(Response::new(
+                super::proto::executor::CleanupShuffleResponse {
+                    success: true,
+                    message: format!("Successfully cleaned up shuffle {}", shuffle_id),
+                },
+            )),
+            Err(e) => Ok(Response::new(
+                super::proto::executor::CleanupShuffleResponse {
+                    success: false,
+                    message: format!("Failed to clean up shuffle {}: {}", shuffle_id, e),
+                },
+            )),
+        }
     }
 }
 

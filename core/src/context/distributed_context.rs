@@ -345,13 +345,22 @@ impl DistributedContext {
                 let mut stage_output_locations: HashMap<usize, Vec<(MapStatus, ExecutorInfo)>> =
                     HashMap::new();
                 let mut failed_attempts: HashMap<usize, u32> = HashMap::new(); // stage_id -> attempt_count
-                let shuffle_ids_to_cleanup: HashSet<u32> = HashSet::new(); // Track shuffle IDs for cleanup
+                let mut shuffle_ids_to_cleanup: HashSet<u32> = HashSet::new(); // Track shuffle IDs for cleanup
 
                 // Helper to traverse the stage graph and populate `all_stages`.
                 let mut q = VecDeque::new();
                 q.push_back(Arc::new(final_stage.stage.clone()));
                 all_stages.insert(final_stage.stage.id, Arc::new(final_stage.stage.clone()));
+
                 while let Some(s) = q.pop_front() {
+                    // Collect shuffle IDs for cleanup
+                    if let Some(shuffle_dep) = &s.shuffle_dependency {
+                        // Assuming shuffle_id from ShuffleDependencyInfo is the one to clean up.
+                        // Note: The shuffle_id is usize, but cleanup function expects u32.
+                        // This is safe as shuffle IDs are not expected to exceed u32::MAX.
+                        shuffle_ids_to_cleanup.insert(shuffle_dep.shuffle_id as u32);
+                    }
+
                     for parent in &s.parents {
                         if all_stages.insert(parent.id, parent.clone()).is_none() {
                             q.push_back(parent.clone());

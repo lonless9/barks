@@ -107,6 +107,9 @@ pub trait ShuffleBlockManager: Send + Sync {
 
     /// Get block size
     async fn get_block_size(&self, block_id: &ShuffleBlockId) -> Result<u64>;
+
+    /// Removes all files and directories associated with a given shuffle_id.
+    async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()>;
 }
 
 /// Shuffle block identifier

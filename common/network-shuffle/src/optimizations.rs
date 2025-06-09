@@ -161,19 +161,19 @@ impl ShuffleBlockManager for OptimizedShuffleBlockManager {
         let path = self.get_block_path(block_id);
         Ok(fs::metadata(&path).await?.len())
     }
-}
 
-impl OptimizedShuffleBlockManager {
     /// Removes all files and directories associated with a given shuffle_id.
     /// This is useful for cleaning up after a job is finished.
-    pub async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
+    async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
         let shuffle_dir = self.root_dir.join(shuffle_id.to_string());
         if fs::try_exists(&shuffle_dir).await? {
             fs::remove_dir_all(&shuffle_dir).await?;
         }
         Ok(())
     }
+}
 
+impl OptimizedShuffleBlockManager {
     /// Get statistics about shuffle storage usage
     pub async fn get_shuffle_stats(&self, shuffle_id: u32) -> Result<ShuffleStats> {
         let shuffle_dir = self.root_dir.join(shuffle_id.to_string());

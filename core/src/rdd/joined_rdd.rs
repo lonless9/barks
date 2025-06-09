@@ -152,24 +152,26 @@ where
 
     fn create_tasks(
         &self,
-        _stage_id: crate::distributed::types::StageId,
-        _shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>, // This can be ignored here
-        _map_output_info: Option<
+        stage_id: crate::distributed::types::StageId,
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>, // This can be ignored here
+        map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,
                 crate::distributed::types::ExecutorInfo,
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // JoinedRdd is built on top of CogroupedRdd, so we can use the same approach.
-        // For now, we'll return an error indicating that joins need to be implemented
-        // as a post-processing step after cogroup.
-        Err(crate::traits::RddError::TaskCreationError(
-            "JoinedRdd task creation is not yet implemented. \
-            Joins should be implemented as a post-processing step after cogroup operations. \
-            Use CogroupedRdd directly and filter the results for join semantics."
-                .to_string(),
-        ))
+        // JoinedRdd is built on top of CogroupedRdd. We create a temporary CogroupedRdd
+        // and delegate task creation to it. The join semantics are handled in the task execution.
+        let cogroup_rdd = CogroupedRdd::new(
+            self.id,
+            self.left_rdd.clone(),
+            self.right_rdd.clone(),
+            self.partitioner.clone(),
+        );
+
+        // Delegate to CogroupedRdd's task creation
+        cogroup_rdd.create_tasks(stage_id, shuffle_info, map_output_info)
     }
 
     fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {

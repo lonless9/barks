@@ -104,6 +104,12 @@ impl ShuffleBlockManager for MemoryShuffleManager {
         let blocks = self.blocks.read().await;
         Ok(blocks.get(block_id).map(|d| d.len() as u64).unwrap_or(0))
     }
+
+    async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
+        let mut blocks = self.blocks.write().await;
+        blocks.retain(|block_id, _| block_id.shuffle_id != shuffle_id);
+        Ok(())
+    }
 }
 
 /// File-based shuffle block manager
@@ -167,12 +173,10 @@ impl ShuffleBlockManager for FileShuffleBlockManager {
             Err(e) => Err(e.into()),
         }
     }
-}
 
-impl FileShuffleBlockManager {
     /// Removes all files and directories associated with a given shuffle_id.
     /// This is useful for cleaning up after a job is finished.
-    pub async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
+    async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
         let shuffle_dir = self.root_dir.join(shuffle_id.to_string());
         if fs::try_exists(&shuffle_dir).await? {
             fs::remove_dir_all(&shuffle_dir).await?;
