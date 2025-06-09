@@ -38,6 +38,10 @@ path = "sql_datafusion_example.rs"
 name = "string_tuple_demo"
 path = "string_tuple_demo.rs"
 
+[[bin]]
+name = "distributed_sql_example"
+path = "distributed_sql_example.rs"
+
 # Disabled until shuffle functionality is implemented
 # [[bin]]
 # name = "shuffle_api"

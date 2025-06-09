@@ -616,6 +616,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "barks-core",
+ "barks-network-shuffle",
  "barks-sql-core",
  "barks-utils",
  "datafusion",
@@ -624,6 +625,8 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.12",
  "tokio",
+ "tracing",
+ "typetag",
  "uuid",
 ]
 
