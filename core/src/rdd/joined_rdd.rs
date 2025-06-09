@@ -160,19 +160,13 @@ where
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // JoinedRdd is built on top of CogroupedRdd, so it has the same implementation challenges.
-        // The join operation would:
-        // 1. Use CoGroupTask to cogroup the two parent RDDs
-        // 2. Apply join logic to filter out keys that don't exist in both sides
-        // 3. Flatten the result to produce (K, (V, W)) tuples
-        //
-        // For now, we'll return the same error as CogroupedRdd since they share the same
-        // underlying implementation requirements.
+        // JoinedRdd is built on top of CogroupedRdd, so we can use the same approach.
+        // For now, we'll return an error indicating that joins need to be implemented
+        // as a post-processing step after cogroup.
         Err(crate::traits::RddError::TaskCreationError(
-            "JoinedRdd task creation requires type-specific implementation. \
-            JoinedRdd is built on CoGroupTask which needs to be instantiated with the \
-            correct generic types that match the RDD's K, V, W parameters. This is a \
-            known limitation that requires architectural improvements to the task system."
+            "JoinedRdd task creation is not yet implemented. \
+            Joins should be implemented as a post-processing step after cogroup operations. \
+            Use CogroupedRdd directly and filter the results for join semantics."
                 .to_string(),
         ))
     }
@@ -361,27 +355,33 @@ where
             )));
         }
 
-        // For now, we'll return an error indicating this needs to be implemented
-        // with proper type handling. The CoGroupTask needs to be created with the
-        // correct generic types that match K, V, W.
-        //
-        // The challenge is that we need to create CoGroupTask<K, V, C, A> where:
-        // - K, V come from the generic parameters of CogroupedRdd
-        // - C, A need to be determined based on the aggregation operation
-        //
-        // This requires either:
-        // 1. Making CoGroupTask work with trait objects instead of generics
-        // 2. Using macros to generate type-specific implementations
-        // 3. Implementing a type registry system
-        //
-        // For the TODO0 implementation, we'll mark this as requiring further work.
-        Err(crate::traits::RddError::TaskCreationError(
-            "CogroupedRdd task creation requires type-specific implementation. \
-            The CoGroupTask needs to be instantiated with the correct generic types \
-            that match the RDD's K, V, W parameters. This is a known limitation \
-            that requires architectural improvements to the task system."
-                .to_string(),
-        ))
+        // Extract map locations from both shuffle dependencies
+        let left_map_info = &map_output_info[0];
+        let right_map_info = &map_output_info[1];
+
+        let left_map_locations: Vec<(String, u32)> = left_map_info
+            .iter()
+            .enumerate()
+            .map(|(map_id, (_map_status, exec_info))| {
+                let shuffle_addr = format!("{}:{}", exec_info.host, exec_info.shuffle_port);
+                (shuffle_addr, map_id as u32)
+            })
+            .collect();
+
+        let right_map_locations: Vec<(String, u32)> = right_map_info
+            .iter()
+            .enumerate()
+            .map(|(map_id, (_map_status, exec_info))| {
+                let shuffle_addr = format!("{}:{}", exec_info.host, exec_info.shuffle_port);
+                (shuffle_addr, map_id as u32)
+            })
+            .collect();
+
+        // Try to create tasks for supported type combinations
+        self.create_typed_cogroup_tasks(
+            vec![self.id as u32, (self.id + 1) as u32],
+            vec![left_map_locations, right_map_locations],
+        )
     }
 }
 
@@ -389,6 +389,61 @@ impl<K: Data, V: Data, W: Data> CogroupedRdd<K, V, W>
 where
     K: std::hash::Hash + Eq,
 {
+    /// Helper method to create tasks for supported type combinations
+    fn create_typed_cogroup_tasks(
+        &self,
+        shuffle_ids: Vec<u32>,
+        map_locations: Vec<Vec<(String, u32)>>,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        use crate::distributed::task::CoGroupTask;
+        use crate::shuffle::ReduceAggregator;
+
+        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
+
+        // Check for String -> i32 -> String (most common case)
+        if self
+            .as_any()
+            .downcast_ref::<CogroupedRdd<String, i32, String>>()
+            .is_some()
+        {
+            for i in 0..self.num_partitions() {
+                let task = CoGroupTask::<String, i32, i32, ReduceAggregator<i32>>::new(
+                    shuffle_ids.clone(),
+                    i as u32,
+                    map_locations.clone(),
+                    Vec::new(), // Empty aggregator data for cogroup
+                );
+                tasks.push(Box::new(task));
+            }
+            return Ok(tasks);
+        }
+
+        // Check for i32 -> String -> i32
+        if self
+            .as_any()
+            .downcast_ref::<CogroupedRdd<i32, String, i32>>()
+            .is_some()
+        {
+            for i in 0..self.num_partitions() {
+                let task = CoGroupTask::<i32, String, String, ReduceAggregator<String>>::new(
+                    shuffle_ids.clone(),
+                    i as u32,
+                    map_locations.clone(),
+                    Vec::new(), // Empty aggregator data for cogroup
+                );
+                tasks.push(Box::new(task));
+            }
+            return Ok(tasks);
+        }
+
+        // If no supported type combination is found, return an error
+        Err(crate::traits::RddError::ContextError(format!(
+            "Task creation for CogroupedRdd with item type {:?} is not supported yet. \
+            Supported combinations: (String, i32, String), (i32, String, i32)",
+            std::any::type_name::<<Self as crate::traits::RddBase>::Item>()
+        )))
+    }
+
     /// Collect all elements from all partitions into a vector
     pub fn collect(&self) -> crate::traits::RddResult<CogroupedData<K, V, W>> {
         let mut result = Vec::new();

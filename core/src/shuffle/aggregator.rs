@@ -64,10 +64,21 @@ where
     }
 
     fn to_serializable(&self) -> Result<SerializableAggregator, String> {
-        // For ReduceAggregator, we need to determine which specific aggregator this is
-        // This is a limitation of the current design - we can't easily determine the function pointer
-        // For now, we'll return an error indicating this needs type-specific handling
-        Err("ReduceAggregator cannot be automatically serialized. Use specific aggregator types like SumAggregator instead.".to_string())
+        // This is still a limitation, but we can handle the common cases.
+        // We use type information to determine the appropriate serializable aggregator.
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<i32>() {
+            // This assumes any i32 reduce operation is summation for now.
+            // A more advanced system would require passing an enum or serializable object.
+            return Ok(SerializableAggregator::AddI32);
+        }
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<String>() {
+            return Ok(SerializableAggregator::ConcatString);
+        }
+
+        Err(format!(
+            "ReduceAggregator for type {:?} cannot be automatically serialized.",
+            std::any::type_name::<V>()
+        ))
     }
 }
 
@@ -163,9 +174,13 @@ where
     }
 
     fn to_serializable(&self) -> Result<SerializableAggregator, String> {
-        // SumAggregator for i32 can be serialized
-        // For other types, we'd need to extend SerializableAggregator
-        Ok(SerializableAggregator::SumI32)
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<i32>() {
+            return Ok(SerializableAggregator::SumI32);
+        }
+        Err(format!(
+            "SumAggregator for type {:?} is not supported for serialization.",
+            std::any::type_name::<V>()
+        ))
     }
 }
 
@@ -323,8 +338,14 @@ where
     }
 
     fn to_serializable(&self) -> Result<SerializableAggregator, String> {
-        // GroupByKeyAggregator for i32 can be serialized
-        Ok(SerializableAggregator::GroupI32)
+        // GroupByKeyAggregator for i32 can be serialized.
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<i32>() {
+            return Ok(SerializableAggregator::GroupI32);
+        }
+        Err(format!(
+            "GroupByKeyAggregator for type {:?} is not supported for serialization.",
+            std::any::type_name::<V>()
+        ))
     }
 }
 

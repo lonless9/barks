@@ -149,26 +149,81 @@ where
             )));
         }
 
-        // For now, we'll return an error indicating this needs to be implemented
-        // with proper type handling. The SortTask needs to be created with the
-        // correct generic types that match K, V.
-        //
-        // The challenge is that we need to create SortTask<K, V> where:
-        // - K, V come from the generic parameters of SortedRdd
-        //
-        // This requires either:
-        // 1. Making SortTask work with trait objects instead of generics
-        // 2. Using macros to generate type-specific implementations
-        // 3. Implementing a type registry system
-        //
-        // For the TODO0 implementation, we'll mark this as requiring further work.
-        Err(crate::traits::RddError::TaskCreationError(
-            "SortedRdd task creation requires type-specific implementation. \
-            The SortTask needs to be instantiated with the correct generic types \
-            that match the RDD's K, V parameters. This is a known limitation \
-            that requires architectural improvements to the task system."
-                .to_string(),
-        ))
+        // Extract map locations from the first (and only) shuffle dependency
+        let parent_map_info = &map_output_info[0];
+        let map_locations: Vec<(String, u32)> = parent_map_info
+            .iter()
+            .enumerate()
+            .map(|(map_id, (_map_status, exec_info))| {
+                let shuffle_addr = format!("{}:{}", exec_info.host, exec_info.shuffle_port);
+                (shuffle_addr, map_id as u32)
+            })
+            .collect();
+
+        // Use the RDD ID as shuffle ID for sorting
+        let shuffle_id = self.id as u32;
+
+        // Try to create tasks for supported type combinations
+        self.create_typed_sort_tasks(shuffle_id, &map_locations)
+    }
+}
+
+impl<K: Data, V: Data> SortedRdd<K, V>
+where
+    K: Ord + std::fmt::Debug + std::hash::Hash,
+{
+    /// Helper method to create tasks for supported type combinations
+    fn create_typed_sort_tasks(
+        &self,
+        shuffle_id: u32,
+        map_locations: &[(String, u32)],
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        use crate::distributed::task::SortTask;
+
+        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
+
+        // Check for String -> i32 (most common case)
+        if self
+            .as_any()
+            .downcast_ref::<SortedRdd<String, i32>>()
+            .is_some()
+        {
+            for i in 0..self.num_partitions() {
+                let task = SortTask::<String, i32>::new(
+                    shuffle_id,
+                    i as u32,
+                    map_locations.to_vec(),
+                    self.ascending,
+                );
+                tasks.push(Box::new(task));
+            }
+            return Ok(tasks);
+        }
+
+        // Check for i32 -> String
+        if self
+            .as_any()
+            .downcast_ref::<SortedRdd<i32, String>>()
+            .is_some()
+        {
+            for i in 0..self.num_partitions() {
+                let task = SortTask::<i32, String>::new(
+                    shuffle_id,
+                    i as u32,
+                    map_locations.to_vec(),
+                    self.ascending,
+                );
+                tasks.push(Box::new(task));
+            }
+            return Ok(tasks);
+        }
+
+        // If no supported type combination is found, return an error
+        Err(crate::traits::RddError::ContextError(format!(
+            "Task creation for SortedRdd with item type {:?} is not supported yet. \
+            Supported combinations: (String, i32), (i32, String)",
+            std::any::type_name::<<Self as crate::traits::RddBase>::Item>()
+        )))
     }
 }
 
