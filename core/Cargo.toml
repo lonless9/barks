@@ -30,6 +30,8 @@ barks-utils = { path = "../common/utils" }
 reqwest.workspace = true
 tempfile.workspace = true
 bumpalo = "3.14"
+moka.workspace = true
+rusty-leveldb.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

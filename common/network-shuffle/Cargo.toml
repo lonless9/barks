@@ -22,6 +22,8 @@ tracing = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 typetag.workspace = true
 lz4_flex = { version = "0.11", optional = true }
+moka.workspace = true
+rusty-leveldb.workspace = true
 
 [features]
 server = ["axum", "hyper", "tracing", "reqwest", "futures"]

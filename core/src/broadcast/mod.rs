@@ -4,12 +4,17 @@
 //! rather than shipping a copy of it with tasks. They can be used to give every node a copy of a
 //! large input dataset in an efficient manner.
 
+pub mod moka_broadcast_cache;
+
 use crate::traits::Data;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+// Re-export the Moka implementations
+pub use moka_broadcast_cache::{MokaBroadcastCache, MokaBroadcastManager};
 
 /// Unique identifier for a broadcast variable
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +95,7 @@ impl SerializableBroadcast {
     }
 }
 
-/// Manager for broadcast variables on the driver
+/// Manager for broadcast variables on the driver (HashMap-based, legacy)
 #[derive(Debug, Default)]
 pub struct BroadcastManager {
     /// Map of broadcast ID to serialized data
@@ -141,7 +146,7 @@ impl BroadcastManager {
     }
 }
 
-/// Cache for broadcast variables on executors
+/// Cache for broadcast variables on executors (HashMap-based, legacy)
 #[derive(Debug, Default)]
 pub struct BroadcastCache {
     /// Map of broadcast ID to serialized data

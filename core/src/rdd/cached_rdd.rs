@@ -1,6 +1,7 @@
 //! RDD wrapper that adds caching functionality
 
-use crate::cache::{BlockId, BlockManager, StorageLevel};
+use crate::cache::block_manager::BlockId;
+use crate::cache::{BlockManager, StorageLevel};
 use crate::traits::{Data, Dependency, IsRdd, Partition, RddBase, RddResult};
 use std::sync::Arc;
 
