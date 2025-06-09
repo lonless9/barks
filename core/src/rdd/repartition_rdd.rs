@@ -264,3 +264,69 @@ where
         self.num_partitions
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rdd::DistributedRdd;
+    use crate::shuffle::HashPartitioner;
+    use crate::traits::RddBase;
+
+    #[test]
+    fn test_repartition_rdd_local_compute() {
+        let data: Vec<i32> = (0..20).collect();
+        let parent_rdd = Arc::new(DistributedRdd::from_vec_with_partitions(data.clone(), 2));
+
+        // Repartition into 4 partitions
+        let partitioner = Arc::new(HashPartitioner::new(4));
+        let parent_trait: Arc<dyn RddBase<Item = i32>> = parent_rdd;
+        let repartition_rdd = RepartitionRdd::new(1, parent_trait, partitioner);
+
+        // Collect all data and verify it's the same, just redistributed
+        let mut result = repartition_rdd.collect().unwrap();
+        result.sort();
+
+        let mut expected = data;
+        expected.sort();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_round_robin_partitioner() {
+        let partitioner = RoundRobinPartitioner::new(5);
+        // It's a hash-based partitioner, so we just check distribution
+        let p1 = partitioner.get_partition(&10);
+        let p2 = partitioner.get_partition(&11);
+        assert!(p1 < 5);
+        assert!(p2 < 5);
+    }
+
+    #[test]
+    fn test_random_partitioner() {
+        let partitioner1 = RandomPartitioner::new(10, 123);
+        let partitioner2 = RandomPartitioner::new(10, 456);
+
+        let key = "some_key";
+        let p1 = partitioner1.get_partition(&key);
+        let p2 = partitioner2.get_partition(&key);
+
+        // Different seeds should produce different partitions
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn test_repartition_rdd_dependencies() {
+        let parent_rdd: Arc<DistributedRdd<i32>> = Arc::new(DistributedRdd::from_vec(vec![]));
+        let partitioner = Arc::new(HashPartitioner::new(4));
+        let parent_trait: Arc<dyn RddBase<Item = i32>> = parent_rdd.clone();
+        let repartition_rdd = RepartitionRdd::new(202, parent_trait, partitioner);
+
+        let deps = repartition_rdd.dependencies();
+        assert_eq!(deps.len(), 1);
+        if let Dependency::Shuffle(rdd, info) = &deps[0] {
+            assert_eq!(rdd.id(), parent_rdd.id());
+            assert_eq!(info.num_partitions, 4);
+        }
+    }
+}

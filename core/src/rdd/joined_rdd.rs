@@ -468,3 +468,109 @@ where
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rdd::DistributedRdd;
+    use crate::shuffle::HashPartitioner;
+    use crate::traits::RddBase;
+
+    fn get_test_rdds() -> (
+        Arc<DistributedRdd<(String, i32)>>,
+        Arc<DistributedRdd<(String, String)>>,
+    ) {
+        let left_data = vec![
+            ("a".to_string(), 1),
+            ("b".to_string(), 2),
+            ("a".to_string(), 3),
+            ("c".to_string(), 4),
+        ];
+        let right_data = vec![
+            ("a".to_string(), "apple".to_string()),
+            ("c".to_string(), "cherry".to_string()),
+            ("a".to_string(), "apricot".to_string()),
+            ("d".to_string(), "date".to_string()),
+        ];
+
+        let left_rdd = Arc::new(DistributedRdd::from_vec_with_partitions(left_data, 2));
+        let right_rdd = Arc::new(DistributedRdd::from_vec_with_partitions(right_data, 2));
+        (left_rdd, right_rdd)
+    }
+
+    #[test]
+    fn test_joined_rdd_local_compute() {
+        let (left_rdd, right_rdd) = get_test_rdds();
+        let partitioner = Arc::new(HashPartitioner::new(2));
+
+        let left_trait: Arc<dyn RddBase<Item = (String, i32)>> = left_rdd;
+        let right_trait: Arc<dyn RddBase<Item = (String, String)>> = right_rdd;
+        let joined_rdd = JoinedRdd::new(1, left_trait, right_trait, partitioner);
+
+        let mut result = joined_rdd.collect().unwrap();
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
+
+        let expected: Vec<(String, (i32, String))> = vec![
+            ("a".to_string(), (1, "apple".to_string())),
+            ("a".to_string(), (1, "apricot".to_string())),
+            ("a".to_string(), (3, "apple".to_string())),
+            ("a".to_string(), (3, "apricot".to_string())),
+            ("c".to_string(), (4, "cherry".to_string())),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_cogrouped_rdd_local_compute() {
+        let (left_rdd, right_rdd) = get_test_rdds();
+        let partitioner = Arc::new(HashPartitioner::new(2));
+
+        let left_trait: Arc<dyn RddBase<Item = (String, i32)>> = left_rdd;
+        let right_trait: Arc<dyn RddBase<Item = (String, String)>> = right_rdd;
+        let cogrouped_rdd = CogroupedRdd::new(1, left_trait, right_trait, partitioner);
+
+        let mut result = cogrouped_rdd.collect().unwrap();
+        // Sort by key for deterministic testing
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(result.len(), 4); // a, b, c, d
+
+        // Check 'a'
+        let a_group = result.iter().find(|(k, _)| k == "a").unwrap();
+        let mut a_left = a_group.1.0.clone();
+        a_left.sort();
+        let mut a_right = a_group.1.1.clone();
+        a_right.sort();
+        assert_eq!(a_left, vec![1, 3]);
+        assert_eq!(a_right, vec!["apple".to_string(), "apricot".to_string()]);
+
+        // Check 'b'
+        let b_group = result.iter().find(|(k, _)| k == "b").unwrap();
+        assert_eq!(b_group.1.0, vec![2]);
+        assert!(b_group.1.1.is_empty());
+
+        // Check 'c'
+        let c_group = result.iter().find(|(k, _)| k == "c").unwrap();
+        assert_eq!(c_group.1.0, vec![4]);
+        assert_eq!(c_group.1.1, vec!["cherry".to_string()]);
+
+        // Check 'd'
+        let d_group = result.iter().find(|(k, _)| k == "d").unwrap();
+        assert!(d_group.1.0.is_empty());
+        assert_eq!(d_group.1.1, vec!["date".to_string()]);
+    }
+
+    #[test]
+    fn test_joined_rdd_dependencies() {
+        let (left_rdd, right_rdd) = get_test_rdds();
+        let partitioner = Arc::new(HashPartitioner::new(2));
+        let left_trait: Arc<dyn RddBase<Item = (String, i32)>> = left_rdd;
+        let right_trait: Arc<dyn RddBase<Item = (String, String)>> = right_rdd;
+        let joined_rdd = JoinedRdd::new(101, left_trait, right_trait, partitioner);
+
+        let deps = joined_rdd.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(matches!(&deps[0], Dependency::Shuffle(..)));
+        assert!(matches!(&deps[1], Dependency::Shuffle(..)));
+    }
+}

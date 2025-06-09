@@ -253,3 +253,71 @@ where
         Err("DistinctAggregator cannot be serialized yet".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rdd::DistributedRdd;
+    use crate::shuffle::HashPartitioner;
+    use crate::traits::{BasicPartition, RddBase};
+
+    #[test]
+    fn test_distinct_rdd_local_compute() {
+        let data = vec![1, 2, 2, 3, 3, 3, 4, 1, 5];
+        let parent_rdd = Arc::new(DistributedRdd::from_vec_with_partitions(data, 2));
+        let partitioner = Arc::new(HashPartitioner::new(2));
+
+        let distinct_rdd = DistinctRdd::new(1, parent_rdd, partitioner);
+
+        // Compute both partitions and collect results
+        let part0 = BasicPartition::new(0);
+        let part1 = BasicPartition::new(1);
+
+        let iter0 = distinct_rdd.compute(&part0).unwrap();
+        let iter1 = distinct_rdd.compute(&part1).unwrap();
+
+        let mut result: Vec<i32> = iter0.collect();
+        result.extend(iter1);
+
+        // Verify all unique elements are present
+        let mut result_sorted = result;
+        result_sorted.sort();
+        assert_eq!(result_sorted, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_distinct_rdd_num_partitions() {
+        let parent_rdd = Arc::new(DistributedRdd::<i32>::from_vec(vec![]));
+        let partitioner = Arc::new(HashPartitioner::new(5));
+        let distinct_rdd = DistinctRdd::new(1, parent_rdd, partitioner);
+
+        assert_eq!(distinct_rdd.num_partitions(), 5);
+    }
+
+    #[test]
+    fn test_distinct_rdd_dependencies() {
+        let parent_rdd = Arc::new(DistributedRdd::<String>::from_vec(vec![]));
+        let partitioner = Arc::new(HashPartitioner::new(3));
+        let distinct_rdd = DistinctRdd::new(99, parent_rdd.clone(), partitioner);
+
+        let deps = distinct_rdd.dependencies();
+        assert_eq!(deps.len(), 1);
+
+        match &deps[0] {
+            Dependency::Shuffle(rdd, info) => {
+                assert_eq!(rdd.id(), parent_rdd.id());
+                assert_eq!(info.shuffle_id, 99);
+                assert_eq!(info.num_partitions, 3);
+            }
+            _ => panic!("Expected a ShuffleDependency"),
+        }
+    }
+
+    #[test]
+    fn test_distinct_rdd_empty() {
+        let parent_rdd = Arc::new(DistributedRdd::<i32>::from_vec(vec![]));
+        let partitioner = Arc::new(HashPartitioner::new(2));
+        let distinct_rdd = DistinctRdd::new(1, parent_rdd, partitioner);
+        assert_eq!(distinct_rdd.collect().unwrap().len(), 0);
+    }
+}

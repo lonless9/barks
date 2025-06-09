@@ -221,3 +221,20 @@ impl std::fmt::Debug for Dependency {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_partition_index() {
+        let partition = BasicPartition::new(5);
+        assert_eq!(partition.index(), 5);
+    }
+
+    #[test]
+    fn test_basic_partition_id() {
+        let partition = BasicPartition::new(10);
+        assert_eq!(partition.id(), "partition_10");
+    }
+}

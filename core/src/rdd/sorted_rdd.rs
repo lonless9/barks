@@ -345,3 +345,105 @@ where
     // Create the sorted RDD with the sampled keys
     SortedRdd::from_sample(id, parent, num_partitions, sample_keys, ascending)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rdd::DistributedRdd;
+    use crate::shuffle::RangePartitioner;
+    use crate::traits::IsRdd;
+
+    #[test]
+    fn test_sample_keys_for_sorting() {
+        let data: Vec<(i32, String)> = (0..100).map(|i| (i, "a".to_string())).collect();
+        let rdd = Arc::new(DistributedRdd::from_vec_with_partitions(data, 10));
+        let rdd_trait: Arc<dyn RddBase<Item = (i32, String)>> = rdd;
+        let samples = sample_keys_for_sorting(&rdd_trait, 10);
+        assert!(samples.len() <= 10);
+        // With this data, samples should be roughly evenly spaced
+        println!("Samples: {:?}", samples);
+        assert!(samples[0] >= 0);
+        assert!(samples.last().unwrap() < &100);
+    }
+
+    #[test]
+    fn test_sorted_rdd_local_compute() {
+        let data: Vec<(i32, &str)> = vec![
+            (5, "e"),
+            (2, "b"),
+            (8, "h"),
+            (1, "a"),
+            (9, "i"),
+            (4, "d"),
+            (7, "g"),
+            (3, "c"),
+            (6, "f"),
+        ];
+        let owned_data: Vec<(i32, String)> =
+            data.into_iter().map(|(k, v)| (k, v.to_string())).collect();
+
+        let parent_rdd = Arc::new(DistributedRdd::from_vec_with_partitions(owned_data, 2));
+
+        // Manually create partitioner for predictable testing
+        let range_bounds = vec![5]; // Partition 0: keys <= 5, Partition 1: keys > 5
+        let partitioner = Arc::new(RangePartitioner::new(2, range_bounds));
+
+        // Test ascending sort
+        let sorted_rdd_asc = SortedRdd::new(1, parent_rdd.clone(), partitioner.clone(), true);
+        let result_asc = sorted_rdd_asc.collect().unwrap();
+        let expected_asc: Vec<(i32, String)> = vec![
+            (1, "a".into()),
+            (2, "b".into()),
+            (3, "c".into()),
+            (4, "d".into()),
+            (5, "e".into()),
+            (6, "f".into()),
+            (7, "g".into()),
+            (8, "h".into()),
+            (9, "i".into()),
+        ];
+        assert_eq!(result_asc, expected_asc);
+
+        // Test descending sort
+        let sorted_rdd_desc = SortedRdd::new(2, parent_rdd, partitioner, false);
+        let result_desc = sorted_rdd_desc.collect().unwrap();
+        let mut expected_desc = expected_asc;
+        expected_desc.reverse();
+        assert_eq!(result_desc, expected_desc);
+    }
+
+    #[test]
+    fn test_sorted_rdd_dependencies() {
+        let parent_rdd: Arc<DistributedRdd<(String, i32)>> =
+            Arc::new(DistributedRdd::from_vec(vec![]));
+        let partitioner = Arc::new(RangePartitioner::from_sample(3, vec!["m".into()]));
+        let sorted_rdd = SortedRdd::new(123, parent_rdd.clone(), partitioner, true);
+
+        let deps = sorted_rdd.dependencies();
+        assert_eq!(deps.len(), 1);
+
+        match &deps[0] {
+            Dependency::Shuffle(rdd, info) => {
+                assert_eq!(rdd.id(), parent_rdd.id());
+                assert_eq!(info.shuffle_id, 123);
+                assert_eq!(info.num_partitions, 3);
+                assert!(matches!(
+                    info.partitioner_type,
+                    PartitionerType::Range { .. }
+                ));
+            }
+            _ => panic!("Expected a ShuffleDependency"),
+        }
+    }
+
+    #[test]
+    fn test_create_sorted_rdd_helper() {
+        let parent_rdd: Arc<DistributedRdd<(i32, String)>> =
+            Arc::new(DistributedRdd::from_vec(vec![(1, "test".to_string())]));
+        let parent_trait: Arc<dyn RddBase<Item = (i32, String)>> = parent_rdd;
+        let sorted_rdd = create_sorted_rdd(1, parent_trait, 4, true, 100);
+
+        assert_eq!(sorted_rdd.num_partitions(), 4);
+        assert!(sorted_rdd.ascending);
+    }
+}
