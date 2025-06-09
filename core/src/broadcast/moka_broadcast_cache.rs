@@ -67,7 +67,7 @@ impl MokaBroadcastCache {
 
     /// Get cache statistics
     pub async fn stats(&self) -> BroadcastCacheStats {
-        let cache_stats = self.cache.stats().await;
+        let _cache_stats = self.cache.stats().await;
         let cached_broadcasts = self.cache.len().await as usize;
 
         // Estimate total size - this is approximate since we can't easily get all values

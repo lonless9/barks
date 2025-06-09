@@ -1,8 +1,6 @@
 //! Moka-based cache implementation for improved performance and memory management
 
 use super::{CacheStats, StorageLevel};
-use crate::traits::Data;
-use anyhow::Result;
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
@@ -243,7 +241,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_moka_cache_basic_operations() {

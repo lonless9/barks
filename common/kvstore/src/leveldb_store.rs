@@ -33,8 +33,10 @@ where
                 .map_err(|e| KVStoreError::IoError(format!("Failed to create directory: {}", e)))?;
         }
 
-        let mut options = Options::default();
-        options.create_if_missing = true;
+        let options = Options {
+            create_if_missing: true,
+            ..Default::default()
+        };
 
         let db = DB::open(&path, options)
             .map_err(|e| KVStoreError::IoError(format!("Failed to open LevelDB: {}", e)))?;
@@ -154,8 +156,10 @@ where
         }
 
         // Recreate the database
-        let mut options = Options::default();
-        options.create_if_missing = true;
+        let options = Options {
+            create_if_missing: true,
+            ..Default::default()
+        };
 
         let new_db = DB::open(&path, options)
             .map_err(|e| KVStoreError::IoError(format!("Failed to recreate LevelDB: {}", e)))?;

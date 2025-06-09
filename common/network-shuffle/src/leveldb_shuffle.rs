@@ -27,12 +27,12 @@ impl LevelDBShuffleBlockManager {
                 .map_err(|e| anyhow!("Failed to create directory: {}", e))?;
         }
 
-        let mut options = Options::default();
-        options.create_if_missing = true;
-
-        // Configure for better performance with shuffle data
-        options.write_buffer_size = 64 * 1024 * 1024; // 64MB write buffer
-        options.max_open_files = 1000;
+        let options = Options {
+            create_if_missing: true,
+            write_buffer_size: 64 * 1024 * 1024, // 64MB write buffer
+            max_open_files: 1000,
+            ..Default::default()
+        };
 
         let db = DB::open(&path, options).map_err(|e| anyhow!("Failed to open LevelDB: {}", e))?;
 
@@ -244,10 +244,12 @@ impl LevelDBShuffleBlockManager {
         }
 
         // Recreate the database
-        let mut options = Options::default();
-        options.create_if_missing = true;
-        options.write_buffer_size = 64 * 1024 * 1024;
-        options.max_open_files = 1000;
+        let options = Options {
+            create_if_missing: true,
+            write_buffer_size: 64 * 1024 * 1024,
+            max_open_files: 1000,
+            ..Default::default()
+        };
 
         let new_db =
             DB::open(&path, options).map_err(|e| anyhow!("Failed to recreate LevelDB: {}", e))?;
