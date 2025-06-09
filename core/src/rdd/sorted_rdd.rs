@@ -64,32 +64,33 @@ where
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
         // For local execution, we simulate the sort by collecting all data
-        // and sorting it. In a distributed environment, this would use
-        // range partitioning and fetch shuffle blocks.
+        // from the parent RDD, partitioning it, and then sorting the
+        // requested partition. This is a local shuffle simulation.
 
         let partition_index = partition.index();
 
-        // Get all data from parent partitions (simulating shuffle read)
-        let mut all_data = Vec::new();
+        // 1. Materialize and partition the parent RDD's data locally.
+        let mut shuffled_data: Vec<Vec<(K, V)>> = vec![Vec::new(); self.num_partitions()];
+
         for i in 0..self.parent.num_partitions() {
             let parent_partition = crate::traits::BasicPartition::new(i);
             let parent_data = self.parent.compute(&parent_partition)?;
-            all_data.extend(parent_data);
-        }
 
-        // Filter data that belongs to this partition based on range partitioning
-        let mut partition_data: Vec<(K, V)> = Vec::new();
-
-        for (key, value) in all_data {
-            // Use the RangePartitioner to determine the correct partition
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-
-            if key_partition == partition_index {
-                partition_data.push((key, value));
+            for (key, value) in parent_data {
+                let p_idx = self.partitioner.get_partition(&key) as usize;
+                shuffled_data[p_idx].push((key, value));
             }
         }
 
-        // Sort the data within this partition
+        // 2. Get the data for the requested partition.
+        // We need to handle the case where the index might be out of bounds, though
+        // the scheduler should prevent this.
+        let mut partition_data = shuffled_data
+            .into_iter()
+            .nth(partition_index)
+            .unwrap_or_default();
+
+        // 3. Sort the data within this partition.
         if self.ascending {
             partition_data.sort_by(|a, b| a.0.cmp(&b.0));
         } else {

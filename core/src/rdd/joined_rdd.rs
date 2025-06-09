@@ -51,43 +51,32 @@ where
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
         // For local execution, we simulate the join by computing both parent RDDs
-        // and performing a hash join. In a distributed environment,
+        // and performing a hash join on the correctly partitioned data. In a distributed environment,
         // this would fetch shuffle blocks from remote executors.
 
         let partition_index = partition.index();
 
-        // Get all data from left RDD partitions
-        let mut left_data = Vec::new();
-        for i in 0..self.left_rdd.num_partitions() {
-            let parent_partition = crate::traits::BasicPartition::new(i);
-            let parent_data = self.left_rdd.compute(&parent_partition)?;
-            left_data.extend(parent_data);
-        }
-
-        // Get all data from right RDD partitions
-        let mut right_data = Vec::new();
-        for i in 0..self.right_rdd.num_partitions() {
-            let parent_partition = crate::traits::BasicPartition::new(i);
-            let parent_data = self.right_rdd.compute(&parent_partition)?;
-            right_data.extend(parent_data);
-        }
-
-        // Group left data by key and partition
+        // Group left data by key for the target partition
         let mut left_partitioned: std::collections::HashMap<K, Vec<V>> =
             std::collections::HashMap::new();
-        for (key, value) in left_data {
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-            if key_partition == partition_index {
-                left_partitioned.entry(key).or_default().push(value);
+        for i in 0..self.left_rdd.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            for (key, value) in self.left_rdd.compute(&parent_partition)? {
+                if self.partitioner.get_partition(&key) as usize == partition_index {
+                    left_partitioned.entry(key).or_default().push(value);
+                }
             }
         }
 
+        // Group right data by key for the target partition
         let mut right_partitioned: std::collections::HashMap<K, Vec<W>> =
             std::collections::HashMap::new();
-        for (key, value) in right_data {
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-            if key_partition == partition_index {
-                right_partitioned.entry(key).or_default().push(value);
+        for i in 0..self.right_rdd.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            for (key, value) in self.right_rdd.compute(&parent_partition)? {
+                if self.partitioner.get_partition(&key) as usize == partition_index {
+                    right_partitioned.entry(key).or_default().push(value);
+                }
             }
         }
 
@@ -229,43 +218,32 @@ where
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
         // For local execution, we simulate the cogroup by computing both parent RDDs
-        // and grouping values by key. In a distributed environment,
+        // and grouping values by key for the target partition. In a distributed environment,
         // this would fetch shuffle blocks from remote executors.
 
         let partition_index = partition.index();
 
-        // Get all data from left RDD partitions
-        let mut left_data = Vec::new();
-        for i in 0..self.left_rdd.num_partitions() {
-            let parent_partition = crate::traits::BasicPartition::new(i);
-            let parent_data = self.left_rdd.compute(&parent_partition)?;
-            left_data.extend(parent_data);
-        }
-
-        // Get all data from right RDD partitions
-        let mut right_data = Vec::new();
-        for i in 0..self.right_rdd.num_partitions() {
-            let parent_partition = crate::traits::BasicPartition::new(i);
-            let parent_data = self.right_rdd.compute(&parent_partition)?;
-            right_data.extend(parent_data);
-        }
-
-        // Group left data by key and partition
+        // Group left data by key for the target partition
         let mut left_partitioned: std::collections::HashMap<K, Vec<V>> =
             std::collections::HashMap::new();
-        for (key, value) in left_data {
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-            if key_partition == partition_index {
-                left_partitioned.entry(key).or_default().push(value);
+        for i in 0..self.left_rdd.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            for (key, value) in self.left_rdd.compute(&parent_partition)? {
+                if self.partitioner.get_partition(&key) as usize == partition_index {
+                    left_partitioned.entry(key).or_default().push(value);
+                }
             }
         }
 
+        // Group right data by key for the target partition
         let mut right_partitioned: std::collections::HashMap<K, Vec<W>> =
             std::collections::HashMap::new();
-        for (key, value) in right_data {
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-            if key_partition == partition_index {
-                right_partitioned.entry(key).or_default().push(value);
+        for i in 0..self.right_rdd.num_partitions() {
+            let parent_partition = crate::traits::BasicPartition::new(i);
+            for (key, value) in self.right_rdd.compute(&parent_partition)? {
+                if self.partitioner.get_partition(&key) as usize == partition_index {
+                    right_partitioned.entry(key).or_default().push(value);
+                }
             }
         }
 

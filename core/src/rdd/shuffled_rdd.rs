@@ -55,44 +55,46 @@ where
         partition: &dyn Partition,
     ) -> RddResult<Box<dyn Iterator<Item = Self::Item>>> {
         // For local execution, we simulate the shuffle by computing the parent RDD
-        // and applying the aggregator locally. In a distributed environment,
-        // this would fetch shuffle blocks from remote executors.
+        // partitions, re-partitioning the data, and then applying the aggregator
+        // to the data for the requested partition. This simulates a local shuffle
+        // with map-side combine.
 
         let partition_index = partition.index();
+        let num_partitions = self.num_partitions();
 
-        // Get all data from parent partitions (simulating shuffle read)
-        let mut all_data = Vec::new();
+        // 1. Create one combiner map for each output partition.
+        let mut combiners: Vec<std::collections::HashMap<K, C>> = (0..num_partitions)
+            .map(|_| std::collections::HashMap::new())
+            .collect();
+
+        // 2. Iterate through parent partitions and apply map-side combine logic.
         for i in 0..self.parent.num_partitions() {
             let parent_partition = crate::traits::BasicPartition::new(i);
             let parent_data = self.parent.compute(&parent_partition)?;
-            all_data.extend(parent_data);
-        }
 
-        // Group data by key and partition
-        let mut partitioned_data: std::collections::HashMap<K, Vec<V>> =
-            std::collections::HashMap::new();
+            for (key, value) in parent_data {
+                let p_idx = self.partitioner.get_partition(&key) as usize;
+                let combiner_map = &mut combiners[p_idx];
 
-        for (key, value) in all_data {
-            let key_partition = self.partitioner.get_partition(&key) as usize;
-            // Only include data that belongs to the current partition
-            if key_partition == partition_index {
-                partitioned_data.entry(key).or_default().push(value);
+                match combiner_map.entry(key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        let new_combiner = self.aggregator.merge_value(e.get().clone(), value);
+                        e.insert(new_combiner);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        let new_combiner = self.aggregator.create_combiner(value);
+                        e.insert(new_combiner);
+                    }
+                }
             }
         }
 
-        // Apply aggregator to combine values for each key
-        let aggregated_data: Vec<(K, C)> = partitioned_data
+        // 3. Get the aggregated data for the requested partition.
+        let aggregated_data: Vec<(K, C)> = combiners
             .into_iter()
-            .map(|(key, values)| {
-                let mut combined = None;
-                for value in values {
-                    combined = Some(match combined {
-                        None => self.aggregator.create_combiner(value),
-                        Some(c) => self.aggregator.merge_value(c, value),
-                    });
-                }
-                (key, combined.unwrap())
-            })
+            .nth(partition_index)
+            .unwrap_or_default()
+            .into_iter()
             .collect();
 
         Ok(Box::new(aggregated_data.into_iter()))
