@@ -14,8 +14,9 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompressionCodec {
     None,
-    // Future: Add compression support when dependencies are available
-    // Lz4,
+    #[cfg(feature = "compression")]
+    Lz4,
+    // Future: Add more compression support when dependencies are available
     // Snappy,
     // Gzip,
 }
@@ -25,7 +26,11 @@ impl CompressionCodec {
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self {
             CompressionCodec::None => Ok(data.to_vec()),
-            // Future compression implementations would go here
+            #[cfg(feature = "compression")]
+            CompressionCodec::Lz4 => {
+                let compressed = lz4_flex::compress_prepend_size(data);
+                Ok(compressed)
+            }
         }
     }
 
@@ -33,7 +38,30 @@ impl CompressionCodec {
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self {
             CompressionCodec::None => Ok(data.to_vec()),
-            // Future decompression implementations would go here
+            #[cfg(feature = "compression")]
+            CompressionCodec::Lz4 => {
+                let decompressed = lz4_flex::decompress_size_prepended(data)
+                    .map_err(|e| anyhow!("LZ4 decompression failed: {}", e))?;
+                Ok(decompressed)
+            }
+        }
+    }
+
+    /// Get the compression ratio estimate for this codec
+    pub fn estimated_compression_ratio(&self) -> f32 {
+        match self {
+            CompressionCodec::None => 1.0,
+            #[cfg(feature = "compression")]
+            CompressionCodec::Lz4 => 0.6, // LZ4 typically achieves ~40% compression
+        }
+    }
+
+    /// Check if this codec is available (dependencies compiled in)
+    pub fn is_available(&self) -> bool {
+        match self {
+            CompressionCodec::None => true,
+            #[cfg(feature = "compression")]
+            CompressionCodec::Lz4 => true,
         }
     }
 }
@@ -54,6 +82,9 @@ pub struct ShuffleConfig {
 impl Default for ShuffleConfig {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "compression")]
+            compression: CompressionCodec::Lz4,
+            #[cfg(not(feature = "compression"))]
             compression: CompressionCodec::None,
             spill_threshold: 64 * 1024 * 1024, // 64MB
             sort_based_shuffle: true,
@@ -326,6 +357,37 @@ mod tests {
             let mut s = std::collections::hash_map::DefaultHasher::new();
             key.hash(&mut s);
             (s.finish() % self.num_partitions as u64) as u32
+        }
+    }
+
+    #[test]
+    fn test_compression_codec() {
+        let test_data = b"Hello, World! This is a test string that should compress well with LZ4.";
+
+        // Test None compression
+        let none_codec = CompressionCodec::None;
+        let compressed = none_codec.compress(test_data).unwrap();
+        let decompressed = none_codec.decompress(&compressed).unwrap();
+        assert_eq!(test_data, decompressed.as_slice());
+        assert_eq!(compressed.len(), test_data.len());
+
+        #[cfg(feature = "compression")]
+        {
+            // Test LZ4 compression
+            let lz4_codec = CompressionCodec::Lz4;
+            assert!(lz4_codec.is_available());
+
+            let compressed = lz4_codec.compress(test_data).unwrap();
+            let decompressed = lz4_codec.decompress(&compressed).unwrap();
+            assert_eq!(test_data, decompressed.as_slice());
+
+            // LZ4 should compress this test data
+            println!(
+                "Original size: {}, Compressed size: {}",
+                test_data.len(),
+                compressed.len()
+            );
+            // Note: For small data, LZ4 might not compress much due to overhead
         }
     }
 
