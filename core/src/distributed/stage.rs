@@ -15,11 +15,14 @@ pub struct Stage {
     pub parents: Vec<Arc<Stage>>,
     pub job_id: String,
     pub attempt_id: AtomicUsize,
+    /// If this is a shuffle map stage, this contains the shuffle dependency info.
+    pub shuffle_dependency: Option<ShuffleDependencyInfo>,
     /// A factory closure that creates the tasks for this stage.
     /// This captures the typed RDD and its logic, avoiding downcasting in the scheduler loop.
     pub task_factory: Arc<
         dyn Fn(
                 String,
+                Option<&ShuffleDependencyInfo>,
                 Option<
                     &[Vec<(
                         barks_network_shuffle::traits::MapStatus,
@@ -45,6 +48,7 @@ impl Clone for Stage {
             parents: self.parents.clone(),
             job_id: self.job_id.clone(),
             attempt_id: AtomicUsize::new(self.attempt_id.load(Ordering::SeqCst)),
+            shuffle_dependency: self.shuffle_dependency.clone(),
             task_factory: self.task_factory.clone(),
         }
     }
@@ -57,6 +61,7 @@ impl std::fmt::Debug for Stage {
             .field("parents", &self.parents)
             .field("job_id", &self.job_id)
             .field("attempt_id", &self.attempt_id)
+            .field("shuffle_dependency", &self.shuffle_dependency)
             .field("task_factory", &"<closure>")
             .finish()
     }
@@ -109,6 +114,7 @@ impl DAGScheduler {
         let task_factory: Arc<
             dyn Fn(
                     String,
+                    Option<&ShuffleDependencyInfo>,
                     Option<
                         &[Vec<(
                             barks_network_shuffle::traits::MapStatus,
@@ -118,8 +124,8 @@ impl DAGScheduler {
                 ) -> RddResult<Vec<Box<dyn Task>>>
                 + Send
                 + Sync,
-        > = Arc::new(move |stage_id, map_output_info| {
-            rdd_base.create_tasks(stage_id, map_output_info)
+        > = Arc::new(move |stage_id, shuffle_info, map_output_info| {
+            rdd_base.create_tasks(stage_id, shuffle_info, map_output_info)
         });
 
         let stage = Stage {
@@ -127,6 +133,7 @@ impl DAGScheduler {
             parents,
             job_id: job_id.to_string(),
             attempt_id: AtomicUsize::new(0),
+            shuffle_dependency: None,
             task_factory,
         };
         ResultStage { stage }
@@ -205,9 +212,11 @@ impl DAGScheduler {
             self.get_or_create_parent_stages(parent_rdd_base.clone(), job_id, rdd_to_stage);
 
         let task_factory_rdd = parent_rdd_base.clone();
+        let shuffle_dep_clone = shuffle_dep.clone();
         let task_factory: Arc<
             dyn Fn(
                     String,
+                    Option<&ShuffleDependencyInfo>,
                     Option<
                         &[Vec<(
                             barks_network_shuffle::traits::MapStatus,
@@ -217,8 +226,10 @@ impl DAGScheduler {
                 ) -> RddResult<Vec<Box<dyn Task>>>
                 + Send
                 + Sync,
-        > = Arc::new(move |stage_id, map_output_info| {
-            task_factory_rdd.create_tasks(stage_id, map_output_info)
+        > = Arc::new(move |stage_id, shuffle_info, map_output_info| {
+            // For ShuffleMapStage, we pass the shuffle dependency info
+            let shuffle_info = shuffle_info.or(Some(&shuffle_dep_clone));
+            task_factory_rdd.create_tasks(stage_id, shuffle_info, map_output_info)
         });
 
         let stage = Stage {
@@ -226,6 +237,7 @@ impl DAGScheduler {
             parents,
             job_id: job_id.to_string(),
             attempt_id: AtomicUsize::new(0),
+            shuffle_dependency: Some(shuffle_dep.clone()),
             task_factory,
         };
 

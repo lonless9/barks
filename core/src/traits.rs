@@ -95,6 +95,8 @@ pub trait RddBase: Send + Sync + Debug + Any {
     fn create_tasks(
         &self,
         stage_id: crate::distributed::types::StageId,
+        // Info about the shuffle this stage is a map stage for, if any.
+        shuffle_info: Option<&ShuffleDependencyInfo>,
         // Add this parameter to pass information from the driver.
         // It contains, for each parent dependency, a Vec of outputs from each map task.
         map_output_info: Option<

@@ -22,7 +22,7 @@ mod tests {
         let rdd_arc: Arc<dyn RddBase<Item = i32>> = Arc::new(rdd);
 
         // Test the create_tasks method - this should now work for i32!
-        let result = rdd_arc.create_tasks("test-stage".to_string(), None);
+        let result = rdd_arc.create_tasks("test-stage".to_string(), None, None);
 
         // Should succeed for i32 type
         assert!(result.is_ok());
@@ -45,7 +45,7 @@ mod tests {
         let rdd_arc: Arc<dyn RddBase<Item = (String, i32)>> = Arc::new(rdd);
 
         // Test the create_tasks method - this should now work for (String, i32)!
-        let result = rdd_arc.create_tasks("test-stage".to_string(), None);
+        let result = rdd_arc.create_tasks("test-stage".to_string(), None, None);
 
         // Should succeed for (String, i32) type
         assert!(result.is_ok());
@@ -202,6 +202,64 @@ mod tests {
         let deserialized_task: Result<Box<dyn crate::distributed::task::Task>, _> =
             serde_json::from_slice(&serialized_bytes);
         assert!(deserialized_task.is_ok());
+    }
+
+    /// Test the new shuffle task creation API
+    #[tokio::test]
+    async fn test_new_shuffle_task_creation_api() {
+        // Create a test RDD with key-value pairs
+        let data = vec![
+            ("key1".to_string(), 1),
+            ("key2".to_string(), 2),
+            ("key1".to_string(), 3),
+        ];
+        let rdd: DistributedRdd<(String, i32)> = DistributedRdd::from_vec_with_partitions(data, 2);
+        let rdd_arc: Arc<dyn RddBase<Item = (String, i32)>> = Arc::new(rdd);
+
+        // Create shuffle dependency info
+        let shuffle_info = crate::traits::ShuffleDependencyInfo {
+            shuffle_id: 1,
+            num_partitions: 2,
+            partitioner_type: crate::traits::PartitionerType::Hash {
+                num_partitions: 2,
+                seed: 42,
+            },
+        };
+
+        // Test the create_tasks method with shuffle_info - this should create ShuffleMapTasks
+        let result = rdd_arc.create_tasks("test-stage".to_string(), Some(&shuffle_info), None);
+
+        // Should succeed and create ShuffleMapTasks instead of ChainedTasks
+        assert!(result.is_ok());
+        let tasks = result.unwrap();
+        assert_eq!(tasks.len(), 2); // Should create 2 tasks for 2 partitions
+
+        println!(
+            "✅ Successfully created {} ShuffleMapTasks with new API",
+            tasks.len()
+        );
+    }
+
+    /// Test that narrow dependencies still create ChainedTasks
+    #[tokio::test]
+    async fn test_narrow_dependency_creates_chained_tasks() {
+        // Create a test RDD with regular data
+        let data = vec![1, 2, 3, 4, 5];
+        let rdd: DistributedRdd<i32> = DistributedRdd::from_vec_with_partitions(data, 2);
+        let rdd_arc: Arc<dyn RddBase<Item = i32>> = Arc::new(rdd);
+
+        // Test the create_tasks method without shuffle_info - this should create ChainedTasks
+        let result = rdd_arc.create_tasks("test-stage".to_string(), None, None);
+
+        // Should succeed and create ChainedTasks
+        assert!(result.is_ok());
+        let tasks = result.unwrap();
+        assert_eq!(tasks.len(), 2); // Should create 2 tasks for 2 partitions
+
+        println!(
+            "✅ Successfully created {} ChainedTasks for narrow dependency",
+            tasks.len()
+        );
     }
 
     /// Test ShuffleMapTask with custom shuffle configuration

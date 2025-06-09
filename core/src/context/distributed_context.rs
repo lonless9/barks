@@ -420,7 +420,11 @@ impl DistributedContext {
                         };
 
                         // Use the stage's task_factory to create tasks. This is now type-safe.
-                        let tasks = (stage.task_factory)(stage_id_str.clone(), map_output_info)?;
+                        let tasks = (stage.task_factory)(
+                            stage_id_str.clone(),
+                            stage.shuffle_dependency.as_ref(),
+                            map_output_info,
+                        )?;
 
                         // Store task futures along with their executor IDs for result processing
                         let mut task_completion_futures = Vec::new();

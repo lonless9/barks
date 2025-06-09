@@ -142,6 +142,7 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>, // This can be ignored here
         _map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,
@@ -312,6 +313,7 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        _shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>, // This can be ignored here
         map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,

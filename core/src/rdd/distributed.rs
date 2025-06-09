@@ -3,6 +3,7 @@
 //! This module provides RDD implementations that can be executed
 //! in a distributed environment using serializable operations.
 
+use crate::distributed::task::ShuffleMapTask;
 use crate::operations::RddDataType;
 use crate::traits::{BasicPartition, Partition};
 use bumpalo::Bump;
@@ -539,6 +540,8 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
+        // This RDD is being used as the map-side of a shuffle.
+        shuffle_info: Option<&crate::traits::ShuffleDependencyInfo>,
         _map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,
@@ -546,9 +549,36 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        // This generic implementation uses the `RddDataType` trait to create tasks,
-        // removing the need for type-specific checks and `unsafe` code.
         let (base_data, num_partitions, operations) = self.clone().analyze_lineage();
+
+        // If shuffle_info is Some, we are in a ShuffleMapStage. Create ShuffleMapTasks.
+        if let Some(shuffle) = shuffle_info {
+            let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
+            for partition_index in 0..num_partitions {
+                let data_len = base_data.len();
+                let partition_size = data_len.div_ceil(num_partitions);
+                let start = partition_index * partition_size;
+                let end = std::cmp::min(start + partition_size, data_len);
+
+                let partition_data = if start >= data_len {
+                    Vec::new()
+                } else {
+                    base_data[start..end].to_vec()
+                };
+
+                let serialized_partition_data =
+                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
+
+                tasks.push(create_shuffle_map_task::<T>(
+                    serialized_partition_data,
+                    operations.clone(),
+                    shuffle.shuffle_id as u32,
+                    shuffle.num_partitions,
+                )?);
+            }
+            return Ok(tasks);
+        }
 
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
@@ -575,6 +605,46 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
 
         Ok(tasks)
     }
+}
+
+// Helper to create ShuffleMapTask for supported (K, V) pairs.
+fn create_shuffle_map_task<T: RddDataType>(
+    parent_partition_data: Vec<u8>,
+    parent_operations: Vec<T::SerializableOperation>,
+    shuffle_id: u32,
+    num_reduce_partitions: u32,
+) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
+    // This is where we need to know the Key and Value types from T.
+    // For now, we handle the known cases by casting to the concrete types.
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<(String, i32)>() {
+        // Cast the operations to the concrete type
+        let concrete_operations: Vec<<(String, i32) as RddDataType>::SerializableOperation> =
+            unsafe { std::mem::transmute(parent_operations) };
+        return Ok(Box::new(ShuffleMapTask::<(String, i32)>::new(
+            parent_partition_data,
+            concrete_operations,
+            shuffle_id,
+            num_reduce_partitions,
+            Default::default(),
+        )));
+    }
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<(i32, String)>() {
+        // Cast the operations to the concrete type
+        let concrete_operations: Vec<<(i32, String) as RddDataType>::SerializableOperation> =
+            unsafe { std::mem::transmute(parent_operations) };
+        return Ok(Box::new(ShuffleMapTask::<(i32, String)>::new(
+            parent_partition_data,
+            concrete_operations,
+            shuffle_id,
+            num_reduce_partitions,
+            Default::default(),
+        )));
+    }
+
+    Err(crate::traits::RddError::TaskCreationError(format!(
+        "Cannot create ShuffleMapTask for RDD with item type {:?}. It's not a supported key-value pair.",
+        std::any::type_name::<T>()
+    )))
 }
 
 #[cfg(test)]
