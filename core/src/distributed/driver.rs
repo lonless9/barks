@@ -176,6 +176,27 @@ impl DriverServiceImpl {
                 if let Err(e) = service.schedule_tasks().await {
                     error!("Error during task scheduling: {}", e);
                 }
+
+                // Check for speculative tasks
+                if service.task_scheduler.is_speculative_execution_enabled() {
+                    let slow_tasks = service.task_scheduler.get_slow_tasks().await;
+                    for task_id in slow_tasks {
+                        // Launch a speculative copy of the slow task
+                        if let Some(mut pending_task) =
+                            service.get_pending_task_by_id(&task_id).await
+                        {
+                            pending_task.attempt += 1;
+                            let new_task_id =
+                                format!("{}_attempt_{}", task_id, pending_task.attempt);
+                            pending_task.task_id = new_task_id;
+                            warn!("Launching speculative task copy: {}", pending_task.task_id);
+                            service
+                                .task_scheduler
+                                .submit_pending_task(pending_task)
+                                .await;
+                        }
+                    }
+                }
             }
         });
     }
@@ -211,6 +232,13 @@ impl DriverServiceImpl {
                         "Scheduling task {} to executor {}",
                         pending_task.task_id, executor.info.executor_id
                     );
+
+                    {
+                        // Mark task as started for speculative execution tracking
+                        self.task_scheduler
+                            .mark_task_started(&pending_task.task_id)
+                            .await;
+                    }
 
                     {
                         // Add task to active and executor-specific maps BEFORE launching.
@@ -557,6 +585,15 @@ impl DriverServiceImpl {
             }
         }
     }
+
+    /// Get a copy of a pending task by its ID.
+    /// This is inefficient and primarily for re-queueing logic.
+    /// In a more advanced scheduler, tasks would be looked up from a HashMap.
+    pub async fn get_pending_task_by_id(&self, task_id: &TaskId) -> Option<PendingTask> {
+        // This now correctly checks the driver's active task map.
+        let active_tasks = self.active_tasks.lock().await;
+        active_tasks.get(task_id).cloned()
+    }
 }
 
 #[tonic::async_trait]
@@ -787,6 +824,9 @@ impl DriverService for DriverServiceImpl {
 
         match task_state {
             TaskState::TaskFinished => {
+                // Mark task as completed to stop speculative execution tracking
+                self.task_scheduler.mark_task_completed(&req.task_id).await;
+
                 info!("Task {} completed successfully", req.task_id);
                 let result = TaskResult::Success(req.result);
 
@@ -814,6 +854,7 @@ impl DriverService for DriverServiceImpl {
                 let active_tasks = self.active_tasks.clone();
                 let max_retries = self.config.task_max_retries;
                 let notifiers = self.completion_notifiers.clone();
+                self.task_scheduler.mark_task_completed(&req.task_id).await;
                 let error_message = req.error_message.clone();
 
                 // IMPORTANT: Remove task from active map before re-queueing to prevent duplicates.
@@ -851,6 +892,7 @@ impl DriverService for DriverServiceImpl {
 
             TaskState::TaskKilled => {
                 warn!("Task {} was killed", req.task_id);
+                self.task_scheduler.mark_task_completed(&req.task_id).await;
                 self.active_tasks.lock().await.remove(&req.task_id);
                 let result = TaskResult::Failure("Task was killed".to_string());
                 if let Some(notifier) = self.completion_notifiers.lock().await.remove(&req.task_id)
