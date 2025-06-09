@@ -1,7 +1,7 @@
 //! DAG (Directed Acyclic Graph) Scheduler for breaking an RDD graph into stages.
 //!
-use crate::traits::{Dependency, RddBase, ShuffleDependencyInfo};
-use std::any::Any;
+use crate::distributed::task::Task;
+use crate::traits::{Dependency, RddBase, RddResult, ShuffleDependencyInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,16 +9,27 @@ use tracing::info;
 
 /// A stage of computation, containing a set of tasks that can be run in parallel.
 /// Stages are separated by shuffle boundaries.
-#[derive(Debug)]
 pub struct Stage {
     pub id: usize,
-    /// The RDD that this stage computes. Stored as `Any` to handle different RDD types.
-    pub rdd: Arc<dyn Any + Send + Sync>,
-    pub num_partitions: usize,
     /// The stages that this stage depends on.
     pub parents: Vec<Arc<Stage>>,
     pub job_id: String,
     pub attempt_id: AtomicUsize,
+    /// A factory closure that creates the tasks for this stage.
+    /// This captures the typed RDD and its logic, avoiding downcasting in the scheduler loop.
+    pub task_factory: Arc<
+        dyn Fn(
+                String,
+                Option<
+                    &[Vec<(
+                        barks_network_shuffle::traits::MapStatus,
+                        crate::distributed::types::ExecutorInfo,
+                    )>],
+                >,
+            ) -> RddResult<Vec<Box<dyn Task>>>
+            + Send
+            + Sync,
+    >,
 }
 
 impl Stage {
@@ -31,12 +42,23 @@ impl Clone for Stage {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            rdd: self.rdd.clone(),
-            num_partitions: self.num_partitions,
             parents: self.parents.clone(),
             job_id: self.job_id.clone(),
             attempt_id: AtomicUsize::new(self.attempt_id.load(Ordering::SeqCst)),
+            task_factory: self.task_factory.clone(),
         }
+    }
+}
+
+impl std::fmt::Debug for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stage")
+            .field("id", &self.id)
+            .field("parents", &self.parents)
+            .field("job_id", &self.job_id)
+            .field("attempt_id", &self.attempt_id)
+            .field("task_factory", &"<closure>")
+            .finish()
     }
 }
 
@@ -70,7 +92,6 @@ impl DAGScheduler {
     /// This function serves as the entry point for building the entire stage graph for a job.
     pub fn new_result_stage<T>(
         &self,
-        rdd: Arc<dyn Any + Send + Sync>,
         rdd_base: Arc<dyn RddBase<Item = T>>,
         job_id: &str,
     ) -> ResultStage
@@ -85,13 +106,28 @@ impl DAGScheduler {
         let mut rdd_to_stage: HashMap<usize, Arc<ShuffleMapStage>> = HashMap::new();
         let parents = self.get_or_create_parent_stages(rdd_base.clone(), job_id, &mut rdd_to_stage);
 
+        let task_factory: Arc<
+            dyn Fn(
+                    String,
+                    Option<
+                        &[Vec<(
+                            barks_network_shuffle::traits::MapStatus,
+                            crate::distributed::types::ExecutorInfo,
+                        )>],
+                    >,
+                ) -> RddResult<Vec<Box<dyn Task>>>
+                + Send
+                + Sync,
+        > = Arc::new(move |stage_id, map_output_info| {
+            rdd_base.create_tasks(stage_id, map_output_info)
+        });
+
         let stage = Stage {
             id: self.new_stage_id(),
-            rdd,
-            num_partitions: rdd_base.num_partitions(),
             parents,
             job_id: job_id.to_string(),
             attempt_id: AtomicUsize::new(0),
+            task_factory,
         };
         ResultStage { stage }
     }
@@ -168,17 +204,29 @@ impl DAGScheduler {
         let parents =
             self.get_or_create_parent_stages(parent_rdd_base.clone(), job_id, rdd_to_stage);
 
+        let task_factory_rdd = parent_rdd_base.clone();
+        let task_factory: Arc<
+            dyn Fn(
+                    String,
+                    Option<
+                        &[Vec<(
+                            barks_network_shuffle::traits::MapStatus,
+                            crate::distributed::types::ExecutorInfo,
+                        )>],
+                    >,
+                ) -> RddResult<Vec<Box<dyn Task>>>
+                + Send
+                + Sync,
+        > = Arc::new(move |stage_id, map_output_info| {
+            task_factory_rdd.create_tasks(stage_id, map_output_info)
+        });
+
         let stage = Stage {
             id: self.new_stage_id(),
-            rdd: unsafe {
-                std::mem::transmute::<Arc<dyn RddBase<Item = T>>, Arc<dyn Any + Send + Sync>>(
-                    parent_rdd_base.clone(),
-                )
-            },
-            num_partitions: parent_rdd_base.num_partitions(),
             parents,
             job_id: job_id.to_string(),
             attempt_id: AtomicUsize::new(0),
+            task_factory,
         };
 
         let shuffle_map_stage = Arc::new(ShuffleMapStage {

@@ -334,10 +334,7 @@ impl DistributedContext {
                 info!("Starting job {} for RDD {}", job_id, rdd.id());
 
                 // 1. Build the stage graph from the final RDD using the DAGScheduler.
-                // The `as_any` is necessary for the `Stage` struct which stores the RDD as `Any`.
-                let rdd_any: Arc<dyn std::any::Any + Send + Sync> =
-                    unsafe { std::mem::transmute(rdd.clone()) };
-                let final_stage = self.dag_scheduler.new_result_stage(rdd_any, rdd, &job_id);
+                let final_stage = self.dag_scheduler.new_result_stage(rdd, &job_id);
 
                 // 2. Initialize job execution state.
                 let mut all_stages: HashMap<usize, Arc<Stage>> = HashMap::new();
@@ -421,11 +418,8 @@ impl DistributedContext {
                             None
                         };
 
-                        let tasks = stage
-                            .rdd
-                            .downcast_ref::<Arc<dyn crate::traits::RddBase<Item = T>>>()
-                            .unwrap()
-                            .create_tasks(stage_id_str.clone(), map_output_info)?;
+                        // Use the stage's task_factory to create tasks. This is now type-safe.
+                        let tasks = (stage.task_factory)(stage_id_str.clone(), map_output_info)?;
 
                         // Store task futures along with their executor IDs for result processing
                         let mut task_completion_futures = Vec::new();
