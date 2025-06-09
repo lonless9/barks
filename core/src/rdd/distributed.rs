@@ -4,7 +4,6 @@
 //! in a distributed environment using serializable operations.
 
 use crate::operations::RddDataType;
-use crate::rdd::transformations::PairRdd;
 use crate::traits::{BasicPartition, Partition, RddBase};
 use bumpalo::Bump;
 use std::fmt::Debug;
@@ -605,6 +604,28 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        use crate::rdd::transformations::PairRdd;
+        if let Some(shuffle) = shuffle_info {
+            // This is a map stage for a shuffle.
+            // We need to create ShuffleMapTasks, which requires this RDD to be a PairRdd.
+            // We perform safe downcasts to check for specific pair types.
+            let any_self = self as &dyn std::any::Any;
+            if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(String, i32)>>() {
+                return pair_rdd
+                    .create_shuffle_map_tasks(shuffle.shuffle_id as u32, shuffle.num_partitions);
+            } else if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(i32, String)>>()
+            {
+                return pair_rdd
+                    .create_shuffle_map_tasks(shuffle.shuffle_id as u32, shuffle.num_partitions);
+            } else {
+                // This is a programmer error: a shuffle dependency was created on a non-pair RDD.
+                return Err(crate::traits::RddError::TaskCreationError(format!(
+                    "Shuffle dependency created on a non-pair RDD with type {:?}",
+                    std::any::type_name::<T>()
+                )));
+            }
+        }
+        // This is a narrow dependency stage. Create ChainedTasks.
         let (base_data, num_partitions, operations) = self.clone().analyze_lineage();
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
@@ -623,38 +644,10 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             let serialized_partition_data =
                 bincode::encode_to_vec(&partition_data, bincode::config::standard())
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            if let Some(shuffle) = shuffle_info {
-                // This is a map stage for a shuffle.
-                // We need to create ShuffleMapTasks, which requires this RDD to be a PairRdd.
-                // We perform safe downcasts to check for specific pair types.
-                let any_self = self as &dyn std::any::Any;
-                if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(String, i32)>>() {
-                    return pair_rdd.create_shuffle_map_tasks(
-                        shuffle.shuffle_id as u32,
-                        shuffle.num_partitions,
-                    );
-                } else if let Some(pair_rdd) =
-                    any_self.downcast_ref::<DistributedRdd<(i32, String)>>()
-                {
-                    return pair_rdd.create_shuffle_map_tasks(
-                        shuffle.shuffle_id as u32,
-                        shuffle.num_partitions,
-                    );
-                } else {
-                    // This is a programmer error: a shuffle dependency was created on a non-pair RDD.
-                    return Err(crate::traits::RddError::TaskCreationError(format!(
-                        "Shuffle dependency created on a non-pair RDD with type {:?}",
-                        std::any::type_name::<T>()
-                    )));
-                }
-            } else {
-                // This is a narrow dependency stage. Create ChainedTasks.
-                tasks.push(T::create_chained_task(
-                    serialized_partition_data,
-                    operations.clone(),
-                )?);
-            }
+            tasks.push(T::create_chained_task(
+                serialized_partition_data,
+                operations.clone(),
+            )?);
         }
 
         Ok(tasks)
