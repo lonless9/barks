@@ -122,6 +122,10 @@ pub struct TaskRunner {
     semaphore: Arc<tokio::sync::Semaphore>,
     /// Shared shuffle block manager from the executor
     block_manager: Arc<dyn ShuffleBlockManager>,
+    /// Map of running tasks to their cancellation tokens
+    running_tasks: Arc<
+        tokio::sync::Mutex<std::collections::HashMap<TaskId, tokio_util::sync::CancellationToken>>,
+    >,
 }
 
 /// Task execution result
@@ -139,15 +143,26 @@ impl TaskRunner {
         Self {
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent_tasks)),
             block_manager,
+            running_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
     /// Submit a task for execution
     pub async fn submit_task(
         &self,
+        task_id: TaskId,
         partition_index: usize,
         serialized_task: Vec<u8>,
     ) -> TaskExecutionResult {
+        // Create a cancellation token for this task
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+
+        // Register the task with its cancellation token
+        {
+            let mut running_tasks = self.running_tasks.lock().await;
+            running_tasks.insert(task_id.clone(), cancellation_token.clone());
+        }
+
         // Acquire a permit to limit concurrency
         let permit = self
             .semaphore
@@ -176,13 +191,40 @@ impl TaskRunner {
         };
         metrics.executor_deserialize_time_ms = deserialize_start.elapsed().as_millis() as u64;
 
-        // Now execute the task asynchronously.
+        // Check if task was cancelled before execution
+        if cancellation_token.is_cancelled() {
+            // Clean up and return cancelled result
+            {
+                let mut running_tasks = self.running_tasks.lock().await;
+                running_tasks.remove(&task_id);
+            }
+            drop(permit);
+            return TaskExecutionResult {
+                state: TaskState::TaskKilled,
+                result: None,
+                error_message: Some("Task was cancelled before execution".to_string()),
+                metrics,
+            };
+        }
+
+        // Now execute the task asynchronously with cancellation support
         let execution_start = Instant::now();
-        let execution_result = task
-            .execute(partition_index, self.block_manager.clone())
-            .await;
+        let execution_result = tokio::select! {
+            result = task.execute(partition_index, self.block_manager.clone()) => {
+                result
+            }
+            _ = cancellation_token.cancelled() => {
+                Err("Task was cancelled during execution".to_string())
+            }
+        };
 
         metrics.executor_run_time_ms = execution_start.elapsed().as_millis() as u64;
+
+        // Clean up the running tasks map
+        {
+            let mut running_tasks = self.running_tasks.lock().await;
+            running_tasks.remove(&task_id);
+        }
 
         // Drop permit to release the semaphore slot
         drop(permit);
@@ -197,24 +239,40 @@ impl TaskRunner {
                     metrics,
                 }
             }
-            Err(e) => TaskExecutionResult {
-                state: TaskState::TaskFailed,
-                result: None,
-                error_message: Some(e),
-                metrics,
-            },
+            Err(e) => {
+                let state = if e.contains("cancelled") {
+                    TaskState::TaskKilled
+                } else {
+                    TaskState::TaskFailed
+                };
+                TaskExecutionResult {
+                    state,
+                    result: None,
+                    error_message: Some(e),
+                    metrics,
+                }
+            }
         }
     }
 
     /// Kill a running task
-    pub async fn kill_task(&self, task_id: &TaskId, _reason: &str) -> Result<(), anyhow::Error> {
-        // In this simplified model, we can't easily interrupt the rayon-based
-        // computation. A full implementation would require more complex cancellation logic.
-        warn!(
-            "Task killing is not fully implemented. Task {} may continue to run.",
-            task_id
-        );
-        Ok(())
+    pub async fn kill_task(&self, task_id: &TaskId, reason: &str) -> Result<(), anyhow::Error> {
+        let mut running_tasks = self.running_tasks.lock().await;
+
+        if let Some(cancellation_token) = running_tasks.remove(task_id) {
+            info!("Cancelling task {} with reason: {}", task_id, reason);
+            cancellation_token.cancel();
+            Ok(())
+        } else {
+            warn!(
+                "Attempted to kill task {} but it was not found in running tasks",
+                task_id
+            );
+            Err(anyhow::anyhow!(
+                "Task {} not found or already completed",
+                task_id
+            ))
+        }
     }
 }
 
@@ -226,6 +284,12 @@ pub struct TaskScheduler {
     /// Pending tasks queue (FIFO)
     // Using VecDeque for more efficient queue operations (pop_front)
     pending_tasks: Arc<tokio::sync::Mutex<std::collections::VecDeque<PendingTask>>>,
+    /// Running tasks with their start times for speculative execution
+    running_task_times: Arc<tokio::sync::Mutex<HashMap<TaskId, std::time::Instant>>>,
+    /// Speculative execution configuration
+    speculative_execution_enabled: bool,
+    /// Threshold for considering a task slow (in seconds)
+    slow_task_threshold_secs: u64,
 }
 
 /// Pending task information
@@ -247,6 +311,20 @@ impl TaskScheduler {
         Self {
             executors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pending_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
+            running_task_times: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            speculative_execution_enabled: true,
+            slow_task_threshold_secs: 60, // 1 minute threshold
+        }
+    }
+
+    /// Create a new task scheduler with custom speculative execution settings
+    pub fn with_speculative_execution(enabled: bool, threshold_secs: u64) -> Self {
+        Self {
+            executors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
+            running_task_times: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            speculative_execution_enabled: enabled,
+            slow_task_threshold_secs: threshold_secs,
         }
     }
 
@@ -375,6 +453,49 @@ impl TaskScheduler {
         let executors = self.executors.lock().await;
         executors.get(executor_id).cloned()
     }
+
+    /// Mark a task as started for speculative execution tracking
+    pub async fn mark_task_started(&self, task_id: &TaskId) {
+        if self.speculative_execution_enabled {
+            let mut running_times = self.running_task_times.lock().await;
+            running_times.insert(task_id.clone(), std::time::Instant::now());
+        }
+    }
+
+    /// Mark a task as completed and remove from tracking
+    pub async fn mark_task_completed(&self, task_id: &TaskId) {
+        if self.speculative_execution_enabled {
+            let mut running_times = self.running_task_times.lock().await;
+            running_times.remove(task_id);
+        }
+    }
+
+    /// Get slow tasks that should be speculatively re-executed
+    pub async fn get_slow_tasks(&self) -> Vec<TaskId> {
+        if !self.speculative_execution_enabled {
+            return Vec::new();
+        }
+
+        let running_times = self.running_task_times.lock().await;
+        let threshold = std::time::Duration::from_secs(self.slow_task_threshold_secs);
+        let now = std::time::Instant::now();
+
+        running_times
+            .iter()
+            .filter_map(|(task_id, start_time)| {
+                if now.duration_since(*start_time) > threshold {
+                    Some(task_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Check if speculative execution is enabled
+    pub fn is_speculative_execution_enabled(&self) -> bool {
+        self.speculative_execution_enabled
+    }
 }
 
 impl Default for TaskScheduler {
@@ -387,6 +508,7 @@ impl Default for TaskScheduler {
 mod tests {
     use super::*;
     use crate::operations::{DoubleOperation, GreaterThanPredicate, SerializableI32Operation};
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_chained_i32_task_execution() {
@@ -592,6 +714,88 @@ mod tests {
             .get_next_task_for_executor(&"executor-1".to_string())
             .await;
         assert!(no_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_task_cancellation() {
+        let block_manager = Arc::new(barks_network_shuffle::shuffle::MemoryShuffleManager::new());
+        let task_runner = Arc::new(TaskRunner::new(2, block_manager));
+
+        let task_id = "test_task_1".to_string();
+
+        // Start the task
+        let task_handle = {
+            let task_runner = task_runner.clone();
+            let task_id = task_id.clone();
+            tokio::spawn(async move {
+                // Create a task that will take some time to execute
+                let data = vec![1; 1000000]; // Large dataset to slow down execution
+                let operations = vec![SerializableI32Operation::Map(Box::new(DoubleOperation))];
+                let task = ChainedTask::<i32>::new(
+                    bincode::encode_to_vec(&data, bincode::config::standard()).unwrap(),
+                    operations,
+                );
+                // Serialize as a trait object to include the type information
+                let task_box: Box<dyn Task> = Box::new(task);
+                let serialized_task = serde_json::to_vec(&task_box).unwrap();
+                task_runner.submit_task(task_id, 0, serialized_task).await
+            })
+        };
+
+        // Give the task a moment to start but not complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Kill the task
+        let kill_result = task_runner.kill_task(&task_id, "test cancellation").await;
+        assert!(kill_result.is_ok());
+
+        // Wait for the task to complete
+        let result = task_handle.await.unwrap();
+
+        // Debug: print the actual result
+        println!(
+            "Task result: state={:?}, error={:?}",
+            result.state, result.error_message
+        );
+
+        // The task should be killed or failed with cancellation message
+        assert!(
+            result.state == TaskState::TaskKilled
+                || (result.state == TaskState::TaskFailed
+                    && result
+                        .error_message
+                        .as_ref()
+                        .map_or(false, |msg| msg.contains("cancelled")))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_speculative_execution_tracking() {
+        let scheduler = TaskScheduler::with_speculative_execution(true, 1); // 1 second threshold
+
+        let task_id = "slow_task_1".to_string();
+
+        // Mark task as started
+        scheduler.mark_task_started(&task_id).await;
+
+        // Initially no slow tasks
+        let slow_tasks = scheduler.get_slow_tasks().await;
+        assert!(slow_tasks.is_empty());
+
+        // Wait for threshold to pass
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Now it should be considered slow
+        let slow_tasks = scheduler.get_slow_tasks().await;
+        assert_eq!(slow_tasks.len(), 1);
+        assert_eq!(slow_tasks[0], task_id);
+
+        // Mark as completed
+        scheduler.mark_task_completed(&task_id).await;
+
+        // Should no longer be in slow tasks
+        let slow_tasks = scheduler.get_slow_tasks().await;
+        assert!(slow_tasks.is_empty());
     }
 }
 

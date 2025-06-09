@@ -89,8 +89,9 @@ enum TaskState {
 
 // Accumulator update
 message AccumulatorUpdate {
-    string name = 1;
-    bytes value = 2;  // Serialized accumulator value
+    string id = 1;    // Accumulator ID
+    string name = 2;
+    bytes value = 3;  // Serialized accumulator value
 }
 
 // Executor metrics

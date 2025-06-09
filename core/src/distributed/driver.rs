@@ -142,8 +142,9 @@ impl DriverServiceImpl {
             )
             .await;
         });
+        let accumulator_manager_clone = self.accumulator_manager.clone();
         tokio::spawn(async move {
-            Self::heartbeat_monitor(heartbeat_receiver, executors).await;
+            Self::heartbeat_monitor(heartbeat_receiver, executors, accumulator_manager_clone).await;
         });
 
         // Start background task scheduler
@@ -376,6 +377,7 @@ impl DriverServiceImpl {
     async fn heartbeat_monitor(
         heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
+        accumulator_manager: Arc<AccumulatorManager>,
     ) {
         let mut receiver = heartbeat_receiver.lock().await;
 
@@ -393,6 +395,26 @@ impl DriverServiceImpl {
                     "Received heartbeat from unknown executor: {}",
                     heartbeat.executor_id
                 );
+            }
+
+            // Process accumulator updates
+            if !heartbeat.accumulator_updates.is_empty() {
+                debug!(
+                    "Processing {} accumulator updates from executor {}",
+                    heartbeat.accumulator_updates.len(),
+                    heartbeat.executor_id
+                );
+
+                // TODO: In a real implementation, we would need to match accumulator updates
+                // to specific accumulator instances. For now, we just log them.
+                for update in &heartbeat.accumulator_updates {
+                    debug!(
+                        "Accumulator update: id={}, name={}, value_size={}",
+                        update.id.0,
+                        update.name,
+                        update.value.len()
+                    );
+                }
             }
         }
     }
@@ -712,12 +734,23 @@ impl DriverService for DriverServiceImpl {
             ExecutorMetrics::default()
         };
 
+        // Extract accumulator updates from the heartbeat request
+        let accumulator_updates: Vec<AccumulatorUpdate> = req
+            .accumulator_updates
+            .into_iter()
+            .map(|proto_update| AccumulatorUpdate {
+                id: crate::accumulator::AccumulatorId(proto_update.id),
+                name: proto_update.name,
+                value: proto_update.value,
+            })
+            .collect();
+
         let heartbeat_info = HeartbeatInfo {
             executor_id: req.executor_id.clone(),
             timestamp: req.timestamp,
             status: Self::convert_executor_status(req.status),
             metrics,
-            accumulator_updates: Vec::new(), // TODO: Extract from heartbeat request
+            accumulator_updates,
         };
 
         // Send heartbeat to monitor

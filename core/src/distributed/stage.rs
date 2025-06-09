@@ -37,11 +37,57 @@ pub struct Stage {
     /// A factory closure that creates the tasks for this stage.
     /// This captures the typed RDD and its logic, avoiding downcasting in the scheduler loop.
     pub task_factory: TaskFactory,
+    /// Tracks failed partitions that need to be re-computed
+    pub failed_partitions: Arc<std::sync::Mutex<std::collections::HashSet<usize>>>,
+    /// Tracks the number of fetch failures from this stage
+    pub fetch_failure_count: AtomicUsize,
 }
 
 impl Stage {
     pub fn new_attempt_id(&self) -> usize {
         self.attempt_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Mark a partition as failed and needing re-computation
+    pub fn mark_partition_failed(&self, partition_id: usize) {
+        if let Ok(mut failed_partitions) = self.failed_partitions.lock() {
+            failed_partitions.insert(partition_id);
+        }
+    }
+
+    /// Get the set of failed partitions that need re-computation
+    pub fn get_failed_partitions(&self) -> std::collections::HashSet<usize> {
+        self.failed_partitions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Clear failed partitions (called after successful re-computation)
+    pub fn clear_failed_partitions(&self) {
+        if let Ok(mut failed_partitions) = self.failed_partitions.lock() {
+            failed_partitions.clear();
+        }
+    }
+
+    /// Increment fetch failure count
+    pub fn increment_fetch_failures(&self) -> usize {
+        self.fetch_failure_count.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Get current fetch failure count
+    pub fn get_fetch_failure_count(&self) -> usize {
+        self.fetch_failure_count.load(Ordering::SeqCst)
+    }
+
+    /// Reset fetch failure count
+    pub fn reset_fetch_failures(&self) {
+        self.fetch_failure_count.store(0, Ordering::SeqCst);
+    }
+
+    /// Check if this stage needs to be re-executed due to failures
+    pub fn needs_reexecution(&self) -> bool {
+        !self.get_failed_partitions().is_empty() || self.get_fetch_failure_count() > 0
     }
 }
 
@@ -54,6 +100,10 @@ impl Clone for Stage {
             attempt_id: AtomicUsize::new(self.attempt_id.load(Ordering::SeqCst)),
             shuffle_dependency: self.shuffle_dependency.clone(),
             task_factory: self.task_factory.clone(),
+            failed_partitions: Arc::new(std::sync::Mutex::new(
+                self.failed_partitions.lock().unwrap().clone(),
+            )),
+            fetch_failure_count: AtomicUsize::new(self.fetch_failure_count.load(Ordering::SeqCst)),
         }
     }
 }
@@ -126,6 +176,8 @@ impl DAGScheduler {
             attempt_id: AtomicUsize::new(0),
             shuffle_dependency: None,
             task_factory,
+            failed_partitions: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            fetch_failure_count: AtomicUsize::new(0),
         };
         ResultStage { stage }
     }
@@ -218,6 +270,8 @@ impl DAGScheduler {
             attempt_id: AtomicUsize::new(0),
             shuffle_dependency: Some(shuffle_dep.clone()),
             task_factory,
+            failed_partitions: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            fetch_failure_count: AtomicUsize::new(0),
         };
 
         let shuffle_map_stage = Arc::new(ShuffleMapStage {

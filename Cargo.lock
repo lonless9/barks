@@ -196,6 +196,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-build",
  "tracing",

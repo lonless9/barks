@@ -162,7 +162,7 @@ impl ExecutorService for ExecutorServiceImpl {
         tokio::spawn(async move {
             // Submit task to task runner
             let task_result = task_runner_arc
-                .submit_task(partition_index as usize, serialized_task)
+                .submit_task(task_id.clone(), partition_index as usize, serialized_task)
                 .await;
 
             let mut final_task_result = task_result;

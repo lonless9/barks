@@ -30,6 +30,7 @@ repository = "https://github.com/lonless9/barks"
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 
 # RPC
 tonic = "0.13.1"

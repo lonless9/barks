@@ -399,6 +399,39 @@ impl StringFlatMapOperation for SplitCharsOperation {
     }
 }
 
+/// FlatMap operation that duplicates a (String, i32) tuple based on the i32 value
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DuplicateTupleOperation;
+
+#[typetag::serde]
+impl StringI32TupleFlatMapOperation for DuplicateTupleOperation {
+    fn execute(&self, item: (String, i32)) -> Vec<(String, i32)> {
+        let (string_val, count) = item;
+        if count <= 0 {
+            vec![]
+        } else {
+            (0..count)
+                .map(|i| (format!("{}-{}", string_val, i), i))
+                .collect()
+        }
+    }
+}
+
+/// FlatMap operation that splits a (i32, String) tuple into multiple tuples based on string words
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SplitTupleWordsOperation;
+
+#[typetag::serde]
+impl I32StringTupleFlatMapOperation for SplitTupleWordsOperation {
+    fn execute(&self, item: (i32, String)) -> Vec<(i32, String)> {
+        let (num, text) = item;
+        text.split_whitespace()
+            .enumerate()
+            .map(|(i, word)| (num + i as i32, word.to_string()))
+            .collect()
+    }
+}
+
 /// Trait for serializable operations on (String, i32) tuple values
 #[typetag::serde(tag = "type")]
 pub trait StringI32TupleOperation: Send + Sync + Debug + DynClone {
@@ -415,11 +448,20 @@ pub trait StringI32TuplePredicate: Send + Sync + Debug + DynClone {
 }
 dyn_clone::clone_trait_object!(StringI32TuplePredicate);
 
+/// Trait for serializable flatMap operations on (String, i32) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringI32TupleFlatMapOperation: Send + Sync + Debug + DynClone {
+    /// Execute the flatMap operation on a single tuple item, returning a vector of results
+    fn execute(&self, item: (String, i32)) -> Vec<(String, i32)>;
+}
+dyn_clone::clone_trait_object!(StringI32TupleFlatMapOperation);
+
 /// Enum to hold different kinds of serializable (String, i32) tuple operations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerializableStringI32TupleOperation {
     Map(Box<dyn StringI32TupleOperation>),
     Filter(Box<dyn StringI32TuplePredicate>),
+    FlatMap(Box<dyn StringI32TupleFlatMapOperation>),
 }
 
 impl From<Box<dyn StringI32TupleOperation>> for SerializableStringI32TupleOperation {
@@ -434,11 +476,17 @@ impl From<Box<dyn StringI32TuplePredicate>> for SerializableStringI32TupleOperat
     }
 }
 
+impl From<Box<dyn StringI32TupleFlatMapOperation>> for SerializableStringI32TupleOperation {
+    fn from(op: Box<dyn StringI32TupleFlatMapOperation>) -> Self {
+        SerializableStringI32TupleOperation::FlatMap(op)
+    }
+}
+
 /// Implement RddDataType for (String, i32) tuple
 impl RddDataType for (String, i32) {
     type MapOperation = Box<dyn StringI32TupleOperation>;
     type FilterPredicate = Box<dyn StringI32TuplePredicate>;
-    type FlatMapOperation = Box<dyn StringI32TupleOperation>; // Reuse map operation for simplicity
+    type FlatMapOperation = Box<dyn StringI32TupleFlatMapOperation>;
     type SerializableOperation = SerializableStringI32TupleOperation;
 
     fn apply_operation(
@@ -455,6 +503,10 @@ impl RddDataType for (String, i32) {
                 .par_iter()
                 .filter(|item| filter_op.test(item))
                 .cloned()
+                .collect(),
+            SerializableStringI32TupleOperation::FlatMap(flatmap_op) => data
+                .par_iter()
+                .flat_map(|item| flatmap_op.execute(item.clone()))
                 .collect(),
         }
     }
@@ -502,11 +554,20 @@ pub trait I32StringTuplePredicate: Send + Sync + Debug + DynClone {
 }
 dyn_clone::clone_trait_object!(I32StringTuplePredicate);
 
+/// Trait for serializable flatMap operations on (i32, String) tuple values
+#[typetag::serde(tag = "type")]
+pub trait I32StringTupleFlatMapOperation: Send + Sync + Debug + DynClone {
+    /// Execute the flatMap operation on a single tuple item, returning a vector of results
+    fn execute(&self, item: (i32, String)) -> Vec<(i32, String)>;
+}
+dyn_clone::clone_trait_object!(I32StringTupleFlatMapOperation);
+
 /// Enum to hold different kinds of serializable (i32, String) tuple operations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerializableI32StringTupleOperation {
     Map(Box<dyn I32StringTupleOperation>),
     Filter(Box<dyn I32StringTuplePredicate>),
+    FlatMap(Box<dyn I32StringTupleFlatMapOperation>),
 }
 
 impl From<Box<dyn I32StringTupleOperation>> for SerializableI32StringTupleOperation {
@@ -521,11 +582,17 @@ impl From<Box<dyn I32StringTuplePredicate>> for SerializableI32StringTupleOperat
     }
 }
 
+impl From<Box<dyn I32StringTupleFlatMapOperation>> for SerializableI32StringTupleOperation {
+    fn from(op: Box<dyn I32StringTupleFlatMapOperation>) -> Self {
+        SerializableI32StringTupleOperation::FlatMap(op)
+    }
+}
+
 /// Implement RddDataType for (i32, String) tuple
 impl RddDataType for (i32, String) {
     type MapOperation = Box<dyn I32StringTupleOperation>;
     type FilterPredicate = Box<dyn I32StringTuplePredicate>;
-    type FlatMapOperation = Box<dyn I32StringTupleOperation>; // Reuse map operation for simplicity
+    type FlatMapOperation = Box<dyn I32StringTupleFlatMapOperation>;
     type SerializableOperation = SerializableI32StringTupleOperation;
 
     fn apply_operation(
@@ -542,6 +609,10 @@ impl RddDataType for (i32, String) {
                 .par_iter()
                 .filter(|item| filter_op.test(item))
                 .cloned()
+                .collect(),
+            SerializableI32StringTupleOperation::FlatMap(flatmap_op) => data
+                .par_iter()
+                .flat_map(|item| flatmap_op.execute(item.clone()))
                 .collect(),
         }
     }
@@ -667,6 +738,47 @@ mod flatmap_tests {
 
         let result = result_rdd.collect().unwrap();
         let expected = vec!["h", "i", "o", "k"];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_i32_tuple_flatmap_duplicate() {
+        let data = vec![("hello".to_string(), 3), ("world".to_string(), 2)];
+        let rdd = DistributedRdd::from_vec(data);
+
+        let flatmap_op: Box<dyn StringI32TupleFlatMapOperation> = Box::new(DuplicateTupleOperation);
+        let result_rdd = rdd.flat_map(flatmap_op);
+
+        let result = result_rdd.collect().unwrap();
+        let expected = vec![
+            ("hello-0".to_string(), 0),
+            ("hello-1".to_string(), 1),
+            ("hello-2".to_string(), 2),
+            ("world-0".to_string(), 0),
+            ("world-1".to_string(), 1),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_i32_string_tuple_flatmap_split_words() {
+        let data = vec![
+            (10, "hello world".to_string()),
+            (20, "rust programming".to_string()),
+        ];
+        let rdd = DistributedRdd::from_vec(data);
+
+        let flatmap_op: Box<dyn I32StringTupleFlatMapOperation> =
+            Box::new(SplitTupleWordsOperation);
+        let result_rdd = rdd.flat_map(flatmap_op);
+
+        let result = result_rdd.collect().unwrap();
+        let expected = vec![
+            (10, "hello".to_string()),
+            (11, "world".to_string()),
+            (20, "rust".to_string()),
+            (21, "programming".to_string()),
+        ];
         assert_eq!(result, expected);
     }
 }
