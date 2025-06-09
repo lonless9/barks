@@ -765,7 +765,7 @@ mod tests {
                     && result
                         .error_message
                         .as_ref()
-                        .map_or(false, |msg| msg.contains("cancelled")))
+                        .is_some_and(|msg| msg.contains("cancelled")))
         );
     }
 

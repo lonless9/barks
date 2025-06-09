@@ -305,13 +305,13 @@ impl DistributedContext {
         &self,
         name: String,
         op: Arc<dyn AccumulatorOp<T>>,
-    ) -> Result<Accumulator<T>, RddError> {
+    ) -> Result<Arc<Accumulator<T>>, RddError> {
         match &self.mode {
             ExecutionMode::Driver => {
                 if let Some(driver) = &self.driver {
-                    let accumulator = Accumulator::new(name, op);
+                    let accumulator = Arc::new(Accumulator::new(name, op));
                     let accumulator_manager = driver.accumulator_manager();
-                    accumulator_manager.register_accumulator(&accumulator).await;
+                    accumulator_manager.register(accumulator.clone()).await;
                     Ok(accumulator)
                 } else {
                     Err(RddError::ContextError("Driver not initialized".to_string()))
@@ -324,7 +324,7 @@ impl DistributedContext {
     }
 
     /// Create a sum accumulator for numeric types
-    pub async fn sum_accumulator<T>(&self, name: String) -> Result<Accumulator<T>, RddError>
+    pub async fn sum_accumulator<T>(&self, name: String) -> Result<Arc<Accumulator<T>>, RddError>
     where
         T: Data + std::ops::Add<Output = T> + Default + Clone + Send + Sync + std::fmt::Debug,
     {
@@ -333,7 +333,7 @@ impl DistributedContext {
     }
 
     /// Create a count accumulator
-    pub async fn count_accumulator(&self, name: String) -> Result<Accumulator<u64>, RddError> {
+    pub async fn count_accumulator(&self, name: String) -> Result<Arc<Accumulator<u64>>, RddError> {
         let op = Arc::new(CountAccumulator);
         self.accumulator(name, op).await
     }

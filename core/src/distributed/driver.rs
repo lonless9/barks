@@ -404,17 +404,10 @@ impl DriverServiceImpl {
                     heartbeat.accumulator_updates.len(),
                     heartbeat.executor_id
                 );
-
-                // TODO: In a real implementation, we would need to match accumulator updates
-                // to specific accumulator instances. For now, we just log them.
-                for update in &heartbeat.accumulator_updates {
-                    debug!(
-                        "Accumulator update: id={}, name={}, value_size={}",
-                        update.id.0,
-                        update.name,
-                        update.value.len()
-                    );
-                }
+                // Process updates using the accumulator manager
+                accumulator_manager
+                    .process_updates(&heartbeat.accumulator_updates)
+                    .await;
             }
         }
     }
