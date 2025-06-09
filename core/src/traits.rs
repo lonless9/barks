@@ -99,6 +99,16 @@ pub trait RddBase: IsRdd {
             .collect()
     }
 
+    /// Get the storage level for this RDD
+    fn storage_level(&self) -> crate::cache::StorageLevel {
+        crate::cache::StorageLevel::None
+    }
+
+    /// Check if this RDD is cached
+    fn is_cached(&self) -> bool {
+        self.storage_level().is_cached()
+    }
+
     /// Create tasks for a given stage. This method eliminates the need for downcasting
     /// in the distributed scheduler by allowing each RDD type to define its own task creation logic.
     fn create_tasks(

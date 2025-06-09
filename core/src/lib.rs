@@ -3,6 +3,7 @@
 //! This module provides the core functionality of Barks including
 //! RDDs and context management for Phase 0 implementation.
 
+pub mod cache;
 pub mod context;
 pub mod distributed;
 pub mod operations;

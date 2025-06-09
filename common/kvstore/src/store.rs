@@ -45,9 +45,9 @@ where
         Ok(data.get(key).cloned())
     }
 
-    async fn put(&self, key: Self::Key, value: Self::Value) -> Result<()> {
+    async fn put(&self, key: &Self::Key, value: Self::Value) -> Result<()> {
         let mut data = self.data.write().await;
-        data.insert(key, value);
+        data.insert(key.clone(), value);
         Ok(())
     }
 
@@ -152,7 +152,7 @@ where
         self.store.get(key).await
     }
 
-    async fn put(&self, key: Self::Key, value: Self::Value) -> Result<()> {
+    async fn put(&self, key: &Self::Key, value: Self::Value) -> Result<()> {
         self.store.put(key, value).await
     }
 
@@ -243,7 +243,7 @@ mod tests {
 
         // Test put and get
         store
-            .put("key1".to_string(), "value1".to_string())
+            .put(&"key1".to_string(), "value1".to_string())
             .await
             .unwrap();
         assert_eq!(
@@ -272,11 +272,11 @@ mod tests {
 
         // Test keys and clear
         store
-            .put("key_a".to_string(), "val_a".to_string())
+            .put(&"key_a".to_string(), "val_a".to_string())
             .await
             .unwrap();
         store
-            .put("key_b".to_string(), "val_b".to_string())
+            .put(&"key_b".to_string(), "val_b".to_string())
             .await
             .unwrap();
         let mut keys = store.keys().await.unwrap();
@@ -296,7 +296,7 @@ mod tests {
         // Test loading from a non-existent path
         let store1 = FileKVStore::<String, i32>::new(&path).await.unwrap();
         assert_eq!(store1.size().await.unwrap(), 0);
-        store1.put("one".to_string(), 1).await.unwrap();
+        store1.put(&"one".to_string(), 1).await.unwrap();
         store1.persist().await.unwrap();
 
         // Test loading from an existing file
@@ -317,8 +317,8 @@ mod tests {
 
         // Create and populate a store
         let store1 = FileKVStore::<String, i32>::new(&path).await.unwrap();
-        store1.put("key1".to_string(), 100).await.unwrap();
-        store1.put("key2".to_string(), 200).await.unwrap();
+        store1.put(&"key1".to_string(), 100).await.unwrap();
+        store1.put(&"key2".to_string(), 200).await.unwrap();
         assert_eq!(store1.size().await.unwrap(), 2);
 
         // Persist the store
@@ -332,7 +332,7 @@ mod tests {
 
         // Modify the second store and persist
         store2.remove(&"key1".to_string()).await.unwrap();
-        store2.put("key3".to_string(), 300).await.unwrap();
+        store2.put(&"key3".to_string(), 300).await.unwrap();
         store2.persist().await.unwrap();
 
         // Create a third store to verify the changes
@@ -354,7 +354,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 for j in 0..100 {
                     let key = format!("key_{}_{}", i, j);
-                    store_clone.put(key, i * 100 + j).await.unwrap();
+                    store_clone.put(&key, i * 100 + j).await.unwrap();
                 }
             }));
         }

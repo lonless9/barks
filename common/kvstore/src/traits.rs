@@ -13,7 +13,7 @@ pub trait KVStore: Send + Sync {
     async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>>;
 
     /// Put a key-value pair
-    async fn put(&self, key: Self::Key, value: Self::Value) -> Result<()>;
+    async fn put(&self, key: &Self::Key, value: Self::Value) -> Result<()>;
 
     /// Remove a key
     async fn remove(&self, key: &Self::Key) -> Result<Option<Self::Value>>;

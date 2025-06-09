@@ -1085,6 +1085,44 @@ where
     _marker: std::marker::PhantomData<(K, V)>,
 }
 
+/// A task that performs distinct operations on shuffle data.
+/// This task reads shuffle blocks from map tasks and removes duplicates.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DistinctTask<T>
+where
+    T: crate::traits::Data,
+{
+    /// Shuffle ID for this shuffle operation
+    pub shuffle_id: u32,
+    /// Reduce partition ID that this task will process
+    pub reduce_partition_id: u32,
+    /// Locations of map task outputs: a list of (executor_address, map_id)
+    /// The executor address should be in "host:shuffle_port" format.
+    pub map_output_locations: Vec<(String, u32)>,
+    /// Phantom data to make the struct generic over T
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<T>,
+}
+
+/// A task that performs repartition operations on shuffle data.
+/// This task reads shuffle blocks from map tasks and redistributes data.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RepartitionTask<T>
+where
+    T: crate::traits::Data,
+{
+    /// Shuffle ID for this shuffle operation
+    pub shuffle_id: u32,
+    /// Reduce partition ID that this task will process
+    pub reduce_partition_id: u32,
+    /// Locations of map task outputs: a list of (executor_address, map_id)
+    /// The executor address should be in "host:shuffle_port" format.
+    pub map_output_locations: Vec<(String, u32)>,
+    /// Phantom data to make the struct generic over T
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<T>,
+}
+
 impl<K, V> SortTask<K, V>
 where
     K: crate::traits::Data,
@@ -1101,6 +1139,42 @@ where
             reduce_partition_id,
             map_output_locations,
             ascending,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> DistinctTask<T>
+where
+    T: crate::traits::Data,
+{
+    pub fn new(
+        shuffle_id: u32,
+        reduce_partition_id: u32,
+        map_output_locations: Vec<(String, u32)>,
+    ) -> Self {
+        Self {
+            shuffle_id,
+            reduce_partition_id,
+            map_output_locations,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> RepartitionTask<T>
+where
+    T: crate::traits::Data,
+{
+    pub fn new(
+        shuffle_id: u32,
+        reduce_partition_id: u32,
+        map_output_locations: Vec<(String, u32)>,
+    ) -> Self {
+        Self {
+            shuffle_id,
+            reduce_partition_id,
+            map_output_locations,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1153,3 +1227,93 @@ macro_rules! impl_sort_task {
 // Implement SortTask for specific types
 impl_sort_task!(String, i32, "SortTaskStringI32");
 impl_sort_task!(i32, String, "SortTaskI32String");
+
+// Macro for implementing DistinctTask for specific types
+macro_rules! impl_distinct_task {
+    ($type:ty, $name:literal) => {
+        #[typetag::serde(name = $name)]
+        #[async_trait::async_trait]
+        impl Task for DistinctTask<$type> {
+            async fn execute(
+                &self,
+                _partition_index: usize,
+                _block_manager: Arc<dyn ShuffleBlockManager>,
+            ) -> Result<Vec<u8>, String> {
+                // 1. Create an HTTP shuffle reader to fetch data from other executors.
+                let reader = barks_network_shuffle::shuffle::HttpShuffleReader::<$type, ()>::new();
+
+                // 2. Read all shuffle blocks for this reduce partition.
+                let all_blocks_vec: Vec<Vec<($type, ())>> = reader
+                    .read_partition(
+                        self.shuffle_id,
+                        self.reduce_partition_id,
+                        &self.map_output_locations,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
+
+                // 3. Flatten and collect unique elements
+                let mut unique_elements = std::collections::HashSet::new();
+                for block in all_blocks_vec {
+                    for (element, _) in block {
+                        unique_elements.insert(element);
+                    }
+                }
+
+                // 4. Convert to vector
+                let result: Vec<$type> = unique_elements.into_iter().collect();
+
+                // 5. Serialize the result and return it.
+                bincode::encode_to_vec(&result, bincode::config::standard())
+                    .map_err(|e| format!("Failed to serialize distinct result: {}", e))
+            }
+        }
+    };
+}
+
+// Macro for implementing RepartitionTask for specific types
+macro_rules! impl_repartition_task {
+    ($type:ty, $name:literal) => {
+        #[typetag::serde(name = $name)]
+        #[async_trait::async_trait]
+        impl Task for RepartitionTask<$type> {
+            async fn execute(
+                &self,
+                _partition_index: usize,
+                _block_manager: Arc<dyn ShuffleBlockManager>,
+            ) -> Result<Vec<u8>, String> {
+                // 1. Create an HTTP shuffle reader to fetch data from other executors.
+                let reader = barks_network_shuffle::shuffle::HttpShuffleReader::<$type, ()>::new();
+
+                // 2. Read all shuffle blocks for this reduce partition.
+                let all_blocks_vec: Vec<Vec<($type, ())>> = reader
+                    .read_partition(
+                        self.shuffle_id,
+                        self.reduce_partition_id,
+                        &self.map_output_locations,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
+
+                // 3. Flatten the Vec<Vec<(T, ())>> into Vec<T>
+                let all_elements: Vec<$type> = all_blocks_vec
+                    .into_iter()
+                    .flatten()
+                    .map(|(element, _)| element)
+                    .collect();
+
+                // 4. Serialize the result and return it.
+                bincode::encode_to_vec(&all_elements, bincode::config::standard())
+                    .map_err(|e| format!("Failed to serialize repartition result: {}", e))
+            }
+        }
+    };
+}
+
+// Implement DistinctTask for specific types
+impl_distinct_task!(String, "DistinctTaskString");
+impl_distinct_task!(i32, "DistinctTaskI32");
+
+// Implement RepartitionTask for specific types
+impl_repartition_task!(String, "RepartitionTaskString");
+impl_repartition_task!(i32, "RepartitionTaskI32");
