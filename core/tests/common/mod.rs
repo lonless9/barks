@@ -1,7 +1,7 @@
 //! Common test utilities and helpers for integration tests
 
 use barks_core::context::FlowContext;
-use barks_core::operations::{DoubleOperation, EvenPredicate, GreaterThanPredicate};
+use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
 use barks_core::rdd::DistributedRdd;
 
 /// Create a test context with a given name
@@ -10,6 +10,7 @@ pub fn create_test_context(name: &str) -> FlowContext {
 }
 
 /// Create a test context with specific thread count
+#[allow(dead_code)] // Used in local_rdd_api.rs but clippy doesn't detect cross-module usage
 pub fn create_test_context_with_threads(name: &str, threads: usize) -> FlowContext {
     FlowContext::new_with_threads(name, threads)
 }
@@ -42,24 +43,6 @@ pub fn create_test_string_i32_data() -> Vec<(String, i32)> {
     ]
 }
 
-/// Create test data for key-value pairs (i32, String)
-pub fn create_test_i32_string_data() -> Vec<(i32, String)> {
-    vec![
-        (1, "apple".to_string()),
-        (2, "banana".to_string()),
-        (1, "apricot".to_string()),
-        (3, "cherry".to_string()),
-        (2, "blueberry".to_string()),
-    ]
-}
-
-/// Create a simple RDD from vector data
-pub fn create_simple_rdd<T: barks_core::operations::RddDataType>(
-    data: Vec<T>,
-) -> DistributedRdd<T> {
-    DistributedRdd::from_vec(data)
-}
-
 /// Create an RDD with specific number of partitions
 pub fn create_partitioned_rdd<T: barks_core::operations::RddDataType>(
     data: Vec<T>,
@@ -71,10 +54,6 @@ pub fn create_partitioned_rdd<T: barks_core::operations::RddDataType>(
 /// Common operations for testing
 pub fn double_operation() -> Box<dyn barks_core::operations::I32Operation> {
     Box::new(DoubleOperation)
-}
-
-pub fn even_predicate() -> Box<dyn barks_core::operations::I32Predicate> {
-    Box::new(EvenPredicate)
 }
 
 pub fn greater_than_predicate(threshold: i32) -> Box<dyn barks_core::operations::I32Predicate> {

@@ -476,10 +476,12 @@ mod tests {
     use crate::shuffle::HashPartitioner;
     use crate::traits::RddBase;
 
-    fn get_test_rdds() -> (
+    type TestRddPair = (
         Arc<DistributedRdd<(String, i32)>>,
         Arc<DistributedRdd<(String, String)>>,
-    ) {
+    );
+
+    fn get_test_rdds() -> TestRddPair {
         let left_data = vec![
             ("a".to_string(), 1),
             ("b".to_string(), 2),
