@@ -163,6 +163,79 @@ impl ShuffleBlockManager for OptimizedShuffleBlockManager {
     }
 }
 
+impl OptimizedShuffleBlockManager {
+    /// Removes all files and directories associated with a given shuffle_id.
+    /// This is useful for cleaning up after a job is finished.
+    pub async fn remove_shuffle(&self, shuffle_id: u32) -> Result<()> {
+        let shuffle_dir = self.root_dir.join(shuffle_id.to_string());
+        if fs::try_exists(&shuffle_dir).await? {
+            fs::remove_dir_all(&shuffle_dir).await?;
+        }
+        Ok(())
+    }
+
+    /// Get statistics about shuffle storage usage
+    pub async fn get_shuffle_stats(&self, shuffle_id: u32) -> Result<ShuffleStats> {
+        let shuffle_dir = self.root_dir.join(shuffle_id.to_string());
+        let mut total_size = 0u64;
+        let mut block_count = 0u32;
+
+        if fs::try_exists(&shuffle_dir).await? {
+            let mut entries = fs::read_dir(&shuffle_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_type().await?.is_file() {
+                    total_size += entry.metadata().await?.len();
+                    block_count += 1;
+                }
+            }
+        }
+
+        Ok(ShuffleStats {
+            shuffle_id,
+            total_size_bytes: total_size,
+            block_count,
+            compression_ratio: self.config.compression.estimated_compression_ratio(),
+        })
+    }
+
+    /// Clean up old shuffle data based on age
+    pub async fn cleanup_old_shuffles(&self, max_age_secs: u64) -> Result<Vec<u32>> {
+        let mut cleaned_shuffles = Vec::new();
+        let cutoff_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+            .saturating_sub(max_age_secs);
+
+        let mut entries = fs::read_dir(&self.root_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                if let Ok(shuffle_id) = entry.file_name().to_string_lossy().parse::<u32>() {
+                    let metadata = entry.metadata().await?;
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(modified_secs) = modified.duration_since(std::time::UNIX_EPOCH) {
+                            if modified_secs.as_secs() < cutoff_time {
+                                self.remove_shuffle(shuffle_id).await?;
+                                cleaned_shuffles.push(shuffle_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(cleaned_shuffles)
+    }
+}
+
+/// Statistics about shuffle storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShuffleStats {
+    pub shuffle_id: u32,
+    pub total_size_bytes: u64,
+    pub block_count: u32,
+    pub compression_ratio: f32,
+}
+
 /// Hash-based shuffle writer that sorts data before writing to improve read performance
 pub struct HashShuffleWriter<K, V> {
     shuffle_id: u32,

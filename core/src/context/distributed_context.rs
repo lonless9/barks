@@ -345,6 +345,7 @@ impl DistributedContext {
                 let mut stage_output_locations: HashMap<usize, Vec<(MapStatus, ExecutorInfo)>> =
                     HashMap::new();
                 let mut failed_attempts: HashMap<usize, u32> = HashMap::new(); // stage_id -> attempt_count
+                let shuffle_ids_to_cleanup: HashSet<u32> = HashSet::new(); // Track shuffle IDs for cleanup
 
                 // Helper to traverse the stage graph and populate `all_stages`.
                 let mut q = VecDeque::new();
@@ -523,6 +524,11 @@ impl DistributedContext {
                                         _ => vec![],
                                     })
                                     .collect();
+
+                                // Job completed successfully, clean up shuffle data
+                                self.cleanup_job_shuffles(&job_id, &shuffle_ids_to_cleanup)
+                                    .await;
+
                                 return Ok(collected_results);
                             } else {
                                 // This is a ShuffleMapStage. Collect MapStatus and ExecutorInfo.
@@ -601,6 +607,41 @@ impl DistributedContext {
         } else {
             None
         }
+    }
+
+    /// Clean up shuffle data for a completed job
+    async fn cleanup_job_shuffles(&self, job_id: &str, shuffle_ids: &HashSet<u32>) {
+        if shuffle_ids.is_empty() {
+            return;
+        }
+
+        info!(
+            "Cleaning up {} shuffle(s) for job {}",
+            shuffle_ids.len(),
+            job_id
+        );
+
+        if let Some(driver) = &self.driver {
+            // Send cleanup requests to all executors
+            let executor_infos = driver.get_all_executor_infos().await;
+
+            for shuffle_id in shuffle_ids {
+                // Clean up on each executor
+                for executor_info in &executor_infos {
+                    if let Err(e) = driver
+                        .cleanup_shuffle_on_executor(&executor_info.executor_id, *shuffle_id)
+                        .await
+                    {
+                        warn!(
+                            "Failed to cleanup shuffle {} on executor {}: {}",
+                            shuffle_id, executor_info.executor_id, e
+                        );
+                    }
+                }
+            }
+        }
+
+        info!("Shuffle cleanup completed for job {}", job_id);
     }
 }
 

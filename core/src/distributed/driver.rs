@@ -909,6 +909,69 @@ impl Driver {
         self.task_scheduler.get_executor_info(executor_id).await
     }
 
+    /// Get information about all registered executors
+    pub async fn get_all_executor_infos(&self) -> Vec<ExecutorInfo> {
+        let executors = self.service.executors.lock().await;
+        executors.values().map(|e| e.info.clone()).collect()
+    }
+
+    /// Get or create an executor client for the given executor ID
+    async fn get_or_create_executor_client(
+        &self,
+        executor_id: &ExecutorId,
+    ) -> Result<ExecutorServiceClient<tonic::transport::Channel>, anyhow::Error> {
+        // First, get the executor info
+        let executor = {
+            let executors = self.service.executors.lock().await;
+            executors.get(executor_id).cloned()
+        };
+
+        let executor =
+            executor.ok_or_else(|| anyhow::anyhow!("Executor {} not found", executor_id))?;
+
+        DriverServiceImpl::get_or_create_executor_client_static(
+            &executor,
+            self.service.executor_clients.clone(),
+        )
+        .await
+    }
+
+    /// Send cleanup request to a specific executor for a shuffle ID
+    pub async fn cleanup_shuffle_on_executor(
+        &self,
+        executor_id: &ExecutorId,
+        shuffle_id: u32,
+    ) -> Result<(), anyhow::Error> {
+        use crate::distributed::proto::executor::CleanupShuffleRequest;
+
+        // Get or create client for this executor
+        let mut client = self.get_or_create_executor_client(executor_id).await?;
+
+        let request = CleanupShuffleRequest { shuffle_id };
+
+        match client.cleanup_shuffle(Request::new(request)).await {
+            Ok(response) => {
+                let resp = response.into_inner();
+                if resp.success {
+                    debug!(
+                        "Successfully cleaned up shuffle {} on executor {}",
+                        shuffle_id, executor_id
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Cleanup failed: {}", resp.message))
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to send cleanup request to executor {}: {}",
+                    executor_id, e
+                );
+                Err(anyhow::anyhow!("gRPC error: {}", e))
+            }
+        }
+    }
+
     /// Collect results from all executors for a stage
     pub async fn collect_stage_results(
         &self,
