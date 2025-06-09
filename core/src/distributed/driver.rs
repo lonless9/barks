@@ -3,6 +3,8 @@
 //! The Driver is responsible for coordinating executors, scheduling tasks,
 //! and managing the overall distributed computation.
 
+use crate::accumulator::{AccumulatorManager, AccumulatorUpdate};
+use crate::broadcast::BroadcastManager;
 use crate::context::DistributedConfig;
 use crate::distributed::proto::driver::{
     ExecutorStatus, HeartbeatRequest, HeartbeatResponse, RegisterExecutorRequest,
@@ -61,6 +63,10 @@ pub struct DriverServiceImpl {
     /// Heartbeat monitoring
     heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
     heartbeat_sender: mpsc::UnboundedSender<HeartbeatInfo>,
+    /// Broadcast variable manager
+    broadcast_manager: Arc<BroadcastManager>,
+    /// Accumulator manager
+    accumulator_manager: Arc<AccumulatorManager>,
 }
 
 /// Information about a registered executor
@@ -79,6 +85,8 @@ struct HeartbeatInfo {
     timestamp: u64,
     status: ExecutorStatus,
     metrics: ExecutorMetrics,
+    #[allow(dead_code)] // Will be used when accumulator updates are implemented in heartbeats
+    accumulator_updates: Vec<AccumulatorUpdate>,
 }
 
 impl DriverServiceImpl {
@@ -99,6 +107,8 @@ impl DriverServiceImpl {
             executor_clients: Arc::new(Mutex::new(HashMap::new())),
             heartbeat_receiver: Arc::new(Mutex::new(heartbeat_receiver)),
             heartbeat_sender,
+            broadcast_manager: Arc::new(BroadcastManager::new()),
+            accumulator_manager: Arc::new(AccumulatorManager::new()),
         }
     }
 
@@ -470,6 +480,16 @@ impl DriverServiceImpl {
         current_timestamp_secs()
     }
 
+    /// Get the broadcast manager
+    pub fn broadcast_manager(&self) -> Arc<BroadcastManager> {
+        Arc::clone(&self.broadcast_manager)
+    }
+
+    /// Get the accumulator manager
+    pub fn accumulator_manager(&self) -> Arc<AccumulatorManager> {
+        Arc::clone(&self.accumulator_manager)
+    }
+
     /// Convert protobuf ExecutorStatus to internal type
     fn convert_executor_status(status: i32) -> ExecutorStatus {
         ExecutorStatus::try_from(status).unwrap_or(ExecutorStatus::Failed)
@@ -697,6 +717,7 @@ impl DriverService for DriverServiceImpl {
             timestamp: req.timestamp,
             status: Self::convert_executor_status(req.status),
             metrics,
+            accumulator_updates: Vec::new(), // TODO: Extract from heartbeat request
         };
 
         // Send heartbeat to monitor
@@ -993,5 +1014,15 @@ impl Driver {
         // This now correctly checks the driver's active task map.
         let active_tasks = self.service.active_tasks.lock().await;
         active_tasks.get(task_id).cloned()
+    }
+
+    /// Get the broadcast manager
+    pub fn broadcast_manager(&self) -> Arc<BroadcastManager> {
+        self.service.broadcast_manager()
+    }
+
+    /// Get the accumulator manager
+    pub fn accumulator_manager(&self) -> Arc<AccumulatorManager> {
+        self.service.accumulator_manager()
     }
 }

@@ -31,6 +31,11 @@ pub enum DistributedRdd<T: RddDataType> {
         parent: Arc<DistributedRdd<T>>,
         predicate: T::FilterPredicate,
     },
+    /// RDD that applies a flatMap transformation
+    FlatMap {
+        parent: Arc<DistributedRdd<T>>,
+        operation: T::FlatMapOperation,
+    },
     /// RDD that represents the union of two RDDs
     Union {
         left: Arc<DistributedRdd<T>>,
@@ -78,6 +83,14 @@ impl<T: RddDataType> DistributedRdd<T> {
         Self::Filter {
             parent: Arc::new(self),
             predicate,
+        }
+    }
+
+    /// Apply a flatMap transformation to this RDD
+    pub fn flat_map(self, operation: T::FlatMapOperation) -> Self {
+        Self::FlatMap {
+            parent: Arc::new(self),
+            operation,
         }
     }
 
@@ -160,6 +173,10 @@ impl<T: RddDataType> DistributedRdd<T> {
                 parent: Arc::new((*parent).clone().coalesce(num_partitions)),
                 predicate,
             },
+            Self::FlatMap { parent, operation } => Self::FlatMap {
+                parent: Arc::new((*parent).clone().coalesce(num_partitions)),
+                operation,
+            },
             Self::Union { left, right } => Self::Union {
                 left: Arc::new((*left).clone().coalesce(num_partitions / 2)),
                 right: Arc::new((*right).clone().coalesce(num_partitions / 2)),
@@ -191,6 +208,10 @@ impl<T: RddDataType> DistributedRdd<T> {
                     operations.push(predicate.into());
                     current_rdd = (*parent).clone();
                 }
+                Self::FlatMap { parent, operation } => {
+                    operations.push(operation.into());
+                    current_rdd = (*parent).clone();
+                }
                 Self::Union { .. } | Self::Distinct { .. } => {
                     // Union and Distinct operations cannot be analyzed as simple lineage chains
                     // For now, we'll create a dummy base data and empty operations
@@ -209,7 +230,9 @@ impl<T: RddDataType> DistributedRdd<T> {
             Self::Vec { num_partitions, .. } => (0..*num_partitions)
                 .map(|i| Box::new(BasicPartition::new(i)) as Box<dyn Partition>)
                 .collect(),
-            Self::Map { parent, .. } | Self::Filter { parent, .. } => parent.partitions(),
+            Self::Map { parent, .. }
+            | Self::Filter { parent, .. }
+            | Self::FlatMap { parent, .. } => parent.partitions(),
             Self::Union { left, right } => {
                 // Union creates new partitions that combine both RDDs
                 let left_partitions = left.num_partitions();
@@ -275,6 +298,13 @@ impl<T: RddDataType> DistributedRdd<T> {
             Self::Filter { parent, predicate } => {
                 let parent_data = parent.compute(partition)?;
                 let serializable_op: T::SerializableOperation = (*predicate).clone().into();
+                // Create a temporary arena for local execution
+                let arena = Bump::new();
+                Ok(T::apply_operation(&serializable_op, parent_data, &arena))
+            }
+            Self::FlatMap { parent, operation } => {
+                let parent_data = parent.compute(partition)?;
+                let serializable_op: T::SerializableOperation = (*operation).clone().into();
                 // Create a temporary arena for local execution
                 let arena = Bump::new();
                 Ok(T::apply_operation(&serializable_op, parent_data, &arena))
@@ -447,7 +477,9 @@ impl<T: RddDataType> crate::traits::IsRdd for DistributedRdd<T> {
                 // Base RDD has no dependencies
                 vec![]
             }
-            Self::Map { parent, .. } | Self::Filter { parent, .. } => {
+            Self::Map { parent, .. }
+            | Self::Filter { parent, .. }
+            | Self::FlatMap { parent, .. } => {
                 // A narrow dependency on the parent RDD.
                 vec![crate::traits::Dependency::Narrow(
                     parent.clone().as_is_rdd(),
@@ -506,6 +538,10 @@ impl<T: RddDataType> crate::traits::IsRdd for DistributedRdd<T> {
             }
             Self::Filter { parent, .. } => {
                 "Filter".hash(&mut hasher);
+                parent.id().hash(&mut hasher);
+            }
+            Self::FlatMap { parent, .. } => {
+                "FlatMap".hash(&mut hasher);
                 parent.id().hash(&mut hasher);
             }
             Self::Union { left, right } => {

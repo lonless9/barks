@@ -121,7 +121,10 @@ impl<T: Data> BlockManager<T> {
 
         // Cache on disk if required
         if storage_level.use_disk() {
-            self.disk_cache.put(&block_id, block.data).await?;
+            self.disk_cache
+                .put(&block_id, block.data)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to cache block to disk: {}", e))?;
 
             let mut stats = self.stats.write().await;
             let current_disk_usage = stats.disk_used;
@@ -145,7 +148,12 @@ impl<T: Data> BlockManager<T> {
         }
 
         // Try disk cache
-        if let Some(data) = self.disk_cache.get(block_id).await? {
+        if let Some(data) = self
+            .disk_cache
+            .get(block_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get block from disk cache: {}", e))?
+        {
             stats.record_hit();
             return Ok(Some(data));
         }
@@ -170,7 +178,10 @@ impl<T: Data> BlockManager<T> {
         }
 
         // Remove from disk cache
-        self.disk_cache.remove(block_id).await?;
+        self.disk_cache
+            .remove(block_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove block from disk cache: {}", e))?;
 
         Ok(())
     }
@@ -190,7 +201,10 @@ impl<T: Data> BlockManager<T> {
             *current_memory = 0;
         }
 
-        self.disk_cache.clear().await?;
+        self.disk_cache
+            .clear()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to clear disk cache: {}", e))?;
 
         let mut stats = self.stats.write().await;
         *stats = CacheStats::default();

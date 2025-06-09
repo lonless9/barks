@@ -1,7 +1,6 @@
 //! Key-Value Store implementations
 
 use crate::traits::*;
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
@@ -40,39 +39,39 @@ where
     type Key = K;
     type Value = V;
 
-    async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>> {
+    async fn get(&self, key: &Self::Key) -> KVStoreResult<Option<Self::Value>> {
         let data = self.data.read().await;
         Ok(data.get(key).cloned())
     }
 
-    async fn put(&self, key: &Self::Key, value: Self::Value) -> Result<()> {
+    async fn put(&self, key: &Self::Key, value: Self::Value) -> KVStoreResult<()> {
         let mut data = self.data.write().await;
         data.insert(key.clone(), value);
         Ok(())
     }
 
-    async fn remove(&self, key: &Self::Key) -> Result<Option<Self::Value>> {
+    async fn remove(&self, key: &Self::Key) -> KVStoreResult<Option<Self::Value>> {
         let mut data = self.data.write().await;
         Ok(data.remove(key))
     }
 
-    async fn contains_key(&self, key: &Self::Key) -> Result<bool> {
+    async fn contains_key(&self, key: &Self::Key) -> KVStoreResult<bool> {
         let data = self.data.read().await;
         Ok(data.contains_key(key))
     }
 
-    async fn keys(&self) -> Result<Vec<Self::Key>> {
+    async fn keys(&self) -> KVStoreResult<Vec<Self::Key>> {
         let data = self.data.read().await;
         Ok(data.keys().cloned().collect())
     }
 
-    async fn clear(&self) -> Result<()> {
+    async fn clear(&self) -> KVStoreResult<()> {
         let mut data = self.data.write().await;
         data.clear();
         Ok(())
     }
 
-    async fn size(&self) -> Result<usize> {
+    async fn size(&self) -> KVStoreResult<usize> {
         let data = self.data.read().await;
         Ok(data.len())
     }
@@ -108,7 +107,7 @@ where
 {
     /// Creates a new `FileKVStore`. If the file at `path` exists, it will be loaded.
     /// Otherwise, an empty store is created.
-    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub async fn new<P: AsRef<Path>>(path: P) -> KVStoreResult<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let mut store = Self {
             path: path_buf,
@@ -148,31 +147,31 @@ where
     type Key = K;
     type Value = V;
 
-    async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>> {
+    async fn get(&self, key: &Self::Key) -> KVStoreResult<Option<Self::Value>> {
         self.store.get(key).await
     }
 
-    async fn put(&self, key: &Self::Key, value: Self::Value) -> Result<()> {
+    async fn put(&self, key: &Self::Key, value: Self::Value) -> KVStoreResult<()> {
         self.store.put(key, value).await
     }
 
-    async fn remove(&self, key: &Self::Key) -> Result<Option<Self::Value>> {
+    async fn remove(&self, key: &Self::Key) -> KVStoreResult<Option<Self::Value>> {
         self.store.remove(key).await
     }
 
-    async fn contains_key(&self, key: &Self::Key) -> Result<bool> {
+    async fn contains_key(&self, key: &Self::Key) -> KVStoreResult<bool> {
         self.store.contains_key(key).await
     }
 
-    async fn keys(&self) -> Result<Vec<Self::Key>> {
+    async fn keys(&self) -> KVStoreResult<Vec<Self::Key>> {
         self.store.keys().await
     }
 
-    async fn clear(&self) -> Result<()> {
+    async fn clear(&self) -> KVStoreResult<()> {
         self.store.clear().await
     }
 
-    async fn size(&self) -> Result<usize> {
+    async fn size(&self) -> KVStoreResult<usize> {
         self.store.size().await
     }
 }
@@ -199,29 +198,41 @@ where
         + bincode::Decode<()>
         + 'static,
 {
-    async fn persist(&self) -> Result<()> {
+    async fn persist(&self) -> KVStoreResult<()> {
         let data_map = self.store.data.read().await;
-        let bytes = bincode::encode_to_vec(&*data_map, bincode::config::standard())?;
+        let bytes = bincode::encode_to_vec(&*data_map, bincode::config::standard())
+            .map_err(|e| KVStoreError::SerializationError(e.to_string()))?;
 
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| KVStoreError::IoError(e.to_string()))?;
         }
-        let mut file = File::create(&self.path).await?;
-        file.write_all(&bytes).await?;
+        let mut file = File::create(&self.path)
+            .await
+            .map_err(|e| KVStoreError::IoError(e.to_string()))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| KVStoreError::IoError(e.to_string()))?;
         Ok(())
     }
 
-    async fn load(&mut self) -> Result<()> {
-        let mut file = File::open(&self.path).await?;
+    async fn load(&mut self) -> KVStoreResult<()> {
+        let mut file = File::open(&self.path)
+            .await
+            .map_err(|e| KVStoreError::IoError(e.to_string()))?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).await?;
+        file.read_to_end(&mut buffer)
+            .await
+            .map_err(|e| KVStoreError::IoError(e.to_string()))?;
 
         if buffer.is_empty() {
             // Handle empty file case, initialize with empty map
             *self.store.data.write().await = HashMap::new();
         } else {
             let (decoded, _): (HashMap<K, V>, _) =
-                bincode::decode_from_slice(&buffer, bincode::config::standard())?;
+                bincode::decode_from_slice(&buffer, bincode::config::standard())
+                    .map_err(|e| KVStoreError::DeserializationError(e.to_string()))?;
             *self.store.data.write().await = decoded;
         }
         Ok(())

@@ -3,12 +3,14 @@
 //! This module provides the DistributedContext which extends FlowContext
 //! to support distributed execution using the Driver-Executor model.
 
+use crate::accumulator::{Accumulator, AccumulatorOp, CountAccumulator, SumAccumulator};
+use crate::broadcast::BroadcastVariable;
 use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
 use crate::distributed::stage::{DAGScheduler, Stage};
 use crate::distributed::types::*;
 use crate::rdd::DistributedRdd;
-use crate::traits::{RddError, RddResult};
+use crate::traits::{Data, RddError, RddResult};
 use barks_network_shuffle::traits::MapStatus;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -269,6 +271,71 @@ impl DistributedContext {
         num_partitions: usize,
     ) -> DistributedRdd<T> {
         DistributedRdd::from_vec_with_partitions(data, num_partitions)
+    }
+
+    /// Create a broadcast variable (only available in driver mode)
+    pub async fn broadcast<T: Data>(&self, value: T) -> Result<BroadcastVariable<T>, RddError> {
+        match &self.mode {
+            ExecutionMode::Driver => {
+                if let Some(driver) = &self.driver {
+                    let broadcast = BroadcastVariable::new(value);
+                    let broadcast_manager = driver.broadcast_manager();
+                    broadcast_manager
+                        .register_broadcast(&broadcast)
+                        .await
+                        .map_err(|e| {
+                            RddError::ContextError(format!(
+                                "Failed to register broadcast variable: {}",
+                                e
+                            ))
+                        })?;
+                    Ok(broadcast)
+                } else {
+                    Err(RddError::ContextError("Driver not initialized".to_string()))
+                }
+            }
+            _ => Err(RddError::ContextError(
+                "Broadcast variables can only be created in driver mode".to_string(),
+            )),
+        }
+    }
+
+    /// Create an accumulator (only available in driver mode)
+    pub async fn accumulator<T: Data>(
+        &self,
+        name: String,
+        op: Arc<dyn AccumulatorOp<T>>,
+    ) -> Result<Accumulator<T>, RddError> {
+        match &self.mode {
+            ExecutionMode::Driver => {
+                if let Some(driver) = &self.driver {
+                    let accumulator = Accumulator::new(name, op);
+                    let accumulator_manager = driver.accumulator_manager();
+                    accumulator_manager.register_accumulator(&accumulator).await;
+                    Ok(accumulator)
+                } else {
+                    Err(RddError::ContextError("Driver not initialized".to_string()))
+                }
+            }
+            _ => Err(RddError::ContextError(
+                "Accumulators can only be created in driver mode".to_string(),
+            )),
+        }
+    }
+
+    /// Create a sum accumulator for numeric types
+    pub async fn sum_accumulator<T>(&self, name: String) -> Result<Accumulator<T>, RddError>
+    where
+        T: Data + std::ops::Add<Output = T> + Default + Clone + Send + Sync + std::fmt::Debug,
+    {
+        let op = Arc::new(SumAccumulator::<T>::new());
+        self.accumulator(name, op).await
+    }
+
+    /// Create a count accumulator
+    pub async fn count_accumulator(&self, name: String) -> Result<Accumulator<u64>, RddError> {
+        let op = Arc::new(CountAccumulator);
+        self.accumulator(name, op).await
     }
 
     /// Run an RDD computation and collect results

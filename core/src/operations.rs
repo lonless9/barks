@@ -29,6 +29,9 @@ pub trait RddDataType:
     /// The Filter operation trait object type associated with this data type.
     type FilterPredicate: Send + Sync + Debug + DynClone + Clone;
 
+    /// The FlatMap operation trait object type associated with this data type.
+    type FlatMapOperation: Send + Sync + Debug + DynClone + Clone;
+
     /// The serializable operation enum containing the above operations.
     type SerializableOperation: Send
         + Sync
@@ -37,7 +40,8 @@ pub trait RddDataType:
         + Serialize
         + for<'de> Deserialize<'de>
         + From<Self::MapOperation>
-        + From<Self::FilterPredicate>;
+        + From<Self::FilterPredicate>
+        + From<Self::FlatMapOperation>;
 
     /// Applies a serializable operation to a vector of data.
     /// The arena parameter provides efficient memory allocation for intermediate computations.
@@ -74,6 +78,14 @@ pub trait I32Predicate: Send + Sync + Debug + DynClone {
 }
 dyn_clone::clone_trait_object!(I32Predicate);
 
+/// Trait for serializable flatMap operations on i32 values
+#[typetag::serde(tag = "type")]
+pub trait I32FlatMapOperation: Send + Sync + Debug + DynClone {
+    /// Execute the flatMap operation on a single i32 item, returning a vector of results
+    fn execute(&self, item: i32) -> Vec<i32>;
+}
+dyn_clone::clone_trait_object!(I32FlatMapOperation);
+
 /// Trait for serializable operations on String values
 #[typetag::serde(tag = "type")]
 pub trait StringOperation: Send + Sync + Debug + DynClone {
@@ -90,12 +102,21 @@ pub trait StringPredicate: Send + Sync + Debug + DynClone {
 }
 dyn_clone::clone_trait_object!(StringPredicate);
 
+/// Trait for serializable flatMap operations on String values
+#[typetag::serde(tag = "type")]
+pub trait StringFlatMapOperation: Send + Sync + Debug + DynClone {
+    /// Execute the flatMap operation on a single String item, returning a vector of results
+    fn execute(&self, item: String) -> Vec<String>;
+}
+dyn_clone::clone_trait_object!(StringFlatMapOperation);
+
 /// Enum to hold different kinds of serializable i32 operations.
 /// This makes it easy to create a chain of different transformations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerializableI32Operation {
     Map(Box<dyn I32Operation>),
     Filter(Box<dyn I32Predicate>),
+    FlatMap(Box<dyn I32FlatMapOperation>),
 }
 
 impl From<Box<dyn I32Operation>> for SerializableI32Operation {
@@ -110,11 +131,18 @@ impl From<Box<dyn I32Predicate>> for SerializableI32Operation {
     }
 }
 
+impl From<Box<dyn I32FlatMapOperation>> for SerializableI32Operation {
+    fn from(op: Box<dyn I32FlatMapOperation>) -> Self {
+        SerializableI32Operation::FlatMap(op)
+    }
+}
+
 /// Enum to hold different kinds of serializable String operations.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerializableStringOperation {
     Map(Box<dyn StringOperation>),
     Filter(Box<dyn StringPredicate>),
+    FlatMap(Box<dyn StringFlatMapOperation>),
 }
 
 impl From<Box<dyn StringOperation>> for SerializableStringOperation {
@@ -129,10 +157,17 @@ impl From<Box<dyn StringPredicate>> for SerializableStringOperation {
     }
 }
 
+impl From<Box<dyn StringFlatMapOperation>> for SerializableStringOperation {
+    fn from(op: Box<dyn StringFlatMapOperation>) -> Self {
+        SerializableStringOperation::FlatMap(op)
+    }
+}
+
 /// Implement RddDataType for i32
 impl RddDataType for i32 {
     type MapOperation = Box<dyn I32Operation>;
     type FilterPredicate = Box<dyn I32Predicate>;
+    type FlatMapOperation = Box<dyn I32FlatMapOperation>;
     type SerializableOperation = SerializableI32Operation;
 
     fn apply_operation(
@@ -151,6 +186,10 @@ impl RddDataType for i32 {
                 .par_iter()
                 .filter(|&item| filter_op.test(item))
                 .cloned()
+                .collect(),
+            SerializableI32Operation::FlatMap(flatmap_op) => data
+                .par_iter()
+                .flat_map(|item| flatmap_op.execute(*item))
                 .collect(),
         }
     }
@@ -184,6 +223,7 @@ impl RddDataType for i32 {
 impl RddDataType for String {
     type MapOperation = Box<dyn StringOperation>;
     type FilterPredicate = Box<dyn StringPredicate>;
+    type FlatMapOperation = Box<dyn StringFlatMapOperation>;
     type SerializableOperation = SerializableStringOperation;
 
     fn apply_operation(
@@ -202,6 +242,10 @@ impl RddDataType for String {
                 .par_iter()
                 .filter(|item| filter_op.test(item))
                 .cloned()
+                .collect(),
+            SerializableStringOperation::FlatMap(flatmap_op) => data
+                .par_iter()
+                .flat_map(|item| flatmap_op.execute(item.clone()))
                 .collect(),
         }
     }
@@ -316,6 +360,45 @@ impl StringPredicate for MinLengthPredicate {
     }
 }
 
+/// FlatMap operation that splits an integer into a range
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SplitToRangeOperation {
+    pub factor: i32,
+}
+
+#[typetag::serde]
+impl I32FlatMapOperation for SplitToRangeOperation {
+    fn execute(&self, item: i32) -> Vec<i32> {
+        if item <= 0 {
+            vec![]
+        } else {
+            (0..item.min(self.factor)).collect()
+        }
+    }
+}
+
+/// FlatMap operation that splits a string into words
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SplitWordsOperation;
+
+#[typetag::serde]
+impl StringFlatMapOperation for SplitWordsOperation {
+    fn execute(&self, item: String) -> Vec<String> {
+        item.split_whitespace().map(|s| s.to_string()).collect()
+    }
+}
+
+/// FlatMap operation that splits a string into characters
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SplitCharsOperation;
+
+#[typetag::serde]
+impl StringFlatMapOperation for SplitCharsOperation {
+    fn execute(&self, item: String) -> Vec<String> {
+        item.chars().map(|c| c.to_string()).collect()
+    }
+}
+
 /// Trait for serializable operations on (String, i32) tuple values
 #[typetag::serde(tag = "type")]
 pub trait StringI32TupleOperation: Send + Sync + Debug + DynClone {
@@ -355,6 +438,7 @@ impl From<Box<dyn StringI32TuplePredicate>> for SerializableStringI32TupleOperat
 impl RddDataType for (String, i32) {
     type MapOperation = Box<dyn StringI32TupleOperation>;
     type FilterPredicate = Box<dyn StringI32TuplePredicate>;
+    type FlatMapOperation = Box<dyn StringI32TupleOperation>; // Reuse map operation for simplicity
     type SerializableOperation = SerializableStringI32TupleOperation;
 
     fn apply_operation(
@@ -441,6 +525,7 @@ impl From<Box<dyn I32StringTuplePredicate>> for SerializableI32StringTupleOperat
 impl RddDataType for (i32, String) {
     type MapOperation = Box<dyn I32StringTupleOperation>;
     type FilterPredicate = Box<dyn I32StringTuplePredicate>;
+    type FlatMapOperation = Box<dyn I32StringTupleOperation>; // Reuse map operation for simplicity
     type SerializableOperation = SerializableI32StringTupleOperation;
 
     fn apply_operation(
@@ -492,6 +577,7 @@ impl RddDataType for (i32, String) {
 impl RddDataType for (String, String) {
     type MapOperation = Box<dyn StringOperation>;
     type FilterPredicate = Box<dyn StringPredicate>;
+    type FlatMapOperation = Box<dyn StringOperation>; // Reuse string operation for simplicity
     type SerializableOperation = SerializableStringOperation;
 
     fn apply_operation(
@@ -504,6 +590,7 @@ impl RddDataType for (String, String) {
         match op {
             SerializableStringOperation::Map(_) => data, // Pass through unchanged
             SerializableStringOperation::Filter(_) => data, // Pass through unchanged
+            SerializableStringOperation::FlatMap(_) => data, // Pass through unchanged
         }
     }
 
@@ -536,3 +623,50 @@ impl RddDataType for (String, String) {
 }
 
 pub mod tests;
+
+#[cfg(test)]
+mod flatmap_tests {
+    use super::*;
+    use crate::rdd::DistributedRdd;
+
+    #[test]
+    fn test_i32_flatmap_split_to_range() {
+        let data = vec![3, 1, 4];
+        let rdd = DistributedRdd::from_vec(data);
+
+        let flatmap_op: Box<dyn I32FlatMapOperation> =
+            Box::new(SplitToRangeOperation { factor: 10 });
+        let result_rdd = rdd.flat_map(flatmap_op);
+
+        let result = result_rdd.collect().unwrap();
+        // 3 -> [0, 1, 2], 1 -> [0], 4 -> [0, 1, 2, 3]
+        let expected = vec![0, 1, 2, 0, 0, 1, 2, 3];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_flatmap_split_words() {
+        let data = vec!["hello world".to_string(), "rust programming".to_string()];
+        let rdd = DistributedRdd::from_vec(data);
+
+        let flatmap_op: Box<dyn StringFlatMapOperation> = Box::new(SplitWordsOperation);
+        let result_rdd = rdd.flat_map(flatmap_op);
+
+        let result = result_rdd.collect().unwrap();
+        let expected = vec!["hello", "world", "rust", "programming"];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_flatmap_split_chars() {
+        let data = vec!["hi".to_string(), "ok".to_string()];
+        let rdd = DistributedRdd::from_vec(data);
+
+        let flatmap_op: Box<dyn StringFlatMapOperation> = Box::new(SplitCharsOperation);
+        let result_rdd = rdd.flat_map(flatmap_op);
+
+        let result = result_rdd.collect().unwrap();
+        let expected = vec!["h", "i", "o", "k"];
+        assert_eq!(result, expected);
+    }
+}

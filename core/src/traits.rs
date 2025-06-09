@@ -133,11 +133,27 @@ pub trait RddBase: IsRdd {
 
 /// A data type that can be used in an RDD.
 pub trait Data:
-    Send + Sync + Clone + Debug + Serialize + for<'de> Deserialize<'de> + 'static
+    Send
+    + Sync
+    + Clone
+    + Debug
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + bincode::Encode
+    + bincode::Decode<()>
+    + 'static
 {
 }
 impl<T> Data for T where
-    T: Send + Sync + Clone + Debug + Serialize + for<'de> Deserialize<'de> + 'static
+    T: Send
+        + Sync
+        + Clone
+        + Debug
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + bincode::Encode
+        + bincode::Decode<()>
+        + 'static
 {
 }
 
