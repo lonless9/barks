@@ -63,7 +63,9 @@ async fn test_task_runner_with_chained_i32_task() {
 
     let serialized_task = serde_json::to_vec(&task).unwrap();
 
-    let result = task_runner.submit_task(0, serialized_task).await;
+    let result = task_runner
+        .submit_task("test_task_1".to_string(), 0, serialized_task)
+        .await;
     let result_data = extract_result(result);
     assert_eq!(result_data, vec![2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
 
@@ -74,7 +76,9 @@ async fn test_task_runner_with_chained_i32_task() {
         vec![SerializableI32Operation::Filter(Box::new(EvenPredicate))],
     ));
     let serialized_task = serde_json::to_vec(&task).unwrap();
-    let result = task_runner.submit_task(0, serialized_task).await;
+    let result = task_runner
+        .submit_task("test_task_2".to_string(), 0, serialized_task)
+        .await;
     let result_data = extract_result(result);
     assert_eq!(result_data, vec![2, 4, 6, 8, 10]);
 
@@ -88,7 +92,9 @@ async fn test_task_runner_with_chained_i32_task() {
         ],
     ));
     let serialized_task = serde_json::to_vec(&task).unwrap();
-    let result = task_runner.submit_task(0, serialized_task).await;
+    let result = task_runner
+        .submit_task("test_task_3".to_string(), 0, serialized_task)
+        .await;
     let result_data = extract_result(result);
     assert_eq!(result_data, vec![12, 14, 16, 18, 20]);
 }

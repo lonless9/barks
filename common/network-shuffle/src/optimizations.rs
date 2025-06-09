@@ -270,9 +270,16 @@ where
         block_manager: Arc<dyn ShuffleBlockManager>,
         config: ShuffleConfig,
     ) -> Self {
-        // Each writer gets its own temporary spill directory
-        let spill_dir =
-            std::env::temp_dir().join(format!("barks_shuffle_{}_{}", shuffle_id, map_id));
+        // Each writer gets its own temporary spill directory with a unique identifier
+        // to avoid conflicts when multiple tests run in parallel
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let spill_dir = std::env::temp_dir().join(format!(
+            "barks_shuffle_{}_{}_{}",
+            shuffle_id, map_id, unique_id
+        ));
         Self {
             shuffle_id,
             map_id,
