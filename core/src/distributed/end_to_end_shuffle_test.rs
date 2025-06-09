@@ -9,6 +9,8 @@ mod tests {
     use crate::distributed::stage::DAGScheduler;
     use crate::distributed::task::{ShuffleMapTask, ShuffleReduceTask};
     use crate::rdd::DistributedRdd;
+    use crate::rdd::transformations::PairRddExt;
+    use crate::shuffle::HashPartitioner;
     use crate::traits::RddBase;
     use std::sync::Arc;
     use tokio;
@@ -117,6 +119,32 @@ mod tests {
 
         // We might not have any stages due to our simplified implementation
         println!("Created {} stages", stages.len());
+    }
+
+    #[test]
+    fn test_dagscheduler_stage_creation() {
+        let scheduler = DAGScheduler::new();
+
+        // Create an RDD with a shuffle dependency
+        let data = vec![("a".to_string(), 1), ("b".to_string(), 2)];
+        let rdd = DistributedRdd::from_vec(data);
+        let partitioner = Arc::new(HashPartitioner::new(2));
+        let shuffled_rdd = rdd.reduce_by_key(|a, b| a + b, partitioner);
+
+        // Create a ResultStage for the final RDD
+        let result_stage = scheduler.new_result_stage(shuffled_rdd, "job-1");
+
+        // Verify the stage graph
+        // The ResultStage should have one parent, which is a ShuffleMapStage
+        assert_eq!(result_stage.stage.parents.len(), 1);
+        let parent_stage = &result_stage.stage.parents[0];
+
+        // The parent stage should be a ShuffleMapStage with a shuffle dependency
+        assert!(parent_stage.shuffle_dependency.is_some());
+        assert!(
+            parent_stage.parents.is_empty(),
+            "ShuffleMapStage should have no parents in this simple case"
+        );
     }
 
     /// Test DistributedContext with new DAGScheduler

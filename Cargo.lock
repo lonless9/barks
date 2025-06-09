@@ -299,6 +299,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

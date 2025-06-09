@@ -471,6 +471,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_compression_codec_properties() {
+        let none_codec = CompressionCodec::None;
+        assert!(none_codec.is_available());
+        assert_eq!(none_codec.estimated_compression_ratio(), 1.0);
+
+        #[cfg(feature = "compression")]
+        {
+            let lz4_codec = CompressionCodec::Lz4;
+            assert!(lz4_codec.is_available());
+            // LZ4 typically achieves ~40% compression, so ratio is ~0.6
+            assert!((lz4_codec.estimated_compression_ratio() - 0.6).abs() < f32::EPSILON);
+        }
+    }
+
     #[tokio::test]
     async fn test_optimized_shuffle_block_manager_spill() {
         let dir = tempdir().unwrap();
@@ -517,6 +532,65 @@ mod tests {
         // Test removing a block
         manager.remove_block(&block_id2).await.unwrap();
         assert!(!manager.contains_block(&block_id2).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_optimized_shuffle_manager_stats_and_cleanup() {
+        let dir = tempdir().unwrap();
+        let config = ShuffleConfig::default();
+        let manager = OptimizedShuffleBlockManager::new(dir.path(), config).unwrap();
+
+        // --- Test Cleanup Setup ---
+        // Create an old shuffle directory first
+        let old_shuffle_id = 2;
+        let old_shuffle_dir = dir.path().join(old_shuffle_id.to_string());
+        tokio::fs::create_dir(&old_shuffle_dir).await.unwrap();
+        tokio::fs::write(old_shuffle_dir.join("0_0"), b"old_data")
+            .await
+            .unwrap();
+
+        // Wait for a second so the old directory is "old"
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // --- Test Stats ---
+        let shuffle_id = 1;
+        let block_id1 = ShuffleBlockId {
+            shuffle_id,
+            map_id: 0,
+            reduce_id: 0,
+        };
+        let block_id2 = ShuffleBlockId {
+            shuffle_id,
+            map_id: 0,
+            reduce_id: 1,
+        };
+        let data1 = vec![0; 50];
+        let data2 = vec![1; 60];
+
+        manager.put_block(block_id1.clone(), data1).await.unwrap();
+        manager.put_block(block_id2.clone(), data2).await.unwrap();
+
+        let stats = manager.get_shuffle_stats(shuffle_id).await.unwrap();
+        assert_eq!(stats.shuffle_id, shuffle_id);
+        assert_eq!(stats.block_count, 2);
+        let expected_size = manager.get_block_size(&block_id1).await.unwrap()
+            + manager.get_block_size(&block_id2).await.unwrap();
+        assert_eq!(stats.total_size_bytes, expected_size);
+
+        // --- Test Cleanup ---
+
+        // The current shuffle directory should exist because we put blocks in it
+        let current_shuffle_dir = dir.path().join(shuffle_id.to_string());
+
+        // Cleanup shuffles older than 1 second (old shuffle should be cleaned, current should remain)
+        let cleaned = manager.cleanup_old_shuffles(1).await.unwrap();
+
+        assert!(cleaned.contains(&old_shuffle_id));
+        assert!(!tokio::fs::try_exists(&old_shuffle_dir).await.unwrap());
+        assert!(tokio::fs::try_exists(&current_shuffle_dir).await.unwrap());
+
+        manager.remove_shuffle(shuffle_id).await.unwrap();
+        assert!(!tokio::fs::try_exists(&current_shuffle_dir).await.unwrap());
     }
 
     #[tokio::test]

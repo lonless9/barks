@@ -133,6 +133,7 @@ impl<W: Write> Drop for BufferedWriter<W> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use tempfile::tempdir;
 
     #[test]
     fn test_buffered_reader() {
@@ -154,5 +155,59 @@ mod tests {
             writer.flush_buffer().unwrap();
         }
         assert_eq!(buffer, b"Hello, World!");
+    }
+
+    #[test]
+    fn test_file_utils() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+
+        // --- Test ensure_dir_exists and path_exists ---
+        let sub_dir = path.join("sub");
+        assert!(!path_exists(&sub_dir));
+        ensure_dir_exists(&sub_dir).unwrap();
+        assert!(path_exists(&sub_dir));
+
+        // --- Test write and read string ---
+        let file_path = path.join("test.txt");
+        let content = "Hello, barks!";
+        write_string_to_file(&file_path, content).unwrap();
+        let read_content = read_file_to_string(&file_path).unwrap();
+        assert_eq!(read_content, content);
+
+        // --- Test write and read bytes ---
+        let bytes_path = path.join("test.bin");
+        let bytes_content = vec![1, 2, 3, 4, 5];
+        write_bytes_to_file(&bytes_path, &bytes_content).unwrap();
+        let read_bytes = read_file_to_bytes(&bytes_path).unwrap();
+        assert_eq!(read_bytes, bytes_content);
+
+        // --- Test file_size ---
+        let size = file_size(&bytes_path).unwrap();
+        assert_eq!(size, 5);
+
+        // --- Test copy_file ---
+        let copy_path = path.join("test.bin.copy");
+        let copied_bytes = copy_file(&bytes_path, &copy_path).unwrap();
+        assert_eq!(copied_bytes, 5);
+        assert!(path_exists(&copy_path));
+        let copied_content = read_file_to_bytes(&copy_path).unwrap();
+        assert_eq!(copied_content, bytes_content);
+
+        // --- Test remove_file_if_exists ---
+        remove_file_if_exists(&file_path).unwrap();
+        assert!(!path_exists(&file_path));
+        // Removing non-existent file should be ok
+        remove_file_if_exists(&file_path).unwrap();
+
+        // --- Test remove_dir_if_exists ---
+        let dir_to_remove = path.join("to_remove");
+        ensure_dir_exists(&dir_to_remove).unwrap();
+        write_string_to_file(dir_to_remove.join("file.txt"), "content").unwrap();
+        assert!(path_exists(&dir_to_remove));
+        remove_dir_if_exists(&dir_to_remove).unwrap();
+        assert!(!path_exists(&dir_to_remove));
+        // Removing non-existent dir should be ok
+        remove_dir_if_exists(&dir_to_remove).unwrap();
     }
 }
