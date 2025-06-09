@@ -123,20 +123,47 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
-        _map_output_info: Option<
+        map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,
                 crate::distributed::types::ExecutorInfo,
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        unimplemented!(
-            "SortedRdd task creation is not implemented. A distributed sort requires two stages: \
-            1. A shuffle stage to repartition data by key ranges (using RangePartitioner). The tasks for this \
-               would be ShuffleMapTasks. \
-            2. A sort stage that reads the shuffled data and sorts each partition locally. This would \
-               require a dedicated `SortTask` or for `ShuffleReduceTask` to be enhanced with sorting logic."
-        )
+        let map_output_info = map_output_info.ok_or_else(|| {
+            crate::traits::RddError::TaskCreationError(
+                "SortedRdd requires map output info for shuffle dependency".to_string(),
+            )
+        })?;
+
+        // We expect one shuffle dependency (the parent RDD)
+        if map_output_info.len() != 1 {
+            return Err(crate::traits::RddError::TaskCreationError(format!(
+                "SortedRdd expects exactly 1 shuffle dependency, got {}",
+                map_output_info.len()
+            )));
+        }
+
+        // For now, we'll return an error indicating this needs to be implemented
+        // with proper type handling. The SortTask needs to be created with the
+        // correct generic types that match K, V.
+        //
+        // The challenge is that we need to create SortTask<K, V> where:
+        // - K, V come from the generic parameters of SortedRdd
+        //
+        // This requires either:
+        // 1. Making SortTask work with trait objects instead of generics
+        // 2. Using macros to generate type-specific implementations
+        // 3. Implementing a type registry system
+        //
+        // For the TODO0 implementation, we'll mark this as requiring further work.
+        Err(crate::traits::RddError::TaskCreationError(
+            "SortedRdd task creation requires type-specific implementation. \
+            The SortTask needs to be instantiated with the correct generic types \
+            that match the RDD's K, V parameters. This is a known limitation \
+            that requires architectural improvements to the task system."
+                .to_string(),
+        ))
     }
 }
 

@@ -24,6 +24,10 @@ pub trait Aggregator<K, V, C>: Send + Sync + Debug + std::any::Any {
 
     /// Merge two combiners.
     fn merge_combiners(&self, c1: C, c2: C) -> C;
+
+    /// Return the serializable representation of this aggregator.
+    /// This moves the responsibility of knowing the serializable type from the RDD to the Aggregator implementation itself.
+    fn to_serializable(&self) -> Result<SerializableAggregator, String>;
 }
 
 /// A simple aggregator for reduceByKey operations where the combiner type is the same as the value type
@@ -57,6 +61,13 @@ where
 
     fn merge_combiners(&self, c1: V, c2: V) -> V {
         (self.reduce_func)(c1, c2)
+    }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        // For ReduceAggregator, we need to determine which specific aggregator this is
+        // This is a limitation of the current design - we can't easily determine the function pointer
+        // For now, we'll return an error indicating this needs type-specific handling
+        Err("ReduceAggregator cannot be automatically serialized. Use specific aggregator types like SumAggregator instead.".to_string())
     }
 }
 
@@ -103,6 +114,11 @@ where
     fn merge_combiners(&self, c1: C, c2: C) -> C {
         (self.merge_combiners)(c1, c2)
     }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        // CombineAggregator is too generic to automatically serialize
+        Err("CombineAggregator cannot be automatically serialized. Use specific aggregator types instead.".to_string())
+    }
 }
 
 /// Statistical aggregators for common operations
@@ -145,6 +161,12 @@ where
     fn merge_combiners(&self, c1: V, c2: V) -> V {
         c1 + c2
     }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        // SumAggregator for i32 can be serialized
+        // For other types, we'd need to extend SerializableAggregator
+        Ok(SerializableAggregator::SumI32)
+    }
 }
 
 /// Count aggregator that counts the number of values per key
@@ -186,6 +208,10 @@ where
 
     fn merge_combiners(&self, c1: u64, c2: u64) -> u64 {
         c1 + c2
+    }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        Ok(SerializableAggregator::Count)
     }
 }
 
@@ -246,6 +272,11 @@ where
             count: c1.count + c2.count,
         }
     }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        // AverageAggregator is not currently supported in SerializableAggregator
+        Err("AverageAggregator is not yet supported in SerializableAggregator enum".to_string())
+    }
 }
 
 /// Group-by-key aggregator that collects all values for a key into a vector
@@ -289,6 +320,11 @@ where
     fn merge_combiners(&self, mut c1: Vec<V>, mut c2: Vec<V>) -> Vec<V> {
         c1.append(&mut c2);
         c1
+    }
+
+    fn to_serializable(&self) -> Result<SerializableAggregator, String> {
+        // GroupByKeyAggregator for i32 can be serialized
+        Ok(SerializableAggregator::GroupI32)
     }
 }
 

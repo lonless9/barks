@@ -26,6 +26,9 @@ pub enum RddError {
 
     #[error("Shuffle error: {0}")]
     ShuffleError(String),
+
+    #[error("Task creation error: {0}")]
+    TaskCreationError(String),
 }
 
 /// Result type for RDD operations

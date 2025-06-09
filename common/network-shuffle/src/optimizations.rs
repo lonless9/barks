@@ -142,6 +142,9 @@ pub struct HashShuffleWriter<K, V> {
     // Buffer for each reduce partition: reduce_id -> Vec<(K, V)>
     buffers: HashMap<u32, Vec<(K, V)>>,
     memory_usage: usize,
+    // Track spill files for merging later
+    spill_files: HashMap<u32, Vec<PathBuf>>,
+    spill_dir: PathBuf,
 }
 
 impl<K, V> HashShuffleWriter<K, V>
@@ -163,6 +166,9 @@ where
         block_manager: Arc<dyn ShuffleBlockManager>,
         config: ShuffleConfig,
     ) -> Self {
+        // Each writer gets its own temporary spill directory
+        let spill_dir =
+            std::env::temp_dir().join(format!("barks_shuffle_{}_{}", shuffle_id, map_id));
         Self {
             shuffle_id,
             map_id,
@@ -171,6 +177,8 @@ where
             config,
             buffers: HashMap::new(),
             memory_usage: 0,
+            spill_files: HashMap::new(),
+            spill_dir,
         }
     }
 
@@ -196,37 +204,31 @@ where
     }
 
     async fn spill_buffers(&mut self) -> Result<()> {
-        for (reduce_id, buffer) in self.buffers.iter_mut() {
-            if !buffer.is_empty() {
-                // Sort the buffer by key for better read performance
-                if self.config.sort_based_shuffle {
-                    buffer.sort_by(|a, b| a.0.cmp(&b.0));
-                }
+        // Create spill directory if it doesn't exist
+        fs::create_dir_all(&self.spill_dir).await?;
 
-                let block_id = ShuffleBlockId {
-                    shuffle_id: self.shuffle_id,
-                    map_id: self.map_id,
-                    reduce_id: *reduce_id,
-                };
-
-                // FIX: Append to existing block data instead of overwriting.
-                // This is an inefficient but correct approach for spilling with the current block manager API.
-                let mut all_records: Vec<(K, V)> =
-                    if self.block_manager.contains_block(&block_id).await? {
-                        let existing_data = self.block_manager.get_block(&block_id).await?;
-                        bincode::decode_from_slice(&existing_data, bincode::config::standard())?.0
-                    } else {
-                        Vec::new()
-                    };
-                all_records.append(buffer);
-
-                // Serialize and write to block manager
-                let serialized = bincode::encode_to_vec(&all_records, bincode::config::standard())
-                    .map_err(|e| anyhow!("Failed to serialize shuffle buffer: {}", e))?;
-
-                self.block_manager.put_block(block_id, serialized).await?;
-                buffer.clear();
+        for (reduce_id, buffer) in self.buffers.iter_mut().filter(|(_, b)| !b.is_empty()) {
+            if self.config.sort_based_shuffle {
+                buffer.sort_by(|a, b| a.0.cmp(&b.0));
             }
+
+            let spill_path = self.spill_dir.join(format!(
+                "shuffle_{}_{}_spill_{}",
+                self.shuffle_id,
+                reduce_id,
+                self.spill_files.get(reduce_id).map_or(0, |v| v.len())
+            ));
+
+            let serialized = bincode::encode_to_vec(&*buffer, bincode::config::standard())
+                .map_err(|e| anyhow!("Failed to serialize shuffle spill buffer: {}", e))?;
+
+            fs::write(&spill_path, &serialized).await?;
+
+            self.spill_files
+                .entry(*reduce_id)
+                .or_default()
+                .push(spill_path);
+            buffer.clear();
         }
 
         self.memory_usage = 0;
@@ -234,9 +236,6 @@ where
     }
 
     pub async fn close(&mut self) -> Result<crate::traits::MapStatus> {
-        // Flush any remaining buffers
-        self.spill_buffers().await?;
-
         // Return block sizes for MapStatus
         let mut block_sizes = HashMap::new();
         for reduce_id in 0..self.partitioner.num_partitions() {
@@ -246,7 +245,40 @@ where
                 reduce_id,
             };
 
-            if self.block_manager.contains_block(&block_id).await? {
+            let spills = self.spill_files.remove(&reduce_id).unwrap_or_default();
+            let mut all_records: Vec<(K, V)> = Vec::new();
+
+            // First, read all existing spill files
+            for spill_file in spills {
+                // Check if spill file exists before trying to read it
+                if fs::try_exists(&spill_file).await.unwrap_or(false) {
+                    let data = fs::read(&spill_file).await?;
+                    let (decoded, _): (Vec<(K, V)>, _) =
+                        bincode::decode_from_slice(&data, bincode::config::standard())?;
+                    all_records.extend(decoded);
+
+                    // Clean up spill file
+                    let _ = fs::remove_file(&spill_file).await;
+                }
+            }
+
+            // Then, add any remaining data in the buffer for this partition
+            if let Some(buffer) = self.buffers.get(&reduce_id) {
+                all_records.extend(buffer.clone());
+            }
+
+            if !all_records.is_empty() {
+                // Sort the buffer by key for better read performance
+                if self.config.sort_based_shuffle {
+                    all_records.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+
+                let serialized = bincode::encode_to_vec(&all_records, bincode::config::standard())
+                    .map_err(|e| anyhow!("Failed to serialize merged shuffle data: {}", e))?;
+
+                self.block_manager
+                    .put_block(block_id.clone(), serialized)
+                    .await?;
                 let size = self.block_manager.get_block_size(&block_id).await?;
                 block_sizes.insert(reduce_id, size);
             } else {
@@ -263,6 +295,9 @@ where
                 block_sizes.insert(reduce_id, size);
             }
         }
+
+        // Clean up spill directory
+        let _ = fs::remove_dir_all(&self.spill_dir).await;
 
         Ok(crate::traits::MapStatus::new(block_sizes))
     }
@@ -407,9 +442,9 @@ mod tests {
         let block_manager = Arc::new(MemoryShuffleManager::new());
         let partitioner = Arc::new(SimplePartitioner { num_partitions: 1 });
 
-        // Set a low threshold to force a spill on each write.
+        // Set a very low threshold to force a spill on each write.
         let config = ShuffleConfig {
-            spill_threshold: 10,       // Spill after ~10 bytes
+            spill_threshold: 1,        // Spill after ~1 byte (very aggressive)
             sort_based_shuffle: false, // Disable sort for predictable order
             ..Default::default()
         };
@@ -417,69 +452,38 @@ mod tests {
         let mut writer =
             HashShuffleWriter::<String, i32>::new(1, 0, partitioner, block_manager.clone(), config);
 
-        // Write first record, this should trigger a spill.
-        writer.write(("key1".to_string(), 1)).await.unwrap();
+        // Write records one by one, each should trigger a spill
+        writer.write(("a".to_string(), 1)).await.unwrap();
+        writer.write(("b".to_string(), 2)).await.unwrap();
+        writer.write(("c".to_string(), 3)).await.unwrap();
 
         let block_id = ShuffleBlockId {
             shuffle_id: 1,
             map_id: 0,
             reduce_id: 0,
         };
-        let data1 = block_manager.get_block(&block_id).await.unwrap();
-        let (records1, _): (Vec<(String, i32)>, _) =
-            bincode::decode_from_slice(&data1, bincode::config::standard()).unwrap();
-        assert_eq!(records1, vec![("key1".to_string(), 1)]);
 
-        // Write second record. This should also trigger a spill and append to the existing block.
-        writer.write(("key2".to_string(), 2)).await.unwrap();
-        let data2 = block_manager.get_block(&block_id).await.unwrap();
-        let (records2, _): (Vec<(String, i32)>, _) =
-            bincode::decode_from_slice(&data2, bincode::config::standard()).unwrap();
-        assert_eq!(
-            records2,
-            vec![("key1".to_string(), 1), ("key2".to_string(), 2)]
-        );
+        // With the new implementation, spills go to temporary files, not the block manager
+        // So the block won't exist until close() is called
+        assert!(!block_manager.contains_block(&block_id).await.unwrap());
 
-        // Write a third record, but this one won't spill immediately. It will be flushed by close().
-        // We need to reset the memory usage to prevent another spill for this test.
-        writer.memory_usage = 0;
-        writer.write(("key3".to_string(), 3)).await.unwrap();
-
-        // Verify data before close() - it should still only contain key1 and key2
-        // since key3 should be in the buffer and not yet spilled
-        let data_before_close = block_manager.get_block(&block_id).await.unwrap();
-        let (records_before_close, _): (Vec<(String, i32)>, _) =
-            bincode::decode_from_slice(&data_before_close, bincode::config::standard()).unwrap();
-        // Note: The test might fail if the memory estimation causes another spill
-        // In that case, we should expect all three records
-        if records_before_close.len() == 2 {
-            assert_eq!(
-                records_before_close,
-                vec![("key1".to_string(), 1), ("key2".to_string(), 2)]
-            );
-        } else {
-            // If it spilled again, we should have all three records
-            assert_eq!(
-                records_before_close,
-                vec![
-                    ("key1".to_string(), 1),
-                    ("key2".to_string(), 2),
-                    ("key3".to_string(), 3)
-                ]
-            );
-        }
-
-        // Close the writer to flush the last record.
+        // Close the writer to merge all spill files.
         writer.close().await.unwrap();
-        let data3 = block_manager.get_block(&block_id).await.unwrap();
-        let (records3, _): (Vec<(String, i32)>, _) =
-            bincode::decode_from_slice(&data3, bincode::config::standard()).unwrap();
+
+        // Now the block should exist and contain all records
+        let data = block_manager.get_block(&block_id).await.unwrap();
+        let (mut records, _): (Vec<(String, i32)>, _) =
+            bincode::decode_from_slice(&data, bincode::config::standard()).unwrap();
+
+        // Sort the records for consistent comparison since spill order might vary
+        records.sort_by(|a, b| a.0.cmp(&b.0));
+
         assert_eq!(
-            records3,
+            records,
             vec![
-                ("key1".to_string(), 1),
-                ("key2".to_string(), 2),
-                ("key3".to_string(), 3)
+                ("a".to_string(), 1),
+                ("b".to_string(), 2),
+                ("c".to_string(), 3)
             ]
         );
     }

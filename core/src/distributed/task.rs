@@ -736,6 +736,31 @@ where
     _marker: std::marker::PhantomData<(K, V, C, A)>,
 }
 
+/// A task that performs cogroup operations on multiple shuffle dependencies.
+/// This task reads shuffle blocks from multiple parent RDDs and groups values by key.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CoGroupTask<K, V, C, A>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+    C: crate::traits::Data,
+    A: crate::shuffle::Aggregator<K, V, C>,
+{
+    /// Shuffle IDs for the parent shuffle operations. Each parent RDD will have one.
+    /// The order must match the `parent_map_output_locations` field.
+    pub parent_shuffle_ids: Vec<u32>,
+    /// Reduce partition ID that this task will process
+    pub reduce_partition_id: u32,
+    /// Locations of map task outputs: a list of (executor_address, map_id)
+    /// Each inner Vec corresponds to a parent shuffle dependency.
+    pub parent_map_output_locations: Vec<Vec<(String, u32)>>,
+    /// Serialized aggregator function
+    pub aggregator_data: Vec<u8>,
+    /// Phantom data to make the struct generic over K, V, C, A
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(K, V, C, A)>,
+}
+
 impl<K, V, C, A> ShuffleReduceTask<K, V, C, A>
 where
     K: crate::traits::Data,
@@ -753,6 +778,29 @@ where
             shuffle_id,
             reduce_partition_id,
             map_output_locations,
+            aggregator_data,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<K, V, C, A> CoGroupTask<K, V, C, A>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+    C: crate::traits::Data,
+    A: crate::shuffle::Aggregator<K, V, C>,
+{
+    pub fn new(
+        parent_shuffle_ids: Vec<u32>,
+        reduce_partition_id: u32,
+        parent_map_output_locations: Vec<Vec<(String, u32)>>,
+        aggregator_data: Vec<u8>,
+    ) -> Self {
+        Self {
+            parent_shuffle_ids,
+            reduce_partition_id,
+            parent_map_output_locations,
             aggregator_data,
             _marker: std::marker::PhantomData,
         }
@@ -890,3 +938,218 @@ impl_shuffle_reduce_task!(
         }
     }
 );
+
+// Macro for implementing CoGroupTask for specific types
+macro_rules! impl_cogroup_task {
+    ($key:ty, $value:ty, $combiner:ty, $aggregator:ty, $name:literal, $default_aggregator:expr, $deserialize_aggregator:expr) => {
+        #[typetag::serde(name = $name)]
+        #[async_trait::async_trait]
+        impl Task for CoGroupTask<$key, $value, $combiner, $aggregator> {
+            async fn execute(
+                &self,
+                _partition_index: usize,
+                _block_manager: Arc<dyn ShuffleBlockManager>,
+            ) -> Result<Vec<u8>, String> {
+                // 1. Deserialize the aggregator. This determines the aggregation logic.
+                let _aggregator = if self.aggregator_data.is_empty() {
+                    // Default aggregator for backward compatibility
+                    $default_aggregator
+                } else {
+                    // Try to deserialize the aggregator
+                    match crate::shuffle::SerializableAggregator::deserialize(&self.aggregator_data)
+                    {
+                        Ok(sa) => {
+                            let deserialize_fn = $deserialize_aggregator;
+                            deserialize_fn(sa)?
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+
+                // 2. Create an HTTP shuffle reader to fetch data from other executors.
+                let reader =
+                    barks_network_shuffle::shuffle::HttpShuffleReader::<$key, $value>::new();
+
+                // 3. Fetch all shuffle blocks for this reduce partition from all parent shuffles.
+                let mut all_parent_data: Vec<Vec<($key, $value)>> = Vec::new();
+
+                for (shuffle_idx, shuffle_id) in self.parent_shuffle_ids.iter().enumerate() {
+                    let map_locations = self
+                        .parent_map_output_locations
+                        .get(shuffle_idx)
+                        .ok_or_else(|| {
+                            format!("No map output locations for shuffle {}", shuffle_id)
+                        })?;
+
+                    let parent_blocks_vec = reader
+                        .read_partition(*shuffle_id, self.reduce_partition_id, map_locations)
+                        .await
+                        .map_err(|e| {
+                            format!(
+                                "Failed to read shuffle partition from shuffle {}: {}",
+                                shuffle_id, e
+                            )
+                        })?;
+
+                    // Flatten the Vec<Vec<(K, V)>> into Vec<(K, V)>
+                    let flattened_blocks: Vec<($key, $value)> =
+                        parent_blocks_vec.into_iter().flatten().collect();
+                    all_parent_data.push(flattened_blocks);
+                }
+
+                // 4. Perform cogroup operation: group all values by key across all parents
+                let mut cogrouped: std::collections::HashMap<$key, Vec<Vec<$value>>> =
+                    std::collections::HashMap::new();
+
+                for (parent_idx, parent_data) in all_parent_data.iter().enumerate() {
+                    for (key, value) in parent_data {
+                        let entry = cogrouped.entry(key.clone()).or_insert_with(|| {
+                            // Initialize with empty vectors for each parent
+                            vec![Vec::new(); self.parent_shuffle_ids.len()]
+                        });
+                        entry[parent_idx].push(value.clone());
+                    }
+                }
+
+                // 5. Convert the cogrouped HashMap to the expected output format
+                // For now, we'll return the cogrouped data as-is for joins to process
+                let result: Vec<($key, Vec<Vec<$value>>)> = cogrouped.into_iter().collect();
+
+                // 6. Serialize the final result and return it.
+                bincode::encode_to_vec(&result, bincode::config::standard())
+                    .map_err(|e| format!("Failed to serialize cogroup result: {}", e))
+            }
+        }
+    };
+}
+
+// Implement CoGroupTask for specific types
+impl_cogroup_task!(
+    String,
+    i32,
+    i32,
+    crate::shuffle::ReduceAggregator<i32>,
+    "CoGroupTaskStringI32",
+    crate::shuffle::ReduceAggregator::new(|a, b| a + b),
+    |sa| -> Result<crate::shuffle::ReduceAggregator<i32>, String> {
+        match sa {
+            crate::shuffle::SerializableAggregator::AddI32 => {
+                Ok(crate::shuffle::SerializableAggregator::create_add_i32_aggregator())
+            }
+            crate::shuffle::SerializableAggregator::SumI32 => {
+                Ok(crate::shuffle::SerializableAggregator::create_add_i32_aggregator())
+            }
+            _ => Err(format!("Unsupported aggregator for i32 value: {:?}", sa)),
+        }
+    }
+);
+
+impl_cogroup_task!(
+    i32,
+    String,
+    String,
+    crate::shuffle::ReduceAggregator<String>,
+    "CoGroupTaskI32String",
+    crate::shuffle::ReduceAggregator::new(|a: String, b: String| format!("{},{}", a, b)),
+    |sa| -> Result<crate::shuffle::ReduceAggregator<String>, String> {
+        match sa {
+            crate::shuffle::SerializableAggregator::ConcatString => {
+                Ok(crate::shuffle::SerializableAggregator::create_concat_string_aggregator())
+            }
+            _ => Ok(crate::shuffle::ReduceAggregator::new(
+                |a: String, b: String| format!("{},{}", a, b),
+            )),
+        }
+    }
+);
+
+/// A task that performs sorting operations on shuffle data.
+/// This task reads shuffle blocks from map tasks and sorts the data locally.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SortTask<K, V>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+{
+    /// Shuffle ID for this shuffle operation
+    pub shuffle_id: u32,
+    /// Reduce partition ID that this task will process
+    pub reduce_partition_id: u32,
+    /// Locations of map task outputs: a list of (executor_address, map_id)
+    /// The executor address should be in "host:shuffle_port" format.
+    pub map_output_locations: Vec<(String, u32)>,
+    /// Whether to sort in ascending order
+    pub ascending: bool,
+    /// Phantom data to make the struct generic over K, V
+    #[serde(skip)]
+    _marker: std::marker::PhantomData<(K, V)>,
+}
+
+impl<K, V> SortTask<K, V>
+where
+    K: crate::traits::Data,
+    V: crate::traits::Data,
+{
+    pub fn new(
+        shuffle_id: u32,
+        reduce_partition_id: u32,
+        map_output_locations: Vec<(String, u32)>,
+        ascending: bool,
+    ) -> Self {
+        Self {
+            shuffle_id,
+            reduce_partition_id,
+            map_output_locations,
+            ascending,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+// Macro for implementing SortTask for specific types
+macro_rules! impl_sort_task {
+    ($key:ty, $value:ty, $name:literal) => {
+        #[typetag::serde(name = $name)]
+        #[async_trait::async_trait]
+        impl Task for SortTask<$key, $value> {
+            async fn execute(
+                &self,
+                _partition_index: usize,
+                _block_manager: Arc<dyn ShuffleBlockManager>,
+            ) -> Result<Vec<u8>, String> {
+                // 1. Create an HTTP shuffle reader to fetch data from other executors.
+                let reader =
+                    barks_network_shuffle::shuffle::HttpShuffleReader::<$key, $value>::new();
+
+                // 2. Fetch all shuffle blocks for this reduce partition from all map tasks.
+                let all_blocks_vec = reader
+                    .read_partition(
+                        self.shuffle_id,
+                        self.reduce_partition_id,
+                        &self.map_output_locations,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to read shuffle partition: {}", e))?;
+
+                // 3. Flatten the Vec<Vec<(K, V)>> into Vec<(K, V)>
+                let mut all_records: Vec<($key, $value)> =
+                    all_blocks_vec.into_iter().flatten().collect();
+
+                // 4. Sort the records by key
+                if self.ascending {
+                    all_records.sort_by(|a, b| a.0.cmp(&b.0));
+                } else {
+                    all_records.sort_by(|a, b| b.0.cmp(&a.0));
+                }
+
+                // 5. Serialize the sorted result and return it.
+                bincode::encode_to_vec(&all_records, bincode::config::standard())
+                    .map_err(|e| format!("Failed to serialize sort result: {}", e))
+            }
+        }
+    };
+}
+
+// Implement SortTask for specific types
+impl_sort_task!(String, i32, "SortTaskStringI32");
+impl_sort_task!(i32, String, "SortTaskI32String");

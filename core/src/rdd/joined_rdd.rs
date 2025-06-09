@@ -151,12 +151,21 @@ where
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        unimplemented!(
-            "JoinedRdd task creation is not implemented. It requires a `CoGroupTask` that can read \
-            from multiple shuffle dependencies (one for each parent RDD). The current `ShuffleReduceTask` \
-            only supports a single shuffle dependency. This is a necessary future enhancement for \
-            implementing distributed joins."
-        )
+        // JoinedRdd is built on top of CogroupedRdd, so it has the same implementation challenges.
+        // The join operation would:
+        // 1. Use CoGroupTask to cogroup the two parent RDDs
+        // 2. Apply join logic to filter out keys that don't exist in both sides
+        // 3. Flatten the result to produce (K, (V, W)) tuples
+        //
+        // For now, we'll return the same error as CogroupedRdd since they share the same
+        // underlying implementation requirements.
+        Err(crate::traits::RddError::TaskCreationError(
+            "JoinedRdd task creation requires type-specific implementation. \
+            JoinedRdd is built on CoGroupTask which needs to be instantiated with the \
+            correct generic types that match the RDD's K, V, W parameters. This is a \
+            known limitation that requires architectural improvements to the task system."
+                .to_string(),
+        ))
     }
 }
 
@@ -314,19 +323,48 @@ where
     fn create_tasks(
         &self,
         _stage_id: crate::distributed::types::StageId,
-        _map_output_info: Option<
+        map_output_info: Option<
             &[Vec<(
                 barks_network_shuffle::traits::MapStatus,
                 crate::distributed::types::ExecutorInfo,
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        unimplemented!(
-            "CogroupedRdd task creation is not implemented. It requires a `CoGroupTask` that can read \
-            from multiple shuffle dependencies (one for each parent RDD). The current `ShuffleReduceTask` \
-            only supports a single shuffle dependency. This is a necessary future enhancement for \
-            implementing distributed joins and cogroups."
-        )
+        let map_output_info = map_output_info.ok_or_else(|| {
+            crate::traits::RddError::TaskCreationError(
+                "CogroupedRdd requires map output info for shuffle dependencies".to_string(),
+            )
+        })?;
+
+        // We expect two shuffle dependencies (left and right RDD)
+        if map_output_info.len() != 2 {
+            return Err(crate::traits::RddError::TaskCreationError(format!(
+                "CogroupedRdd expects exactly 2 shuffle dependencies, got {}",
+                map_output_info.len()
+            )));
+        }
+
+        // For now, we'll return an error indicating this needs to be implemented
+        // with proper type handling. The CoGroupTask needs to be created with the
+        // correct generic types that match K, V, W.
+        //
+        // The challenge is that we need to create CoGroupTask<K, V, C, A> where:
+        // - K, V come from the generic parameters of CogroupedRdd
+        // - C, A need to be determined based on the aggregation operation
+        //
+        // This requires either:
+        // 1. Making CoGroupTask work with trait objects instead of generics
+        // 2. Using macros to generate type-specific implementations
+        // 3. Implementing a type registry system
+        //
+        // For the TODO0 implementation, we'll mark this as requiring further work.
+        Err(crate::traits::RddError::TaskCreationError(
+            "CogroupedRdd task creation requires type-specific implementation. \
+            The CoGroupTask needs to be instantiated with the correct generic types \
+            that match the RDD's K, V, W parameters. This is a known limitation \
+            that requires architectural improvements to the task system."
+                .to_string(),
+        ))
     }
 }
 
