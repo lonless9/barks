@@ -4,6 +4,7 @@ use crate::shuffle::{Partitioner, RangePartitioner};
 use crate::traits::{
     Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
 };
+use std::any::Any;
 use std::sync::Arc;
 
 /// SortedRdd represents an RDD that has been sorted by key.
@@ -105,7 +106,11 @@ where
     fn dependencies(&self) -> Vec<Dependency> {
         // Sort creates a shuffle dependency on the parent RDD
         vec![Dependency::Shuffle(
-            unsafe { std::mem::transmute(self.parent.clone()) },
+            unsafe {
+                std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
+                    self.parent.clone(),
+                )
+            },
             ShuffleDependencyInfo {
                 shuffle_id: self.id,
                 num_partitions: self.partitioner.num_partitions(),

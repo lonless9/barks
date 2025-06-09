@@ -4,6 +4,7 @@ use crate::shuffle::Partitioner;
 use crate::traits::{
     Data, Dependency, Partition, PartitionerType, RddBase, RddResult, ShuffleDependencyInfo,
 };
+use std::any::Any;
 use std::sync::Arc;
 
 /// Type alias for cogrouped data to reduce type complexity
@@ -113,7 +114,11 @@ where
         // Join creates shuffle dependencies on both parent RDDs
         vec![
             Dependency::Shuffle(
-                unsafe { std::mem::transmute(self.left_rdd.clone()) },
+                unsafe {
+                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
+                        self.left_rdd.clone(),
+                    )
+                },
                 ShuffleDependencyInfo {
                     shuffle_id: self.id,
                     num_partitions: self.partitioner.num_partitions(),
@@ -124,7 +129,11 @@ where
                 },
             ),
             Dependency::Shuffle(
-                unsafe { std::mem::transmute(self.right_rdd.clone()) },
+                unsafe {
+                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, W)>>, Arc<dyn Any + Send + Sync>>(
+                        self.right_rdd.clone(),
+                    )
+                },
                 ShuffleDependencyInfo {
                     shuffle_id: self.id + 1, // Different shuffle ID for right RDD
                     num_partitions: self.partitioner.num_partitions(),
@@ -292,7 +301,11 @@ where
         // Cogroup creates shuffle dependencies on both parent RDDs
         vec![
             Dependency::Shuffle(
-                unsafe { std::mem::transmute(self.left_rdd.clone()) },
+                unsafe {
+                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
+                        self.left_rdd.clone(),
+                    )
+                },
                 ShuffleDependencyInfo {
                     shuffle_id: self.id,
                     num_partitions: self.partitioner.num_partitions(),
@@ -303,7 +316,11 @@ where
                 },
             ),
             Dependency::Shuffle(
-                unsafe { std::mem::transmute(self.right_rdd.clone()) },
+                unsafe {
+                    std::mem::transmute::<Arc<dyn RddBase<Item = (K, W)>>, Arc<dyn Any + Send + Sync>>(
+                        self.right_rdd.clone(),
+                    )
+                },
                 ShuffleDependencyInfo {
                     shuffle_id: self.id + 1, // Different shuffle ID for right RDD
                     num_partitions: self.partitioner.num_partitions(),

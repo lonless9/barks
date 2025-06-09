@@ -8,6 +8,7 @@ use crate::traits::{
     Data, Dependency, Partition, PartitionerType, RddBase, RddError, RddResult,
     ShuffleDependencyInfo,
 };
+use std::any::Any;
 use std::sync::Arc;
 
 /// ShuffledRdd is an RDD that has a shuffle dependency on its parent.
@@ -115,7 +116,11 @@ where
             },
         };
         vec![Dependency::Shuffle(
-            unsafe { std::mem::transmute(self.parent.clone()) },
+            unsafe {
+                std::mem::transmute::<Arc<dyn RddBase<Item = (K, V)>>, Arc<dyn Any + Send + Sync>>(
+                    self.parent.clone(),
+                )
+            },
             shuffle_info,
         )]
     }
@@ -135,7 +140,7 @@ where
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
         let parent_map_info = map_output_info
-            .and_then(|infos| infos.get(0))
+            .and_then(|infos| infos.first())
             .ok_or_else(|| {
                 RddError::ShuffleError("Could not find map outputs for shuffle".to_string())
             })?;
@@ -151,30 +156,33 @@ where
 
         // This is a workaround due to the aggregator being a non-serializable trait object.
         // A better design would be to store a serializable representation of the aggregator.
-        let aggregator_data = if let Some(_) = self
+        let aggregator_data = if self
             .aggregator
             .as_any()
             .downcast_ref::<ReduceAggregator<i32>>()
+            .is_some()
         {
             SerializableAggregator::AddI32
                 .serialize()
-                .map_err(|e| RddError::SerializationError(e))?
-        } else if let Some(_) = self
+                .map_err(RddError::SerializationError)?
+        } else if self
             .aggregator
             .as_any()
             .downcast_ref::<ReduceAggregator<String>>()
+            .is_some()
         {
             SerializableAggregator::ConcatString
                 .serialize()
-                .map_err(|e| RddError::SerializationError(e))?
-        } else if let Some(_) = self
+                .map_err(RddError::SerializationError)?
+        } else if self
             .aggregator
             .as_any()
             .downcast_ref::<GroupByKeyAggregator<i32>>()
+            .is_some()
         {
             SerializableAggregator::GroupI32
                 .serialize()
-                .map_err(|e| RddError::SerializationError(e))?
+                .map_err(RddError::SerializationError)?
         } else {
             return Err(RddError::SerializationError(
                 "Unsupported aggregator type for task creation".to_string(),
@@ -185,9 +193,10 @@ where
 
         // This part uses downcasting to create the correctly typed task, which is consistent
         // with other parts of the codebase but indicates a lack of true generics.
-        if let Some(_) = self
+        if self
             .as_any()
             .downcast_ref::<ShuffledRdd<String, i32, i32>>()
+            .is_some()
         {
             for i in 0..self.num_partitions() {
                 let task = ShuffleReduceTask::<String, i32, i32, ReduceAggregator<i32>>::new(

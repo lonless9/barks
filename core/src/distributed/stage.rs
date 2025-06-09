@@ -170,7 +170,11 @@ impl DAGScheduler {
 
         let stage = Stage {
             id: self.new_stage_id(),
-            rdd: unsafe { std::mem::transmute(parent_rdd_base.clone()) },
+            rdd: unsafe {
+                std::mem::transmute::<Arc<dyn RddBase<Item = T>>, Arc<dyn Any + Send + Sync>>(
+                    parent_rdd_base.clone(),
+                )
+            },
             num_partitions: parent_rdd_base.num_partitions(),
             parents,
             job_id: job_id.to_string(),

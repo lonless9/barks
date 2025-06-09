@@ -202,9 +202,11 @@ async fn test_executor_failure_and_task_retry() {
     info!("--- test_executor_failure_and_task_retry ---");
 
     // Configure a short liveness timeout for faster test execution
-    let mut config = DistributedConfig::default();
-    config.executor_liveness_timeout_secs = 5;
-    config.task_max_retries = 1;
+    let config = DistributedConfig {
+        executor_liveness_timeout_secs: 5,
+        task_max_retries: 1,
+        ..DistributedConfig::default()
+    };
 
     // Setup cluster
     let (driver_context, handles) =

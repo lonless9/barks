@@ -230,7 +230,7 @@ mod tests {
 
         // Verify the config is stored correctly
         assert_eq!(task.shuffle_config.spill_threshold, 32 * 1024 * 1024);
-        assert_eq!(task.shuffle_config.sort_based_shuffle, false);
+        assert!(!task.shuffle_config.sort_based_shuffle);
         assert_eq!(task.shuffle_config.io_buffer_size, 32 * 1024);
 
         // Test that we can serialize it as a Task trait object

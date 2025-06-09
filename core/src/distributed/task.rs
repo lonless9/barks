@@ -314,7 +314,7 @@ impl TaskScheduler {
                     && t.preferred_locations.iter().any(|pref_exec_id| {
                         executors_guard
                             .get(pref_exec_id)
-                            .map_or(false, |info| info.host == host)
+                            .is_some_and(|info| info.host == host)
                     })
             }) {
                 debug!(
