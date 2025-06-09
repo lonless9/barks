@@ -5,6 +5,29 @@ use crate::shuffle::{Aggregator, Partitioner, ReduceAggregator};
 use crate::traits::{Data, IsRdd, Pair, RddBase, RddResult};
 use std::sync::Arc;
 
+/// Type aliases for complex return types to satisfy clippy's type complexity requirements
+///
+/// Type alias for joined RDD return type
+type JoinedRddResult<K, V, W> = Arc<JoinedRdd<K, V, W>>;
+
+/// Type alias for shuffled RDD return type with same input and output value types
+type ShuffledRddSameType<K, V> = Arc<ShuffledRdd<K, V, V>>;
+
+/// Type alias for shuffled RDD return type with grouped values
+type ShuffledRddGrouped<K, V> = Arc<ShuffledRdd<K, V, Vec<V>>>;
+
+/// Type alias for shuffled RDD return type with custom combined type
+type ShuffledRddCombined<K, V, C> = Arc<ShuffledRdd<K, V, C>>;
+
+/// Type alias for sorted RDD return type
+type SortedRddResult<K, V> = Arc<SortedRdd<K, V>>;
+
+/// Type alias for cogrouped RDD return type
+type CogroupedRddResult<K, V, W> = Arc<CogroupedRdd<K, V, W>>;
+
+/// Type alias for reduce function signature
+type ReduceFunction<V> = fn(V, V) -> V;
+
 /// An RDD of key-value pairs.
 pub trait PairRdd: RddBase
 where
@@ -15,41 +38,26 @@ where
         self: Arc<Self>,
         other: Arc<dyn RddBase<Item = (<Self::Item as Pair>::Key, W)>>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
-    ) -> Arc<JoinedRdd<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, W>>;
+    ) -> JoinedRddResult<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, W>;
 
     /// Groups values by key and applies a reduction function.
     fn reduce_by_key(
         self: Arc<Self>,
-        reduce_func: fn(
-            <Self::Item as Pair>::Value,
-            <Self::Item as Pair>::Value,
-        ) -> <Self::Item as Pair>::Value,
+        reduce_func: ReduceFunction<<Self::Item as Pair>::Value>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
-    ) -> Arc<
-        ShuffledRdd<
-            <Self::Item as Pair>::Key,
-            <Self::Item as Pair>::Value,
-            <Self::Item as Pair>::Value,
-        >,
-    >;
+    ) -> ShuffledRddSameType<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value>;
 
     /// Groups all values for a key into a single sequence.
     fn group_by_key(
         self: Arc<Self>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
-    ) -> Arc<
-        ShuffledRdd<
-            <Self::Item as Pair>::Key,
-            <Self::Item as Pair>::Value,
-            Vec<<Self::Item as Pair>::Value>,
-        >,
-    >;
+    ) -> ShuffledRddGrouped<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value>;
 
     /// Return an RDD with the elements sorted by key.
     fn sort_by_key(
         self: Arc<Self>,
         ascending: bool,
-    ) -> Arc<SortedRdd<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value>>
+    ) -> SortedRddResult<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value>
     where
         <Self::Item as Pair>::Key: Ord + std::fmt::Debug;
 
@@ -59,14 +67,14 @@ where
         self: Arc<Self>,
         other: Arc<dyn RddBase<Item = (<Self::Item as Pair>::Key, W)>>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
-    ) -> Arc<CogroupedRdd<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, W>>;
+    ) -> CogroupedRddResult<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, W>;
 
     /// Combine values with the same key using a custom aggregator.
     fn combine_by_key<C: Data>(
         self: Arc<Self>,
         aggregator: Arc<dyn Aggregator<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, C>>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
-    ) -> Arc<ShuffledRdd<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, C>>;
+    ) -> ShuffledRddCombined<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, C>;
 
     /// The safe, internal method for creating shuffle map tasks.
     /// This is the key to removing `unsafe`.

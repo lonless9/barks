@@ -7,6 +7,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::info;
 
+/// Type alias for the complex task factory function signature to improve readability
+/// and satisfy clippy's type complexity requirements.
+type TaskFactory = Arc<
+    dyn Fn(
+            String,
+            Option<&ShuffleDependencyInfo>,
+            Option<
+                &[Vec<(
+                    barks_network_shuffle::traits::MapStatus,
+                    crate::distributed::types::ExecutorInfo,
+                )>],
+            >,
+        ) -> RddResult<Vec<Box<dyn Task>>>
+        + Send
+        + Sync,
+>;
+
 /// A stage of computation, containing a set of tasks that can be run in parallel.
 /// Stages are separated by shuffle boundaries.
 pub struct Stage {
@@ -19,20 +36,7 @@ pub struct Stage {
     pub shuffle_dependency: Option<ShuffleDependencyInfo>,
     /// A factory closure that creates the tasks for this stage.
     /// This captures the typed RDD and its logic, avoiding downcasting in the scheduler loop.
-    pub task_factory: Arc<
-        dyn Fn(
-                String,
-                Option<&ShuffleDependencyInfo>,
-                Option<
-                    &[Vec<(
-                        barks_network_shuffle::traits::MapStatus,
-                        crate::distributed::types::ExecutorInfo,
-                    )>],
-                >,
-            ) -> RddResult<Vec<Box<dyn Task>>>
-            + Send
-            + Sync,
-    >,
+    pub task_factory: TaskFactory,
 }
 
 impl Stage {
@@ -111,20 +115,7 @@ impl DAGScheduler {
         let mut rdd_to_stage: HashMap<usize, Arc<ShuffleMapStage>> = HashMap::new();
         let parents = self.get_or_create_parent_stages(rdd_base.clone(), job_id, &mut rdd_to_stage);
 
-        let task_factory: Arc<
-            dyn Fn(
-                    String,
-                    Option<&ShuffleDependencyInfo>,
-                    Option<
-                        &[Vec<(
-                            barks_network_shuffle::traits::MapStatus,
-                            crate::distributed::types::ExecutorInfo,
-                        )>],
-                    >,
-                ) -> RddResult<Vec<Box<dyn Task>>>
-                + Send
-                + Sync,
-        > = Arc::new(move |stage_id, shuffle_info, map_output_info| {
+        let task_factory: TaskFactory = Arc::new(move |stage_id, shuffle_info, map_output_info| {
             rdd_base.create_tasks(stage_id, shuffle_info, map_output_info)
         });
 
@@ -214,20 +205,7 @@ impl DAGScheduler {
 
         let task_factory_rdd = parent_rdd_base.clone();
         let shuffle_dep_clone = shuffle_dep.clone();
-        let task_factory: Arc<
-            dyn Fn(
-                    String,
-                    Option<&ShuffleDependencyInfo>,
-                    Option<
-                        &[Vec<(
-                            barks_network_shuffle::traits::MapStatus,
-                            crate::distributed::types::ExecutorInfo,
-                        )>],
-                    >,
-                ) -> RddResult<Vec<Box<dyn Task>>>
-                + Send
-                + Sync,
-        > = Arc::new(move |stage_id, shuffle_info, map_output_info| {
+        let task_factory: TaskFactory = Arc::new(move |stage_id, shuffle_info, map_output_info| {
             // For ShuffleMapStage, we pass the shuffle dependency info
             let shuffle_info = shuffle_info.or(Some(&shuffle_dep_clone));
             task_factory_rdd.create_tasks_erased(stage_id, shuffle_info, map_output_info)
@@ -254,26 +232,6 @@ impl DAGScheduler {
             parent_rdd_base.id()
         );
         shuffle_map_stage
-    }
-
-    /// Creates a `ShuffleMapStage` for a given shuffle dependency, or returns an existing one.
-    fn get_or_create_shuffle_map_stage<T>(
-        &self,
-        parent_rdd_base: Arc<dyn RddBase<Item = T>>,
-        job_id: &str,
-        shuffle_dep: ShuffleDependencyInfo,
-        rdd_to_stage: &mut HashMap<usize, Arc<ShuffleMapStage>>,
-    ) -> Arc<ShuffleMapStage>
-    where
-        T: crate::traits::Data,
-    {
-        // Delegate to the type-erased version
-        self.get_or_create_shuffle_map_stage_erased(
-            parent_rdd_base.as_is_rdd(),
-            job_id,
-            shuffle_dep,
-            rdd_to_stage,
-        )
     }
 
     fn new_stage_id(&self) -> usize {
