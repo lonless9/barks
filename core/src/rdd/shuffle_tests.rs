@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::context::FlowContext;
-    use crate::rdd::transformations::PairRdd;
+    use crate::rdd::transformations::PairRddExt;
     use crate::shuffle::HashPartitioner;
     use std::sync::Arc;
 

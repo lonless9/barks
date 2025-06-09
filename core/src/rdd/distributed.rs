@@ -3,8 +3,8 @@
 //! This module provides RDD implementations that can be executed
 //! in a distributed environment using serializable operations.
 
-use crate::distributed::task::ShuffleMapTask;
 use crate::operations::RddDataType;
+use crate::rdd::transformations::PairRdd;
 use crate::traits::{BasicPartition, Partition, RddBase};
 use bumpalo::Bump;
 use std::fmt::Debug;
@@ -570,36 +570,6 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
         let (base_data, num_partitions, operations) = self.clone().analyze_lineage();
-
-        // If shuffle_info is Some, we are in a ShuffleMapStage. Create ShuffleMapTasks.
-        if let Some(shuffle) = shuffle_info {
-            let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
-            for partition_index in 0..num_partitions {
-                let data_len = base_data.len();
-                let partition_size = data_len.div_ceil(num_partitions);
-                let start = partition_index * partition_size;
-                let end = std::cmp::min(start + partition_size, data_len);
-
-                let partition_data = if start >= data_len {
-                    Vec::new()
-                } else {
-                    base_data[start..end].to_vec()
-                };
-
-                let serialized_partition_data =
-                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-                tasks.push(create_shuffle_map_task::<T>(
-                    serialized_partition_data,
-                    operations.clone(),
-                    shuffle.shuffle_id as u32,
-                    shuffle.num_partitions,
-                )?);
-            }
-            return Ok(tasks);
-        }
-
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
         for partition_index in 0..num_partitions {
@@ -617,10 +587,38 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             let serialized_partition_data =
                 bincode::encode_to_vec(&partition_data, bincode::config::standard())
                     .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-            tasks.push(T::create_chained_task(
-                serialized_partition_data,
-                operations.clone(),
-            )?);
+
+            if let Some(shuffle) = shuffle_info {
+                // This is a map stage for a shuffle.
+                // We need to create ShuffleMapTasks, which requires this RDD to be a PairRdd.
+                // We perform safe downcasts to check for specific pair types.
+                let any_self = self as &dyn std::any::Any;
+                if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(String, i32)>>() {
+                    return pair_rdd.create_shuffle_map_tasks(
+                        shuffle.shuffle_id as u32,
+                        shuffle.num_partitions,
+                    );
+                } else if let Some(pair_rdd) =
+                    any_self.downcast_ref::<DistributedRdd<(i32, String)>>()
+                {
+                    return pair_rdd.create_shuffle_map_tasks(
+                        shuffle.shuffle_id as u32,
+                        shuffle.num_partitions,
+                    );
+                } else {
+                    // This is a programmer error: a shuffle dependency was created on a non-pair RDD.
+                    return Err(crate::traits::RddError::TaskCreationError(format!(
+                        "Shuffle dependency created on a non-pair RDD with type {:?}",
+                        std::any::type_name::<T>()
+                    )));
+                }
+            } else {
+                // This is a narrow dependency stage. Create ChainedTasks.
+                tasks.push(T::create_chained_task(
+                    serialized_partition_data,
+                    operations.clone(),
+                )?);
+            }
         }
 
         Ok(tasks)
@@ -629,46 +627,6 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
     fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
         self
     }
-}
-
-// Helper to create ShuffleMapTask for supported (K, V) pairs.
-fn create_shuffle_map_task<T: RddDataType>(
-    parent_partition_data: Vec<u8>,
-    parent_operations: Vec<T::SerializableOperation>,
-    shuffle_id: u32,
-    num_reduce_partitions: u32,
-) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
-    // This is where we need to know the Key and Value types from T.
-    // For now, we handle the known cases by casting to the concrete types.
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<(String, i32)>() {
-        // Cast the operations to the concrete type
-        let concrete_operations: Vec<<(String, i32) as RddDataType>::SerializableOperation> =
-            unsafe { std::mem::transmute(parent_operations) };
-        return Ok(Box::new(ShuffleMapTask::<(String, i32)>::new(
-            parent_partition_data,
-            concrete_operations,
-            shuffle_id,
-            num_reduce_partitions,
-            Default::default(),
-        )));
-    }
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<(i32, String)>() {
-        // Cast the operations to the concrete type
-        let concrete_operations: Vec<<(i32, String) as RddDataType>::SerializableOperation> =
-            unsafe { std::mem::transmute(parent_operations) };
-        return Ok(Box::new(ShuffleMapTask::<(i32, String)>::new(
-            parent_partition_data,
-            concrete_operations,
-            shuffle_id,
-            num_reduce_partitions,
-            Default::default(),
-        )));
-    }
-
-    Err(crate::traits::RddError::TaskCreationError(format!(
-        "Cannot create ShuffleMapTask for RDD with item type {:?}. It's not a supported key-value pair.",
-        std::any::type_name::<T>()
-    )))
 }
 
 #[cfg(test)]

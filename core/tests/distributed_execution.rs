@@ -8,6 +8,7 @@
 
 use barks_core::context::{DistributedConfig, DistributedContext};
 use barks_core::operations::{DoubleOperation, GreaterThanPredicate};
+use barks_core::rdd::transformations::PairRddExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,13 +161,12 @@ async fn test_distributed_shuffle_reduce_by_key() {
     let rdd = driver_context.parallelize_distributed(data_owned, 2);
 
     // Use the PairRdd trait to create a ShuffledRdd
-    use barks_core::rdd::transformations::PairRdd;
     let partitioner = Arc::new(barks_core::shuffle::HashPartitioner::new(2));
     let reduced_rdd = rdd.reduce_by_key(|a, b| a + b, partitioner);
 
     info!("Submitting ShuffledRdd (reduce_by_key) to the cluster for execution.");
     let result = driver_context
-        .run(Arc::new(reduced_rdd))
+        .run(reduced_rdd as Arc<dyn barks_core::traits::RddBase<Item = (String, i32)>>)
         .await
         .expect("Distributed shuffle computation failed");
 

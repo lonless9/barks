@@ -131,6 +131,37 @@ impl<T> Data for T where
 {
 }
 
+/// A trait for types that can be treated as a key-value pair.
+pub trait Pair {
+    type Key: Data;
+    type Value: Data;
+
+    fn key(&self) -> &Self::Key;
+    fn value(&self) -> &Self::Value;
+    fn into_pair(self) -> (Self::Key, Self::Value);
+}
+
+impl<K, V> Pair for (K, V)
+where
+    K: Data,
+    V: Data,
+{
+    type Key = K;
+    type Value = V;
+
+    fn key(&self) -> &Self::Key {
+        &self.0
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.1
+    }
+
+    fn into_pair(self) -> (Self::Key, Self::Value) {
+        self
+    }
+}
+
 /// Represents a dependency of an RDD on its parent(s).
 #[derive(Clone)]
 pub enum Dependency {
