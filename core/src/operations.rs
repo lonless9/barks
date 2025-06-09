@@ -52,6 +52,10 @@ pub trait RddDataType:
         serialized_partition_data: Vec<u8>,
         operations: Vec<Self::SerializableOperation>,
     ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>>;
+
+    /// Compute distinct elements from the given data
+    /// This method handles the deduplication logic for types that support it
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>>;
 }
 
 /// Trait for serializable operations on i32 values
@@ -160,6 +164,20 @@ impl RddDataType for i32 {
             operations,
         )))
     }
+
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in data {
+            if seen.insert(item) {
+                result.push(item);
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 /// Implement RddDataType for String
@@ -198,6 +216,20 @@ impl RddDataType for String {
                 operations,
             ),
         ))
+    }
+
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in data {
+            if seen.insert(item.clone()) {
+                result.push(item);
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -354,6 +386,20 @@ impl RddDataType for (String, i32) {
             serialized_partition_data, operations
         )))
     }
+
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in data {
+            if seen.insert(item.clone()) {
+                result.push(item);
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 /// Trait for serializable operations on (i32, String) tuple values
@@ -426,6 +472,20 @@ impl RddDataType for (i32, String) {
             serialized_partition_data, operations
         )))
     }
+
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in data {
+            if seen.insert(item.clone()) {
+                result.push(item);
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 // For simplicity in tests, implement RddDataType for (String, String) by reusing String operations
@@ -458,6 +518,20 @@ impl RddDataType for (String, String) {
                 operations,
             ),
         ))
+    }
+
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in data {
+            if seen.insert(item.clone()) {
+                result.push(item);
+            }
+        }
+
+        Ok(result)
     }
 }
 
