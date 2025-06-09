@@ -79,20 +79,13 @@ impl From<SqlDataType> for DataType {
             SqlDataType::String => DataType::Utf8,
             SqlDataType::Binary => DataType::Binary,
             SqlDataType::Date => DataType::Date32,
-            SqlDataType::Timestamp => DataType::Timestamp(
-                datafusion::arrow::datatypes::TimeUnit::Microsecond,
-                None,
-            ),
-            SqlDataType::Decimal { precision, scale } => {
-                DataType::Decimal128(precision, scale)
+            SqlDataType::Timestamp => {
+                DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None)
             }
-            SqlDataType::List(inner) => {
-                DataType::List(Arc::new(datafusion::arrow::datatypes::Field::new(
-                    "item",
-                    (*inner).into(),
-                    true,
-                )))
-            }
+            SqlDataType::Decimal { precision, scale } => DataType::Decimal128(precision, scale),
+            SqlDataType::List(inner) => DataType::List(Arc::new(
+                datafusion::arrow::datatypes::Field::new("item", (*inner).into(), true),
+            )),
             SqlDataType::Struct(fields) => {
                 let arrow_fields: Vec<_> = fields
                     .into_iter()
@@ -135,7 +128,13 @@ impl From<DataType> for SqlDataType {
             DataType::Struct(fields) => {
                 let sql_fields: Vec<_> = fields
                     .iter()
-                    .map(|f| SqlField::new(f.name().clone(), f.data_type().clone().into(), f.is_nullable()))
+                    .map(|f| {
+                        SqlField::new(
+                            f.name().clone(),
+                            f.data_type().clone().into(),
+                            f.is_nullable(),
+                        )
+                    })
                     .collect();
                 SqlDataType::Struct(sql_fields)
             }

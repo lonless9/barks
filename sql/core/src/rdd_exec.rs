@@ -14,10 +14,9 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
-    SendableRecordBatchStream,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
 };
-use futures::stream::{self, StreamExt};
+use futures::stream;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -186,8 +185,7 @@ impl ExecutionPlan for RddExec {
             }
         });
 
-        let adapted_stream =
-            RecordBatchStreamAdapter::new(schema, stream.map(|res| res.map_err(Into::into)));
+        let adapted_stream = RecordBatchStreamAdapter::new(schema, stream);
         Ok(Box::pin(adapted_stream))
     }
 }

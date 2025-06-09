@@ -3,7 +3,6 @@
 //! This module provides strongly-typed Dataset operations
 //! that complement the DataFrame API.
 
-use barks_sql_core::traits::{SqlError, SqlResult};
 use serde::{Deserialize, Serialize};
 
 /// A strongly-typed Dataset

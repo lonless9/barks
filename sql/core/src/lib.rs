@@ -13,8 +13,8 @@ pub mod traits;
 mod tests;
 
 pub use columnar::*;
-pub use datasources::*;
-pub use execution::*;
+pub use datasources::{FileDataSource, FileFormat, RddTableProvider};
+pub use execution::{DataFusionQueryEngine, DataFusionSession};
 pub use rdd_exec::*;
 pub use traits::*;
 

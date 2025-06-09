@@ -3,14 +3,11 @@
 //! This module provides a high-level DataFrame API that integrates
 //! DataFusion's DataFrame capabilities with Barks' distributed execution model.
 
-use async_trait::async_trait;
-use barks_core::traits::{Data, RddBase};
 use barks_sql_core::traits::{SqlError, SqlResult};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::{Expr, LogicalPlan, col};
 use datafusion::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// A distributed DataFrame that can execute SQL operations

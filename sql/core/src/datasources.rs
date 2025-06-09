@@ -70,6 +70,7 @@ impl TableProvider for RddTableProvider {
 
 /// Data source adapter for external files
 pub struct FileDataSource {
+    #[allow(dead_code)]
     path: String,
     format: FileFormat,
     schema: Option<SchemaRef>,
@@ -130,7 +131,7 @@ impl SqlDataSource for FileDataSource {
         }
     }
 
-    async fn scan(&self, projection: Option<&[usize]>) -> SqlResult<Vec<RecordBatch>> {
+    async fn scan(&self, _projection: Option<&[usize]>) -> SqlResult<Vec<RecordBatch>> {
         // This would implement actual file reading
         // For now, return an error
         Err(SqlError::DataSource(format!(

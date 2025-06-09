@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use barks_core::traits::{Data, IsRdd, RddBase};
-use barks_sql_core::traits::{SqlError, SqlResult};
+use barks_sql_core::traits::SqlResult;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use std::sync::Arc;

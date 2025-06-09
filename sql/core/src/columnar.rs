@@ -4,14 +4,12 @@
 //! and columnar Arrow data structures used by DataFusion.
 
 use crate::traits::{SqlError, SqlResult};
-use barks_core::traits::Data;
 use datafusion::arrow::array::{
     Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
     UInt32Array, UInt64Array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Trait for converting data types to Arrow arrays
@@ -314,7 +312,7 @@ pub mod conversion {
             return Err(SqlError::Schema("Column length mismatch".to_string()));
         }
 
-        Ok(col1.into_iter().zip(col2.into_iter()).collect())
+        Ok(col1.into_iter().zip(col2).collect())
     }
 
     /// Create a simple single-column RecordBatch

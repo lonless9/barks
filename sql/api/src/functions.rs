@@ -41,7 +41,9 @@ pub mod math {
     /// Round to specified decimal places
     pub fn round(expr: Expr, decimals: Option<i64>) -> Expr {
         match decimals {
-            Some(d) => datafusion::functions::expr_fn::round(vec![expr, datafusion::logical_expr::lit(d)]),
+            Some(d) => {
+                datafusion::functions::expr_fn::round(vec![expr, datafusion::logical_expr::lit(d)])
+            }
             None => datafusion::functions::expr_fn::round(vec![expr]),
         }
     }

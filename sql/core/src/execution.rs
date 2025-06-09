@@ -197,8 +197,8 @@ impl DataFusionSession {
 impl SqlSession for DataFusionSession {
     async fn register_table(
         &self,
-        name: &str,
-        data_source: Arc<dyn crate::traits::SqlDataSource>,
+        _name: &str,
+        _data_source: Arc<dyn crate::traits::SqlDataSource>,
     ) -> SqlResult<()> {
         // For now, we'll implement a basic table provider wrapper
         // This will be expanded to support custom data sources
@@ -223,10 +223,10 @@ impl SqlSession for DataFusionSession {
 /// Utility functions for SQL execution
 pub mod utils {
     use super::*;
-    use datafusion::arrow::array::{Array, ArrayRef};
+    use datafusion::arrow::array::ArrayRef;
 
     /// Convert a vector of values to a RecordBatch
-    pub fn values_to_record_batch<T>(values: Vec<T>, field_name: &str) -> SqlResult<RecordBatch>
+    pub fn values_to_record_batch<T>(values: Vec<T>, _field_name: &str) -> SqlResult<RecordBatch>
     where
         T: Into<ArrayRef> + Clone,
     {
