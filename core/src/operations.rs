@@ -644,24 +644,133 @@ impl RddDataType for (i32, String) {
     }
 }
 
-// For simplicity in tests, implement RddDataType for (String, String) by reusing String operations
+/// Trait for serializable operations on (String, String) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringStringTupleOperation: Send + Sync + Debug + DynClone {
+    fn execute(&self, item: (String, String)) -> (String, String);
+}
+dyn_clone::clone_trait_object!(StringStringTupleOperation);
+
+/// Trait for serializable predicates on (String, String) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringStringTuplePredicate: Send + Sync + Debug + DynClone {
+    fn test(&self, item: &(String, String)) -> bool;
+}
+dyn_clone::clone_trait_object!(StringStringTuplePredicate);
+
+/// Trait for serializable flatMap operations on (String, String) tuple values
+#[typetag::serde(tag = "type")]
+pub trait StringStringTupleFlatMapOperation: Send + Sync + Debug + DynClone {
+    fn execute(&self, item: (String, String)) -> Vec<(String, String)>;
+}
+dyn_clone::clone_trait_object!(StringStringTupleFlatMapOperation);
+
+/// Map operation that swaps the two strings in a tuple
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SwapStringTupleOperation;
+
+#[typetag::serde]
+impl StringStringTupleOperation for SwapStringTupleOperation {
+    fn execute(&self, item: (String, String)) -> (String, String) {
+        (item.1, item.0)
+    }
+}
+
+/// Map operation that concatenates the two strings with a separator
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConcatStringTupleOperation {
+    pub separator: String,
+}
+
+#[typetag::serde]
+impl StringStringTupleOperation for ConcatStringTupleOperation {
+    fn execute(&self, item: (String, String)) -> (String, String) {
+        let concatenated = format!("{}{}{}", item.0, self.separator, item.1);
+        (concatenated, item.1)
+    }
+}
+
+/// Predicate that filters tuples where the first string contains the second
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FirstContainsSecondPredicate;
+
+#[typetag::serde]
+impl StringStringTuplePredicate for FirstContainsSecondPredicate {
+    fn test(&self, item: &(String, String)) -> bool {
+        item.0.contains(&item.1)
+    }
+}
+
+/// FlatMap operation that splits both strings by whitespace and creates all combinations
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SplitAndCombineOperation;
+
+#[typetag::serde]
+impl StringStringTupleFlatMapOperation for SplitAndCombineOperation {
+    fn execute(&self, item: (String, String)) -> Vec<(String, String)> {
+        let first_words: Vec<&str> = item.0.split_whitespace().collect();
+        let second_words: Vec<&str> = item.1.split_whitespace().collect();
+
+        let mut result = Vec::new();
+        for first_word in first_words {
+            for second_word in &second_words {
+                result.push((first_word.to_string(), second_word.to_string()));
+            }
+        }
+        result
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SerializableStringStringTupleOperation {
+    Map(Box<dyn StringStringTupleOperation>),
+    Filter(Box<dyn StringStringTuplePredicate>),
+    FlatMap(Box<dyn StringStringTupleFlatMapOperation>),
+}
+
+impl From<Box<dyn StringStringTupleOperation>> for SerializableStringStringTupleOperation {
+    fn from(op: Box<dyn StringStringTupleOperation>) -> Self {
+        Self::Map(op)
+    }
+}
+
+impl From<Box<dyn StringStringTuplePredicate>> for SerializableStringStringTupleOperation {
+    fn from(pred: Box<dyn StringStringTuplePredicate>) -> Self {
+        Self::Filter(pred)
+    }
+}
+
+impl From<Box<dyn StringStringTupleFlatMapOperation>> for SerializableStringStringTupleOperation {
+    fn from(op: Box<dyn StringStringTupleFlatMapOperation>) -> Self {
+        Self::FlatMap(op)
+    }
+}
+
 impl RddDataType for (String, String) {
-    type MapOperation = Box<dyn StringOperation>;
-    type FilterPredicate = Box<dyn StringPredicate>;
-    type FlatMapOperation = Box<dyn StringOperation>; // Reuse string operation for simplicity
-    type SerializableOperation = SerializableStringOperation;
+    type MapOperation = Box<dyn StringStringTupleOperation>;
+    type FilterPredicate = Box<dyn StringStringTuplePredicate>;
+    type FlatMapOperation = Box<dyn StringStringTupleFlatMapOperation>;
+    type SerializableOperation = SerializableStringStringTupleOperation;
 
     fn apply_operation(
         op: &Self::SerializableOperation,
         data: Vec<Self>,
         _arena: &Bump,
     ) -> Vec<Self> {
-        // For simplicity, we'll just pass through the data unchanged for tuple operations
-        // In a real implementation, you'd want proper tuple-specific operations
         match op {
-            SerializableStringOperation::Map(_) => data, // Pass through unchanged
-            SerializableStringOperation::Filter(_) => data, // Pass through unchanged
-            SerializableStringOperation::FlatMap(_) => data, // Pass through unchanged
+            SerializableStringStringTupleOperation::Map(map_op) => data
+                .par_iter()
+                .map(|item| map_op.execute(item.clone()))
+                .collect(),
+            SerializableStringStringTupleOperation::Filter(filter_op) => data
+                .par_iter()
+                .filter(|item| filter_op.test(item))
+                .cloned()
+                .collect(),
+            SerializableStringStringTupleOperation::FlatMap(flatmap_op) => data
+                .par_iter()
+                .flat_map(|item| flatmap_op.execute(item.clone()))
+                .collect(),
         }
     }
 
@@ -669,13 +778,12 @@ impl RddDataType for (String, String) {
         serialized_partition_data: Vec<u8>,
         operations: Vec<Self::SerializableOperation>,
     ) -> crate::traits::RddResult<Box<dyn crate::distributed::task::Task>> {
-        // For simplicity, reuse the String task implementation
-        Ok(Box::new(
-            crate::distributed::task::ChainedTask::<String>::new(
-                serialized_partition_data,
-                operations,
-            ),
-        ))
+        Ok(Box::new(crate::distributed::task::ChainedTask::<(
+            String,
+            String,
+        )>::new(
+            serialized_partition_data, operations
+        )))
     }
 
     fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {

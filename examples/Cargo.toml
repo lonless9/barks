@@ -34,6 +34,10 @@ path = "local_rdd_api.rs"
 name = "sql_datafusion_example"
 path = "sql_datafusion_example.rs"
 
+[[bin]]
+name = "string_tuple_demo"
+path = "string_tuple_demo.rs"
+
 # Disabled until shuffle functionality is implemented
 # [[bin]]
 # name = "shuffle_api"

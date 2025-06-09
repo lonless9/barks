@@ -202,3 +202,123 @@ mod operation_tests {
         assert_eq!(result, expected);
     }
 }
+
+#[cfg(test)]
+mod string_string_tuple_tests {
+    use super::super::*;
+    use crate::rdd::DistributedRdd;
+
+    #[test]
+    fn test_string_string_tuple_swap_operation() {
+        // Test SwapStringTupleOperation
+        let data = vec![
+            ("hello".to_string(), "world".to_string()),
+            ("foo".to_string(), "bar".to_string()),
+        ];
+        let rdd: DistributedRdd<(String, String)> =
+            DistributedRdd::from_vec_with_partitions(data.clone(), 2);
+        let mapped_rdd = rdd.map(Box::new(SwapStringTupleOperation));
+
+        let result = mapped_rdd.collect().unwrap();
+        let expected = vec![
+            ("world".to_string(), "hello".to_string()),
+            ("bar".to_string(), "foo".to_string()),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_string_tuple_concat_operation() {
+        // Test ConcatStringTupleOperation
+        let data = vec![
+            ("hello".to_string(), "world".to_string()),
+            ("foo".to_string(), "bar".to_string()),
+        ];
+        let rdd: DistributedRdd<(String, String)> =
+            DistributedRdd::from_vec_with_partitions(data.clone(), 2);
+        let mapped_rdd = rdd.map(Box::new(ConcatStringTupleOperation {
+            separator: "-".to_string(),
+        }));
+
+        let result = mapped_rdd.collect().unwrap();
+        let expected = vec![
+            ("hello-world".to_string(), "world".to_string()),
+            ("foo-bar".to_string(), "bar".to_string()),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_string_tuple_filter_operation() {
+        // Test FirstContainsSecondPredicate
+        let data = vec![
+            ("hello world".to_string(), "world".to_string()),
+            ("foo bar".to_string(), "baz".to_string()),
+            ("test string".to_string(), "test".to_string()),
+        ];
+        let rdd: DistributedRdd<(String, String)> =
+            DistributedRdd::from_vec_with_partitions(data.clone(), 2);
+        let filtered_rdd = rdd.filter(Box::new(FirstContainsSecondPredicate));
+
+        let result = filtered_rdd.collect().unwrap();
+        let expected = vec![
+            ("hello world".to_string(), "world".to_string()),
+            ("test string".to_string(), "test".to_string()),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_string_tuple_flatmap_operation() {
+        // Test SplitAndCombineOperation
+        let data = vec![("hello world".to_string(), "foo bar".to_string())];
+        let rdd: DistributedRdd<(String, String)> =
+            DistributedRdd::from_vec_with_partitions(data.clone(), 1);
+        let flatmapped_rdd = rdd.flat_map(Box::new(SplitAndCombineOperation));
+
+        let result = flatmapped_rdd.collect().unwrap();
+        let expected = vec![
+            ("hello".to_string(), "foo".to_string()),
+            ("hello".to_string(), "bar".to_string()),
+            ("world".to_string(), "foo".to_string()),
+            ("world".to_string(), "bar".to_string()),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_string_tuple_chained_operations() {
+        // Test chained operations on (String, String) tuples
+        let data = vec![
+            ("hello world".to_string(), "world".to_string()),
+            ("foo bar".to_string(), "baz".to_string()),
+            ("test string".to_string(), "test".to_string()),
+        ];
+        let rdd: DistributedRdd<(String, String)> =
+            DistributedRdd::from_vec_with_partitions(data.clone(), 2);
+
+        let result_rdd = rdd
+            .filter(Box::new(FirstContainsSecondPredicate)) // Filter where first contains second
+            .map(Box::new(SwapStringTupleOperation)); // Swap the strings
+
+        let result = result_rdd.collect().unwrap();
+        let expected = vec![
+            ("world".to_string(), "hello world".to_string()),
+            ("test".to_string(), "test string".to_string()),
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_string_string_tuple_serialization() {
+        // Test that (String, String) operations can be serialized and deserialized
+        let op: Box<dyn StringStringTupleOperation> = Box::new(SwapStringTupleOperation);
+        let serialized = serde_json::to_string(&op).unwrap();
+        let deserialized: Box<dyn StringStringTupleOperation> =
+            serde_json::from_str(&serialized).unwrap();
+
+        let test_tuple = ("hello".to_string(), "world".to_string());
+        let result = deserialized.execute(test_tuple);
+        assert_eq!(result, ("world".to_string(), "hello".to_string()));
+    }
+}

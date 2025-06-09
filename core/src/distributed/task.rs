@@ -115,6 +115,7 @@ impl_chained_task!(i32, "ChainedTaskI32");
 impl_chained_task!(String, "ChainedTaskString");
 impl_chained_task!((String, i32), "ChainedTaskStringI32Tuple");
 impl_chained_task!((i32, String), "ChainedTaskI32StringTuple");
+impl_chained_task!((String, String), "ChainedTaskStringStringTuple");
 
 /// Task runner for executing distributed tasks
 pub struct TaskRunner {
