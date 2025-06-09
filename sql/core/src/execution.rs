@@ -79,12 +79,12 @@ impl DataFusionQueryEngine {
 
     /// Register an RDD as a table. This function infers the schema and creates
     /// a `TableProvider` that can scan the RDD.
-    pub async fn register_rdd<T: crate::rdd_exec::ToRecordBatchConverter>(
+    pub async fn register_rdd<T: crate::columnar::ToRecordBatch + barks_core::traits::Data>(
         &self,
         name: &str,
         rdd: Arc<dyn barks_core::traits::RddBase<Item = T>>,
     ) -> SqlResult<()> {
-        let schema = T::schema()?;
+        let schema = T::to_schema()?;
         let provider = Arc::new(crate::datasources::RddTableProvider::new(
             rdd.as_is_rdd(),
             schema,
@@ -104,7 +104,7 @@ impl DataFusionQueryEngine {
     ) -> SqlResult<()> {
         // Try to downcast and register. Support common types.
         if rdd.as_any().is::<barks_core::rdd::DistributedRdd<i32>>() {
-            let schema = <i32 as crate::rdd_exec::ToRecordBatchConverter>::schema()?;
+            let schema = <i32 as crate::columnar::ToRecordBatch>::to_schema()?;
             let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
             self.context
                 .register_table(name, provider)
@@ -112,7 +112,7 @@ impl DataFusionQueryEngine {
             return Ok(());
         }
         if rdd.as_any().is::<barks_core::rdd::DistributedRdd<String>>() {
-            let schema = <String as crate::rdd_exec::ToRecordBatchConverter>::schema()?;
+            let schema = <String as crate::columnar::ToRecordBatch>::to_schema()?;
             let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
             self.context
                 .register_table(name, provider)
@@ -123,7 +123,7 @@ impl DataFusionQueryEngine {
             .as_any()
             .is::<barks_core::rdd::DistributedRdd<(String, i32)>>()
         {
-            let schema = <(String, i32) as crate::rdd_exec::ToRecordBatchConverter>::schema()?;
+            let schema = <(String, i32) as crate::columnar::ToRecordBatch>::to_schema()?;
             let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
             self.context
                 .register_table(name, provider)

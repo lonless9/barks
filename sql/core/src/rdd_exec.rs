@@ -2,12 +2,11 @@
 //!
 //! This is a simplified implementation that provides basic RDD-to-SQL integration.
 
-use crate::columnar::ToArrowArray;
-use crate::columnar::conversion;
+use crate::columnar::ToRecordBatch;
 use crate::traits::SqlError;
 use async_trait::async_trait;
-use barks_core::traits::{Data, IsRdd};
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use barks_core::traits::IsRdd;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
@@ -19,71 +18,6 @@ use datafusion::physical_plan::{
 use futures::stream;
 use std::any::Any;
 use std::sync::Arc;
-
-/// A trait to convert a Vec of a specific data type into a RecordBatch.
-/// This allows `RddExec` to be generic while handling different data layouts.
-pub trait ToRecordBatchConverter: Data {
-    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError>;
-    fn schema() -> Result<SchemaRef, SqlError>;
-}
-
-impl ToRecordBatchConverter for i32 {
-    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError> {
-        let schema = Self::schema()?;
-        let array = <i32 as ToArrowArray>::to_arrow_array(data)?;
-        RecordBatch::try_new(schema, vec![array]).map_err(SqlError::from)
-    }
-
-    fn schema() -> Result<SchemaRef, SqlError> {
-        Ok(Arc::new(Schema::new(vec![Field::new(
-            "value",
-            <i32 as ToArrowArray>::arrow_data_type(),
-            true,
-        )])))
-    }
-}
-
-impl ToRecordBatchConverter for String {
-    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError> {
-        let schema = Self::schema()?;
-        let array = <String as ToArrowArray>::to_arrow_array(data)?;
-        RecordBatch::try_new(schema, vec![array]).map_err(SqlError::from)
-    }
-
-    fn schema() -> Result<SchemaRef, SqlError> {
-        Ok(Arc::new(Schema::new(vec![Field::new(
-            "value",
-            <String as ToArrowArray>::arrow_data_type(),
-            true,
-        )])))
-    }
-}
-
-impl ToRecordBatchConverter for (String, i32) {
-    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError> {
-        conversion::tuples_to_record_batch(data, "c0", "c1")
-    }
-
-    fn schema() -> Result<SchemaRef, SqlError> {
-        Ok(Arc::new(Schema::new(vec![
-            Field::new("c0", <String as ToArrowArray>::arrow_data_type(), true),
-            Field::new("c1", <i32 as ToArrowArray>::arrow_data_type(), true),
-        ])))
-    }
-}
-
-impl ToRecordBatchConverter for (i32, String) {
-    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError> {
-        conversion::tuples_to_record_batch(data, "c0", "c1")
-    }
-
-    fn schema() -> Result<SchemaRef, SqlError> {
-        Ok(Arc::new(Schema::new(vec![
-            Field::new("c0", <i32 as ToArrowArray>::arrow_data_type(), true),
-            Field::new("c1", <String as ToArrowArray>::arrow_data_type(), true),
-        ])))
-    }
-}
 
 /// The RddExec execution plan reads data from an RDD partition.
 #[derive(Debug)]
@@ -163,14 +97,14 @@ impl ExecutionPlan for RddExec {
             {
                 let rdd_partition = barks_core::traits::BasicPartition::new(partition);
                 let data = rdd_i32.compute(&rdd_partition).map_err(SqlError::from)?;
-                <i32 as ToRecordBatchConverter>::convert(data)
+                <i32 as ToRecordBatch>::to_record_batch(data)
             } else if let Some(rdd_string) = rdd
                 .as_any()
                 .downcast_ref::<barks_core::rdd::DistributedRdd<String>>()
             {
                 let rdd_partition = barks_core::traits::BasicPartition::new(partition);
                 let data = rdd_string.compute(&rdd_partition).map_err(SqlError::from)?;
-                <String as ToRecordBatchConverter>::convert(data)
+                <String as ToRecordBatch>::to_record_batch(data)
             } else if let Some(rdd_string_i32) = rdd
                 .as_any()
                 .downcast_ref::<barks_core::rdd::DistributedRdd<(String, i32)>>()
@@ -179,7 +113,7 @@ impl ExecutionPlan for RddExec {
                 let data = rdd_string_i32
                     .compute(&rdd_partition)
                     .map_err(SqlError::from)?;
-                <(String, i32) as ToRecordBatchConverter>::convert(data)
+                <(String, i32) as ToRecordBatch>::to_record_batch(data)
             } else if let Some(rdd_i32_string) = rdd
                 .as_any()
                 .downcast_ref::<barks_core::rdd::DistributedRdd<(i32, String)>>()
@@ -188,7 +122,7 @@ impl ExecutionPlan for RddExec {
                 let data = rdd_i32_string
                     .compute(&rdd_partition)
                     .map_err(SqlError::from)?;
-                <(i32, String) as ToRecordBatchConverter>::convert(data)
+                <(i32, String) as ToRecordBatch>::to_record_batch(data)
             } else {
                 return Err(DataFusionError::NotImplemented(format!(
                     "Unsupported RDD type for SQL execution: {:?}",

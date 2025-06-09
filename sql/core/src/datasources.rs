@@ -4,7 +4,8 @@
 //! in DataFusion SQL queries, enabling seamless integration between the
 //! distributed RDD model and SQL operations.
 
-use crate::rdd_exec::{RddExec, ToRecordBatchConverter};
+use crate::columnar::ToRecordBatch;
+use crate::rdd_exec::RddExec;
 use crate::traits::{SqlDataSource, SqlError, SqlResult};
 use async_trait::async_trait;
 use barks_core::traits::IsRdd;
@@ -157,7 +158,7 @@ pub mod utils {
         name: &str,
         rdd: Arc<dyn IsRdd>,
     ) -> SqlResult<()> {
-        let schema = <i32 as ToRecordBatchConverter>::schema()?;
+        let schema = <i32 as ToRecordBatch>::to_schema()?;
         let provider = Arc::new(RddTableProvider::new(rdd, schema));
         ctx.register_table(name, provider)
             .map_err(|e| SqlError::DataSource(format!("Failed to register table: {}", e)))?;
@@ -170,7 +171,7 @@ pub mod utils {
         name: &str,
         rdd: Arc<dyn IsRdd>,
     ) -> SqlResult<()> {
-        let schema = <String as ToRecordBatchConverter>::schema()?;
+        let schema = <String as ToRecordBatch>::to_schema()?;
         let provider = Arc::new(RddTableProvider::new(rdd, schema));
         ctx.register_table(name, provider)
             .map_err(|e| SqlError::DataSource(format!("Failed to register table: {}", e)))?;
@@ -213,7 +214,7 @@ mod tests {
     async fn test_i32_rdd_table_provider() {
         let data = vec![1, 2, 3, 4, 5];
         let rdd = Arc::new(DistributedRdd::from_vec(data));
-        let schema = <i32 as ToRecordBatchConverter>::schema().unwrap();
+        let schema = <i32 as ToRecordBatch>::to_schema().unwrap();
         let provider = RddTableProvider::new(rdd.as_is_rdd(), schema.clone());
 
         let provider_schema = provider.schema();
