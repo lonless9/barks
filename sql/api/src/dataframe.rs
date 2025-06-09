@@ -4,6 +4,7 @@
 //! DataFusion's DataFrame capabilities with Barks' distributed execution model.
 
 use barks_sql_core::traits::{SqlError, SqlResult};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::{Expr, LogicalPlan, col};
@@ -159,10 +160,41 @@ impl DistributedDataFrame {
         self,
         _dist_ctx: Arc<barks_core::context::DistributedContext>,
     ) -> SqlResult<Vec<RecordBatch>> {
-        // For now, fall back to local execution
         // TODO: Implement distributed execution by breaking down the logical plan
-        // into stages and executing them across the cluster
+        // into stages and executing them across the cluster.
+        //
+        // For now, fall back to local execution as outlined in the TODO.md.
+        // A full implementation would:
+        // 1. Serialize the DataFusion LogicalPlan
+        // 2. Create a Barks Task that sends this plan to executors
+        // 3. On each executor, materialize its partition of the source RDD into a RecordBatch
+        // 4. Execute the LogicalPlan on this RecordBatch using a local SessionContext
+        // 5. Return the resulting RecordBatch to the driver
+        //
+        // This approach leverages DataFusion's execution capabilities on each worker
+        // without requiring a full query planner translation layer in Barks initially.
+
         self.dataframe.collect().await.map_err(SqlError::from)
+    }
+}
+
+/// A task for executing SQL operations in a distributed manner
+#[derive(Debug)]
+pub struct DistributedSqlTask {
+    /// Serialized logical plan
+    pub serialized_plan: Vec<u8>,
+    /// Schema of the expected result (serialized as JSON)
+    pub schema_json: String,
+}
+
+impl DistributedSqlTask {
+    pub fn new(serialized_plan: Vec<u8>, schema: SchemaRef) -> Self {
+        // Serialize schema to JSON for now - in a real implementation we'd use a more efficient format
+        let schema_json = format!("{:?}", schema);
+        Self {
+            serialized_plan,
+            schema_json,
+        }
     }
 }
 

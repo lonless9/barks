@@ -131,6 +131,22 @@ impl ToRecordBatch for i32 {
     }
 }
 
+impl ToRecordBatch for String {
+    fn to_record_batch(data: Vec<Self>) -> SqlResult<RecordBatch> {
+        let schema = Self::to_schema()?;
+        let array = String::to_arrow_array(data)?;
+        RecordBatch::try_new(schema, vec![array]).map_err(SqlError::from)
+    }
+
+    fn to_schema() -> SqlResult<SchemaRef> {
+        Ok(Arc::new(Schema::new(vec![Field::new(
+            "value",
+            String::arrow_data_type(),
+            true,
+        )])))
+    }
+}
+
 impl ToRecordBatch for (String, i32) {
     fn to_record_batch(data: Vec<Self>) -> SqlResult<RecordBatch> {
         conversion::tuples_to_record_batch(data, "c0", "c1")
@@ -140,6 +156,19 @@ impl ToRecordBatch for (String, i32) {
         Ok(Arc::new(Schema::new(vec![
             Field::new("c0", String::arrow_data_type(), true),
             Field::new("c1", i32::arrow_data_type(), true),
+        ])))
+    }
+}
+
+impl ToRecordBatch for (i32, String) {
+    fn to_record_batch(data: Vec<Self>) -> SqlResult<RecordBatch> {
+        conversion::tuples_to_record_batch(data, "c0", "c1")
+    }
+
+    fn to_schema() -> SqlResult<SchemaRef> {
+        Ok(Arc::new(Schema::new(vec![
+            Field::new("c0", i32::arrow_data_type(), true),
+            Field::new("c1", String::arrow_data_type(), true),
         ])))
     }
 }

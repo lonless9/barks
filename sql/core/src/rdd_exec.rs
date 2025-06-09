@@ -72,6 +72,19 @@ impl ToRecordBatchConverter for (String, i32) {
     }
 }
 
+impl ToRecordBatchConverter for (i32, String) {
+    fn convert(data: Vec<Self>) -> Result<RecordBatch, SqlError> {
+        conversion::tuples_to_record_batch(data, "c0", "c1")
+    }
+
+    fn schema() -> Result<SchemaRef, SqlError> {
+        Ok(Arc::new(Schema::new(vec![
+            Field::new("c0", <i32 as ToArrowArray>::arrow_data_type(), true),
+            Field::new("c1", <String as ToArrowArray>::arrow_data_type(), true),
+        ])))
+    }
+}
+
 /// The RddExec execution plan reads data from an RDD partition.
 #[derive(Debug)]
 pub struct RddExec {
@@ -167,6 +180,15 @@ impl ExecutionPlan for RddExec {
                     .compute(&rdd_partition)
                     .map_err(SqlError::from)?;
                 <(String, i32) as ToRecordBatchConverter>::convert(data)
+            } else if let Some(rdd_i32_string) = rdd
+                .as_any()
+                .downcast_ref::<barks_core::rdd::DistributedRdd<(i32, String)>>()
+            {
+                let rdd_partition = barks_core::traits::BasicPartition::new(partition);
+                let data = rdd_i32_string
+                    .compute(&rdd_partition)
+                    .map_err(SqlError::from)?;
+                <(i32, String) as ToRecordBatchConverter>::convert(data)
             } else {
                 return Err(DataFusionError::NotImplemented(format!(
                     "Unsupported RDD type for SQL execution: {:?}",
