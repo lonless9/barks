@@ -427,6 +427,14 @@ impl CommonError {
             source: Some(source.into()),
         }
     }
+
+    /// Create an invalid value error (used for enum parsing).
+    pub fn invalid<S: Into<String>>(message: S) -> Self {
+        Self::ConfigurationError {
+            message: format!("Invalid value: {}", message.into()),
+            source: None,
+        }
+    }
 }
 
 impl Diagnose for CommonError {
