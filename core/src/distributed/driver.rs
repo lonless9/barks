@@ -210,57 +210,49 @@ impl DriverServiceImpl {
 
     /// Schedule pending tasks to available executors
     pub async fn schedule_tasks(&self) -> Result<(), anyhow::Error> {
-        let pending_count = self.task_scheduler.pending_task_count().await;
-        if pending_count == 0 {
-            return Ok(()); // Optimization: Do nothing if no tasks are pending
-        }
-        let available_executors = self.find_available_executors().await;
+        // Task-centric scheduling loop
+        while let Some(pending_task) = self.task_scheduler.get_next_task().await {
+            let best_executors = self
+                .task_scheduler
+                .get_best_executors_for_task(&pending_task)
+                .await;
+            let mut launched = false;
 
-        for executor in available_executors {
-            // Check available slots for this executor.
-            let available_slots = executor
-                .info
-                .max_concurrent_tasks
-                .saturating_sub(executor.metrics.active_tasks);
+            for executor_id in best_executors {
+                let executor = {
+                    let executors = self.executors.lock().await;
+                    executors.get(&executor_id).cloned()
+                };
 
-            let mut executor_failed = false;
-            for _ in 0..available_slots {
-                if executor_failed {
-                    break; // Skip remaining slots for this executor
-                }
+                if let Some(executor) = executor {
+                    // Check if executor has available slots
+                    if executor.metrics.active_tasks >= executor.info.max_concurrent_tasks {
+                        continue; // Skip, no available slots
+                    }
 
-                // Use the locality-aware scheduler method to get a suitable task for the current executor.
-                if let Some(pending_task) = self
-                    .task_scheduler
-                    .get_next_task_for_executor(&executor.info.executor_id)
-                    .await
-                {
                     info!(
-                        "Scheduling task {} to executor {}",
+                        "Attempting to schedule task {} on best executor {}",
                         pending_task.task_id, executor.info.executor_id
                     );
 
-                    {
-                        // Mark task as started for speculative execution tracking
-                        self.task_scheduler
-                            .mark_task_started(&pending_task.task_id)
-                            .await;
-                    }
+                    // Mark task as started for speculative execution tracking
+                    self.task_scheduler
+                        .mark_task_started(&pending_task.task_id)
+                        .await;
 
-                    {
-                        // Add task to active and executor-specific maps BEFORE launching.
-                        self.active_tasks
-                            .lock()
-                            .await
-                            .insert(pending_task.task_id.clone(), pending_task.clone());
-                        self.executor_tasks
-                            .lock()
-                            .await
-                            .entry(executor.info.executor_id.clone())
-                            .or_default()
-                            .insert(pending_task.task_id.clone());
-                    }
+                    // Add task to active and executor-specific maps BEFORE launching.
+                    self.active_tasks
+                        .lock()
+                        .await
+                        .insert(pending_task.task_id.clone(), pending_task.clone());
+                    self.executor_tasks
+                        .lock()
+                        .await
+                        .entry(executor.info.executor_id.clone())
+                        .or_default()
+                        .insert(pending_task.task_id.clone());
 
+                    // Launch the task
                     if let Err(e) = Self::launch_task_on_executor(
                         executor.clone(),
                         pending_task.clone(),
@@ -269,39 +261,48 @@ impl DriverServiceImpl {
                     )
                     .await
                     {
+                        // If launch fails, clean up and attempt to requeue
                         error!(
                             "Failed to launch task {} on executor {}: {}",
                             pending_task.task_id, executor.info.executor_id, e
                         );
+                        self.active_tasks.lock().await.remove(&pending_task.task_id);
+                        if let Some(tasks) = self
+                            .executor_tasks
+                            .lock()
+                            .await
+                            .get_mut(&executor.info.executor_id)
                         {
-                            // IMPORTANT: If launch fails, clean up state from both active tasks
-                            // and the executor's task set to prevent ghost tasks.
-                            self.active_tasks.lock().await.remove(&pending_task.task_id);
-                            self.executor_tasks
-                                .lock()
-                                .await
-                                .get_mut(&executor.info.executor_id)
-                                .map(|s| s.remove(&pending_task.task_id));
+                            tasks.remove(&pending_task.task_id);
                         }
 
                         Self::requeue_or_fail_task(
-                            pending_task,
+                            pending_task.clone(),
                             self.config.task_max_retries,
                             self.task_scheduler.clone(),
                             self.completion_notifiers.clone(),
                             "launch failure",
                         )
                         .await;
-
-                        executor_failed = true; // Mark this executor as failed for this scheduling round
+                    } else {
+                        // Successfully launched
+                        launched = true;
+                        break; // Move to the next task
                     }
-                } else {
-                    // No more pending tasks, break from inner loop
-                    break;
                 }
             }
-        }
 
+            if !launched {
+                // No suitable executor was found for this task, re-queue it.
+                warn!(
+                    "No suitable executor found for task {}, re-queueing.",
+                    pending_task.task_id
+                );
+                self.task_scheduler.submit_pending_task(pending_task).await;
+                // Stop scheduling this cycle to wait for resources to free up.
+                break;
+            }
+        }
         Ok(())
     }
 

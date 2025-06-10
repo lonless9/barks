@@ -72,7 +72,8 @@ async fn basic_sql_task_example() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and execute SqlTask
     let table_name = "students".to_string();
-    let sql_task = SqlTask::new(&logical_plan, batch, table_name)?;
+    let sql_query = "SELECT * FROM students WHERE age > 20";
+    let sql_task = SqlTask::new(sql_query, batch, table_name)?;
 
     println!("Created SqlTask, executing...");
 

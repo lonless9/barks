@@ -35,6 +35,14 @@ name = "sql_datafusion_example"
 path = "sql_datafusion_example.rs"
 
 [[bin]]
+name = "csv_parquet_connectors_example"
+path = "csv_parquet_connectors_example.rs"
+
+[[bin]]
+name = "simple_csv_test"
+path = "simple_csv_test.rs"
+
+[[bin]]
 name = "string_tuple_demo"
 path = "string_tuple_demo.rs"
 

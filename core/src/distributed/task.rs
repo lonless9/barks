@@ -379,80 +379,12 @@ impl TaskScheduler {
     }
 
     /// Get the next task from the queue for an executor with resource-aware scheduling
-    /// It prioritizes tasks that have a preference for the given executor and considers resource utilization.
+    /// This is a simple FIFO implementation. The driver is responsible for smart scheduling.
     pub async fn get_next_task_for_executor(
         &self,
-        executor_id: &ExecutorId,
+        _executor_id: &ExecutorId,
     ) -> Option<PendingTask> {
-        let mut pending_tasks = self.pending_tasks.lock().await;
-        if pending_tasks.is_empty() {
-            return None;
-        }
-
-        // Check if executor is overloaded - if so, avoid scheduling new tasks
-        let metrics_guard = self.executor_metrics.lock().await;
-        if let Some(metrics) = metrics_guard.get(executor_id) {
-            if metrics.is_overloaded() {
-                debug!(
-                    "Executor {} is overloaded (CPU: {:.1}%, Memory: {:.1}%, Active tasks: {}), skipping task assignment",
-                    executor_id,
-                    metrics.cpu_load_percentage,
-                    metrics.memory_utilization_percentage,
-                    metrics.active_tasks
-                );
-                return None;
-            }
-        }
-        drop(metrics_guard); // Release metrics lock early
-
-        let executors_guard = self.executors.lock().await;
-        let host = executors_guard
-            .get(executor_id)
-            .map(|info| info.host.clone());
-
-        // Level 1: PROCESS_LOCAL - task wants to run on this specific executor.
-        if let Some(pos) = pending_tasks
-            .iter()
-            .position(|t| t.preferred_locations.contains(executor_id))
-        {
-            debug!("Found PROCESS_LOCAL task for executor {}", executor_id);
-            return pending_tasks.remove(pos);
-        }
-
-        // Level 2: NODE_LOCAL - task wants to run on any executor on the same host.
-        if let Some(host) = host {
-            if let Some(pos) = pending_tasks.iter().position(|t| {
-                !t.preferred_locations.is_empty()
-                    && t.preferred_locations.iter().any(|pref_exec_id| {
-                        executors_guard
-                            .get(pref_exec_id)
-                            .is_some_and(|info| info.host == host)
-                    })
-            }) {
-                debug!(
-                    "Found NODE_LOCAL task for executor {} on host {}",
-                    executor_id, host
-                );
-                return pending_tasks.remove(pos);
-            }
-        }
-
-        // Level 3: NO_PREFERENCE - task has no locality preference.
-        if let Some(pos) = pending_tasks
-            .iter()
-            .position(|t| t.preferred_locations.is_empty())
-        {
-            debug!("Found NO_PREFERENCE task for executor {}", executor_id);
-            return pending_tasks.remove(pos);
-        }
-
-        // Level 4: ANY - no local or preference-free task available.
-        // Take a task with a non-matching preference as a last resort to avoid starvation.
-        debug!(
-            "No local task found for executor {}, taking oldest available task.",
-            executor_id
-        );
-        pending_tasks.pop_front()
+        self.get_next_task().await
     }
 
     /// Finds and removes a pending task by its ID.
@@ -770,21 +702,20 @@ mod tests {
         assert!(task_for_executor1.is_some());
         assert_eq!(task_for_executor1.unwrap().task_id, "task-1");
 
-        // Test NODE_LOCAL: executor-3 (same host as executor-1) should get task-2
-        // since task-1 is already taken and task-2 prefers executor-2 (different host)
-        // but task-3 has no preference, so it should get task-3
+        // Test FIFO behavior: executor-3 should get task-2 (next in queue)
+        // since task-1 is already taken and we now use simple FIFO
         let task_for_executor3 = scheduler
             .get_next_task_for_executor(&"executor-3".to_string())
             .await;
         assert!(task_for_executor3.is_some());
-        assert_eq!(task_for_executor3.unwrap().task_id, "task-3");
+        assert_eq!(task_for_executor3.unwrap().task_id, "task-2");
 
         // Test remaining task goes to executor-2
         let task_for_executor2 = scheduler
             .get_next_task_for_executor(&"executor-2".to_string())
             .await;
         assert!(task_for_executor2.is_some());
-        assert_eq!(task_for_executor2.unwrap().task_id, "task-2");
+        assert_eq!(task_for_executor2.unwrap().task_id, "task-3");
 
         // No more tasks
         let no_task = scheduler

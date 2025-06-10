@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use barks_core::distributed::task::Task;
 use barks_network_shuffle::traits::ShuffleBlockManager;
+use barks_sql_core::datasources::SqlTaskCreator;
 use barks_sql_core::traits::{SqlError, SqlResult};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
@@ -46,6 +47,60 @@ impl DistributedDataFrame {
         distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
     ) -> SqlResult<Self> {
         let dataframe = context.sql(sql).await.map_err(SqlError::from)?;
+        Ok(Self::new(dataframe, context, distributed_context))
+    }
+
+    /// Create a DataFrame from a CSV file
+    pub async fn from_csv(
+        path: &str,
+        context: Arc<SessionContext>,
+        distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
+    ) -> SqlResult<Self> {
+        let dataframe = context
+            .read_csv(path, datafusion::prelude::CsvReadOptions::new())
+            .await
+            .map_err(SqlError::from)?;
+        Ok(Self::new(dataframe, context, distributed_context))
+    }
+
+    /// Create a DataFrame from a CSV file with custom options
+    pub async fn from_csv_with_options(
+        path: &str,
+        options: datafusion::prelude::CsvReadOptions<'_>,
+        context: Arc<SessionContext>,
+        distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
+    ) -> SqlResult<Self> {
+        let dataframe = context
+            .read_csv(path, options)
+            .await
+            .map_err(SqlError::from)?;
+        Ok(Self::new(dataframe, context, distributed_context))
+    }
+
+    /// Create a DataFrame from a Parquet file
+    pub async fn from_parquet(
+        path: &str,
+        context: Arc<SessionContext>,
+        distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
+    ) -> SqlResult<Self> {
+        let dataframe = context
+            .read_parquet(path, datafusion::prelude::ParquetReadOptions::default())
+            .await
+            .map_err(SqlError::from)?;
+        Ok(Self::new(dataframe, context, distributed_context))
+    }
+
+    /// Create a DataFrame from a Parquet file with custom options
+    pub async fn from_parquet_with_options(
+        path: &str,
+        options: datafusion::prelude::ParquetReadOptions<'_>,
+        context: Arc<SessionContext>,
+        distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
+    ) -> SqlResult<Self> {
+        let dataframe = context
+            .read_parquet(path, options)
+            .await
+            .map_err(SqlError::from)?;
         Ok(Self::new(dataframe, context, distributed_context))
     }
 
@@ -162,84 +217,93 @@ impl DistributedDataFrame {
         self,
         dist_ctx: Arc<barks_core::context::DistributedContext>,
     ) -> SqlResult<Vec<RecordBatch>> {
-        // Check if we're in driver mode
-        match dist_ctx.mode() {
-            barks_core::context::distributed_context::ExecutionMode::Driver => {
-                // Get the logical plan from the DataFrame
-                let logical_plan = self.logical_plan().clone();
+        if dist_ctx.mode() != &barks_core::context::ExecutionMode::Driver {
+            return Err(SqlError::DistributedExecution(
+                "Distributed SQL execution can only be initiated from the driver".to_string(),
+            ));
+        }
 
-                // For now, we'll create a simple distributed execution by:
-                // 1. Creating a dummy input RDD with sample data
-                // 2. Creating SqlTasks that execute the plan on each partition
-                // 3. Collecting results from all executors
+        let plan = self.logical_plan();
 
-                // Create a sample RecordBatch for demonstration
-                // In a real implementation, this would come from an RDD or table scan
-                let schema = self.schema();
-                let sample_batch = RecordBatch::new_empty(schema);
+        // Find the source RDD from the plan. This is a simplification; a real implementation
+        // would handle complex plans with multiple sources (e.g., joins).
+        let (table_name, source_rdd) = find_rdd_in_plan(plan, &self.context).await?;
 
-                // Create a SqlTask
-                let table_name = format!("temp_table_{}", uuid::Uuid::new_v4().simple());
-                let sql_task = SqlTask::new(&logical_plan, sample_batch, table_name)?;
+        // Convert LogicalPlan to SQL query (simplified approach)
+        let sql_query = format!("SELECT * FROM {}", table_name);
 
-                // For now, we'll demonstrate the concept by executing the SqlTask directly
-                // In a full implementation, this would be integrated with the RDD system
-                // to process actual data partitions
-
-                // Execute the SqlTask directly to demonstrate the concept
-                let block_manager = barks_network_shuffle::shuffle::FileShuffleBlockManager::new(
-                    std::env::temp_dir().join("barks_sql_shuffle"),
+        let mut task_futures = Vec::new();
+        for i in 0..source_rdd.num_partitions() {
+            let task = source_rdd.create_sql_task(i, sql_query.clone(), table_name.clone())?;
+            let task_id = format!("sql-task-{}-{}", uuid::Uuid::new_v4().to_string(), i);
+            let future = dist_ctx
+                .submit_task(
+                    task_id,
+                    "distributed-sql-stage".to_string(),
+                    i,
+                    task,
+                    vec![],
                 )
-                .map_err(|e| {
-                    SqlError::DistributedExecution(format!("Failed to create block manager: {}", e))
-                })?;
+                .await
+                .map_err(|e| SqlError::DistributedExecution(e.to_string()))?;
+            task_futures.push(future);
+        }
 
-                let task_result =
-                    sql_task
-                        .execute(0, Arc::new(block_manager))
-                        .await
-                        .map_err(|e| {
-                            SqlError::DistributedExecution(format!(
-                                "Failed to execute SQL task: {}",
-                                e
-                            ))
-                        })?;
-
-                // Deserialize the results back to RecordBatches
-                let mut all_batches = Vec::new();
-                if !task_result.is_empty() {
-                    let cursor = std::io::Cursor::new(task_result);
-                    let reader =
-                        datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
-                            .map_err(|e| {
-                                SqlError::Serialization(format!(
-                                    "Failed to create result reader: {}",
-                                    e
-                                ))
-                            })?;
-
-                    for batch_result in reader {
-                        let batch = batch_result.map_err(|e| {
-                            SqlError::Serialization(format!("Failed to read result batch: {}", e))
-                        })?;
-                        all_batches.push(batch);
+        let mut all_batches = Vec::new();
+        for future in task_futures {
+            match future.await {
+                Ok((barks_core::distributed::driver::TaskResult::Success(bytes), _)) => {
+                    if !bytes.is_empty() {
+                        let cursor = std::io::Cursor::new(bytes);
+                        let mut reader =
+                            datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
+                                .map_err(|e| SqlError::Serialization(e.to_string()))?;
+                        while let Some(batch_result) = reader.next() {
+                            let batch =
+                                batch_result.map_err(|e| SqlError::Serialization(e.to_string()))?;
+                            all_batches.push(batch);
+                        }
                     }
                 }
-
-                Ok(all_batches)
+                Ok((barks_core::distributed::driver::TaskResult::Failure(e), _)) => {
+                    return Err(SqlError::DistributedExecution(e));
+                }
+                Err(e) => return Err(SqlError::DistributedExecution(e.to_string())),
             }
-            _ => Err(SqlError::DistributedExecution(
-                "Distributed SQL execution can only be initiated from driver mode".to_string(),
-            )),
+        }
+        Ok(all_batches)
+    }
+}
+
+async fn find_rdd_in_plan(
+    plan: &LogicalPlan,
+    ctx: &SessionContext,
+) -> SqlResult<(String, Arc<dyn SqlTaskCreator>)> {
+    for input in plan.inputs() {
+        if let LogicalPlan::TableScan(ts) = input {
+            if let Some(provider) = ctx.table_provider(ts.table_name.clone()).await.ok() {
+                if let Some(rdd_provider) = provider
+                    .as_any()
+                    .downcast_ref::<barks_sql_core::datasources::RddTableProvider>(
+                ) {
+                    return Ok((
+                        ts.table_name.to_string(),
+                        rdd_provider.get_sql_task_creator(),
+                    ));
+                }
+            }
         }
     }
+    Err(SqlError::RddIntegration(
+        "No RDD-backed table found in the query plan. Distributed execution currently requires a base RDD.".to_string(),
+    ))
 }
 
 /// A task for executing SQL operations in a distributed manner
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SqlTask {
-    /// Serialized logical plan as JSON
-    pub plan_json: String,
+    /// SQL query to execute
+    pub sql_query: String,
     /// Input data for this partition (serialized RecordBatch)
     pub input_data: Vec<u8>,
     /// Schema of the input data (serialized as JSON)
@@ -249,13 +313,8 @@ pub struct SqlTask {
 }
 
 impl SqlTask {
-    pub fn new(
-        plan: &LogicalPlan,
-        input_batch: RecordBatch,
-        table_name: String,
-    ) -> SqlResult<Self> {
-        // Serialize the logical plan to JSON
-        let plan_json = format!("{:?}", plan);
+    pub fn new(sql_query: &str, input_batch: RecordBatch, table_name: String) -> SqlResult<Self> {
+        let sql_query = sql_query.to_string();
 
         // Serialize the input RecordBatch
         let input_data = {
@@ -278,7 +337,7 @@ impl SqlTask {
         let input_schema_json = format!("{:?}", input_batch.schema());
 
         Ok(Self {
-            plan_json,
+            sql_query,
             input_data,
             input_schema_json,
             table_name,
@@ -313,14 +372,9 @@ impl Task for SqlTask {
         ctx.register_batch(&self.table_name, input_batch)
             .map_err(|e| format!("Failed to register table: {}", e))?;
 
-        // 4. For now, execute a simple query that processes the registered table
-        // Note: In a real implementation, we'd deserialize and execute the actual logical plan
-        // This is a simplified approach for demonstration
-        let sql_query = format!("SELECT * FROM {}", self.table_name);
-
-        // 5. Execute the query
+        // 4. Execute the SQL query
         let df = ctx
-            .sql(&sql_query)
+            .sql(&self.sql_query)
             .await
             .map_err(|e| format!("Failed to create DataFrame: {}", e))?;
 
@@ -537,15 +591,10 @@ mod tests {
         )
         .unwrap();
 
-        // Create a simple logical plan (this is simplified for testing)
-        let ctx = SessionContext::new();
-        ctx.register_batch("test_table", batch.clone()).unwrap();
-        let df = ctx.table("test_table").await.unwrap();
-        let logical_plan = df.logical_plan().clone();
-
         // Create and execute SqlTask
         let table_name = "test_table".to_string();
-        let sql_task = SqlTask::new(&logical_plan, batch, table_name).unwrap();
+        let sql_query = "SELECT * FROM test_table WHERE id > 1";
+        let sql_task = SqlTask::new(sql_query, batch, table_name).unwrap();
 
         let block_manager = barks_network_shuffle::shuffle::FileShuffleBlockManager::new(
             std::env::temp_dir().join("test_sql_shuffle"),

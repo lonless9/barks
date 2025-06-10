@@ -32,6 +32,7 @@ tempfile.workspace = true
 bumpalo = "3.14"
 moka.workspace = true
 rusty-leveldb.workspace = true
+datafusion.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

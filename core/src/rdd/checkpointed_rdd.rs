@@ -4,11 +4,11 @@
 //! truncating the lineage and improving fault tolerance for long-running jobs.
 
 use crate::traits::{Data, Dependency, IsRdd, Partition, RddBase, RddError, RddResult};
+use barks_kvstore::{KVStore, LevelDBKVStore};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::info;
 
 /// A partition identifier for checkpointed data
@@ -41,13 +41,12 @@ impl Partition for CheckpointPartition {
 ///
 /// This RDD type stores computed partition data persistently and acts as a new source
 /// in the RDD lineage, effectively truncating the dependency graph.
-#[derive(Clone)]
 pub struct CheckpointedRdd<T: Data> {
     id: usize,
     checkpoint_id: String,
     num_partitions: usize,
-    /// In-memory storage for checkpointed data (simplified for now)
-    storage: Arc<Mutex<HashMap<String, Vec<T>>>>,
+    /// Persistent storage for checkpointed data
+    storage: LevelDBKVStore<usize, Vec<T>>,
     /// Optional reference to the original RDD for lazy checkpointing
     original_rdd: Option<Arc<dyn RddBase<Item = T>>>,
     /// Whether the checkpoint has been materialized
@@ -60,10 +59,11 @@ impl<T: Data> CheckpointedRdd<T> {
         id: usize,
         checkpoint_id: String,
         num_partitions: usize,
-        _storage_path: PathBuf, // Unused for now, kept for API compatibility
+        storage_path: PathBuf,
         original_rdd: Option<Arc<dyn RddBase<Item = T>>>,
     ) -> RddResult<Self> {
-        let storage = Arc::new(Mutex::new(HashMap::new()));
+        let storage = LevelDBKVStore::new(storage_path)
+            .map_err(|e| RddError::CheckpointError(e.to_string()))?;
 
         Ok(Self {
             id,
@@ -102,10 +102,11 @@ impl<T: Data> CheckpointedRdd<T> {
 
             // Collect the iterator into a vector for storage
             let data: Vec<T> = partition_data.collect();
-            let key = format!("{}_{}", self.checkpoint_id, partition_idx);
-
-            // Store in the HashMap
-            self.storage.lock().unwrap().insert(key, data);
+            // Store in LevelDB
+            self.storage
+                .put(&partition_idx, data)
+                .await
+                .map_err(|e| RddError::CheckpointError(e.to_string()))?;
         }
 
         // Mark as materialized
@@ -119,13 +120,11 @@ impl<T: Data> CheckpointedRdd<T> {
     }
 
     /// Load partition data from checkpoint storage
-    fn load_partition(&self, partition_idx: usize) -> RddResult<Vec<T>> {
-        let key = format!("{}_{}", self.checkpoint_id, partition_idx);
+    async fn load_partition(&self, partition_idx: usize) -> RddResult<Vec<T>> {
         self.storage
-            .lock()
-            .unwrap()
-            .get(&key)
-            .cloned()
+            .get(&partition_idx)
+            .await
+            .map_err(|e| RddError::CheckpointError(e.to_string()))?
             .ok_or_else(|| {
                 RddError::CheckpointError(format!(
                     "Partition {} not found in checkpoint",
@@ -180,11 +179,24 @@ impl<T: Data> RddBase for CheckpointedRdd<T> {
                 "Checkpoint not materialized. Call materialize() first.".to_string(),
             ));
         }
+        let partition_idx = partition.index();
 
-        // Load partition data from storage
-        let partition_data = self.load_partition(partition.index())?;
+        // The compute function is synchronous, but storage is async.
+        // We must block on the future to get the data.
+        // This pattern is used elsewhere in the codebase (e.g., CachedRdd).
+        let data = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // We're already in a tokio runtime.
+            std::thread::scope(|s| {
+                let handle = s.spawn(move || handle.block_on(self.load_partition(partition_idx)));
+                handle.join().unwrap()
+            })
+        } else {
+            // No runtime available, create a new one for this operation.
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(self.load_partition(partition_idx))
+        }?;
 
-        Ok(Box::new(partition_data.into_iter()))
+        Ok(Box::new(data.into_iter()))
     }
 
     fn partitions(&self) -> Vec<Arc<dyn Partition>> {

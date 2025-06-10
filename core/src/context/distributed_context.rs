@@ -744,6 +744,32 @@ impl DistributedContext {
         }
     }
 
+    /// Submit a task for execution (for driver mode)
+    pub async fn submit_task(
+        &self,
+        task_id: String,
+        stage_id: String,
+        partition_index: usize,
+        task: Box<dyn crate::distributed::task::Task>,
+        preferred_locations: Vec<String>,
+    ) -> RddResult<tokio::sync::oneshot::Receiver<(crate::distributed::driver::TaskResult, String)>>
+    {
+        if let Some(driver) = &self.driver {
+            driver
+                .submit_task(
+                    task_id,
+                    stage_id,
+                    partition_index,
+                    task,
+                    preferred_locations,
+                )
+                .await
+                .map_err(|e| RddError::ContextError(e.to_string()))
+        } else {
+            Err(RddError::ContextError("Driver not available".to_string()))
+        }
+    }
+
     /// Clean up shuffle data for a completed job
     async fn cleanup_job_shuffles(&self, job_id: &str, shuffle_ids: &HashSet<u32>) {
         if shuffle_ids.is_empty() {

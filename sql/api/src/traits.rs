@@ -5,7 +5,8 @@
 
 use async_trait::async_trait;
 use barks_core::traits::{Data, IsRdd, RddBase};
-use barks_sql_core::traits::SqlResult;
+use barks_sql_core::traits::{SqlQueryEngine, SqlResult};
+use barks_sql_core::{DataFusionQueryEngine, SqlConfig};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use std::sync::Arc;
@@ -30,6 +31,76 @@ pub trait SqlContext: Send + Sync {
         &self,
         query: &str,
     ) -> SqlResult<crate::dataframe::DistributedDataFrame>;
+}
+
+/// Default implementation of SqlContext using DataFusion
+pub struct DataFusionSqlContext {
+    engine: Arc<DataFusionQueryEngine>,
+    distributed_context: Option<Arc<barks_core::context::DistributedContext>>,
+}
+
+impl DataFusionSqlContext {
+    /// Create a new DataFusion SQL context
+    pub fn new(config: SqlConfig) -> Self {
+        let engine = Arc::new(DataFusionQueryEngine::new(config));
+        Self {
+            engine,
+            distributed_context: None,
+        }
+    }
+
+    /// Create a new DataFusion SQL context with distributed context
+    pub fn new_with_distributed_context(
+        config: SqlConfig,
+        distributed_context: Arc<barks_core::context::DistributedContext>,
+    ) -> Self {
+        let engine = Arc::new(DataFusionQueryEngine::new(config));
+        Self {
+            engine,
+            distributed_context: Some(distributed_context),
+        }
+    }
+
+    /// Get the underlying DataFusion query engine
+    pub fn engine(&self) -> Arc<DataFusionQueryEngine> {
+        self.engine.clone()
+    }
+
+    /// Get the distributed context if available
+    pub fn distributed_context(&self) -> Option<Arc<barks_core::context::DistributedContext>> {
+        self.distributed_context.clone()
+    }
+}
+
+#[async_trait]
+impl SqlContext for DataFusionSqlContext {
+    async fn sql(&self, query: &str) -> SqlResult<Vec<RecordBatch>> {
+        self.engine.execute_sql(query).await
+    }
+
+    async fn register_rdd_table(&self, name: &str, rdd: Arc<dyn IsRdd>) -> SqlResult<()> {
+        self.engine.register_rdd_any(name, rdd).await
+    }
+
+    async fn register_csv_table(&self, name: &str, path: &str) -> SqlResult<()> {
+        self.engine.register_csv(name, path).await
+    }
+
+    async fn register_parquet_table(&self, name: &str, path: &str) -> SqlResult<()> {
+        self.engine.register_parquet(name, path).await
+    }
+
+    async fn create_dataframe(
+        &self,
+        query: &str,
+    ) -> SqlResult<crate::dataframe::DistributedDataFrame> {
+        crate::dataframe::DistributedDataFrame::from_sql(
+            query,
+            Arc::new(self.engine.session_context().clone()),
+            self.distributed_context.clone(),
+        )
+        .await
+    }
 }
 
 /// Trait for DataFrame-like operations
@@ -306,5 +377,62 @@ mod tests {
         assert_eq!(config.batch_size, 8192);
         assert!(config.enable_optimization);
         assert!(config.enable_distributed);
+    }
+
+    #[test]
+    fn test_datafusion_sql_context_creation() {
+        let config = SqlConfig::default();
+        let context = DataFusionSqlContext::new(config);
+
+        // Verify the context was created successfully
+        assert!(
+            context
+                .engine()
+                .session_context()
+                .catalog("datafusion")
+                .is_some()
+        );
+        assert!(context.distributed_context().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sql_context_basic_functionality() -> SqlResult<()> {
+        let config = SqlConfig::default();
+        let context = DataFusionSqlContext::new(config);
+
+        // Test basic SQL execution with a simple query
+        let results = context.sql("SELECT 1 as test_column").await?;
+
+        // Check that we got some results
+        assert!(!results.is_empty(), "Expected at least one result batch");
+
+        // Check that we have the expected number of rows
+        let total_rows: usize = results.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(total_rows, 1, "Expected 1 row from simple SELECT");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sql_context_dataframe_creation() -> SqlResult<()> {
+        let config = SqlConfig::default();
+        let context = DataFusionSqlContext::new(config);
+
+        // Create a DataFrame from a simple SQL query
+        let dataframe = context
+            .create_dataframe("SELECT 'test' as name, 42 as value")
+            .await?;
+
+        // Collect results to verify the DataFrame works
+        let results = dataframe.collect().await?;
+
+        // Check that we got some results
+        assert!(!results.is_empty(), "Expected at least one result batch");
+
+        // Check that we have the expected number of rows
+        let total_rows: usize = results.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(total_rows, 1, "Expected 1 row from simple SELECT");
+
+        Ok(())
     }
 }
