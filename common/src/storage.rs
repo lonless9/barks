@@ -836,4 +836,127 @@ mod tests {
             .expect("Failed to get after close");
         assert_eq!(value, Some(b"value".to_vec()));
     }
+
+    #[tokio::test]
+    async fn test_storage_builder_default() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+        // Test Default implementation for StorageBuilder
+        let storage1 = StorageBuilder::default()
+            .path(temp_dir.path())
+            .create_if_missing(true)
+            .build()
+            .await
+            .expect("Failed to create storage from default");
+
+        let storage2 = StorageBuilder::new()
+            .path(temp_dir.path().join("storage2"))
+            .create_if_missing(true)
+            .build()
+            .await
+            .expect("Failed to create storage from new");
+
+        // Both storages should work the same way
+        storage1
+            .put(b"test1", b"value1")
+            .await
+            .expect("Failed to put");
+        storage2
+            .put(b"test2", b"value2")
+            .await
+            .expect("Failed to put");
+
+        assert_eq!(
+            storage1.get(b"test1").await.expect("Failed to get"),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            storage2.get(b"test2").await.expect("Failed to get"),
+            Some(b"value2".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_storage_stats_read_write_ratio() {
+        let (storage, _temp_dir) = create_test_storage().await;
+
+        // Test initial stats
+        let initial_stats = storage.stats().await;
+
+        // Test read_write_ratio when both counts are 0
+        assert_eq!(initial_stats.read_write_ratio(), 0.0);
+
+        // Add some data to trigger writes
+        for i in 0..5 {
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i);
+            storage
+                .put(key.as_bytes(), value.as_bytes())
+                .await
+                .expect("Failed to put");
+        }
+
+        // Read some data
+        for i in 0..3 {
+            let key = format!("key_{}", i);
+            let _value = storage.get(key.as_bytes()).await.expect("Failed to get");
+        }
+
+        let stats = storage.stats().await;
+
+        // Should have some reads and writes now
+        assert!(stats.read_count > 0);
+        assert!(stats.write_count > 0);
+
+        // Test ratio calculation
+        let ratio = stats.read_write_ratio();
+        assert!(ratio > 0.0);
+        assert!(ratio.is_finite());
+    }
+
+    #[tokio::test]
+    async fn test_storage_stats_infinity_ratio() {
+        let (_storage, _temp_dir) = create_test_storage().await;
+
+        // Test the specific case where read_count > 0 and write_count == 0
+        // This is tricky to achieve in practice, so we'll test the logic directly
+        let stats = StorageStats {
+            read_count: 10,
+            write_count: 0,
+            delete_count: 0,
+            batch_count: 0,
+            error_count: 0,
+            total_keys: 0,
+            total_size_bytes: 0,
+        };
+
+        // Should return infinity when write_count is 0 but read_count > 0
+        assert_eq!(stats.read_write_ratio(), f64::INFINITY);
+
+        // Test the case where both are 0
+        let zero_stats = StorageStats {
+            read_count: 0,
+            write_count: 0,
+            delete_count: 0,
+            batch_count: 0,
+            error_count: 0,
+            total_keys: 0,
+            total_size_bytes: 0,
+        };
+
+        assert_eq!(zero_stats.read_write_ratio(), 0.0);
+
+        // Test normal ratio calculation
+        let normal_stats = StorageStats {
+            read_count: 6,
+            write_count: 3,
+            delete_count: 0,
+            batch_count: 0,
+            error_count: 0,
+            total_keys: 0,
+            total_size_bytes: 0,
+        };
+
+        assert_eq!(normal_stats.read_write_ratio(), 2.0);
+    }
 }

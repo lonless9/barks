@@ -429,4 +429,26 @@ mod tests {
         allocator.reset();
         let _allocated_after = allocator.allocated_bytes();
     }
+
+    #[test]
+    fn test_allocator_builder_default() {
+        // Test Default implementation for AllocatorBuilder
+        let builder1 = AllocatorBuilder::default();
+        let builder2 = AllocatorBuilder::new();
+
+        // Both should create equivalent builders
+        let mut allocator1 = builder1
+            .build()
+            .expect("Failed to create allocator from default");
+        let mut allocator2 = builder2
+            .build()
+            .expect("Failed to create allocator from new");
+
+        // Test that both allocators work the same way
+        let bytes1 = allocator1.alloc_bytes(42);
+        let bytes2 = allocator2.alloc_bytes(42);
+
+        assert_eq!(bytes1.len(), bytes2.len());
+        assert_eq!(bytes1.len(), 42);
+    }
 }

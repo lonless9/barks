@@ -94,3 +94,7 @@ arrow = "53.0"
 zstd = "0.13"
 lz4_flex = "0.11"
 snap = "1.1"
+
+[profile.dev]
+incremental = true
+opt-level = 0

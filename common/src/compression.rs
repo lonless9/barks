@@ -629,4 +629,177 @@ mod tests {
         assert_eq!(config.level, Some(5));
         assert!(!config.track_stats);
     }
+
+    #[test]
+    fn test_compression_config_default() {
+        // Test Default implementation for CompressionConfig
+        let config1 = CompressionConfig::default();
+        let config2 = CompressionConfig::new(CompressionAlgorithm::Zstd);
+
+        assert_eq!(config1.algorithm, config2.algorithm);
+        assert_eq!(config1.algorithm, CompressionAlgorithm::Zstd);
+    }
+
+    #[test]
+    fn test_compression_builder_default() {
+        // Test Default implementation for CompressionBuilder
+        let builder1 = CompressionBuilder::default();
+        let builder2 = CompressionBuilder::new();
+
+        let compressor1 = builder1
+            .build()
+            .expect("Failed to create compressor from default");
+        let compressor2 = builder2
+            .build()
+            .expect("Failed to create compressor from new");
+
+        // Both should use the same algorithm
+        assert_eq!(compressor1.algorithm(), compressor2.algorithm());
+        assert_eq!(compressor1.algorithm(), CompressionAlgorithm::Zstd);
+    }
+
+    #[test]
+    fn test_compression_builder_new() {
+        // Test CompressionBuilder::new() method
+        let builder = CompressionBuilder::new();
+        let compressor = builder.build().expect("Failed to create compressor");
+
+        // Should default to Zstd
+        assert_eq!(compressor.algorithm(), CompressionAlgorithm::Zstd);
+
+        // Test compression works
+        let compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+        let decompressed = compressor
+            .decompress(&compressed)
+            .expect("Decompression failed");
+        assert_eq!(decompressed, TEST_DATA);
+    }
+
+    #[test]
+    fn test_compressor_stats_without_tracking() {
+        // Test stats() method when tracking is disabled
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Zstd)
+            .track_stats(false)
+            .build()
+            .expect("Failed to create compressor");
+
+        // Perform some operations
+        let _compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+
+        // Stats should return default values
+        let stats = compressor.stats();
+        assert_eq!(stats.total_compressions, 0);
+        assert_eq!(stats.total_decompressions, 0);
+        assert_eq!(stats.total_input_bytes, 0);
+        assert_eq!(stats.total_compressed_bytes, 0);
+        assert_eq!(stats.total_decompressed_bytes, 0);
+    }
+
+    #[test]
+    fn test_compressor_reset_stats_without_tracking() {
+        // Test reset_stats() method when tracking is disabled
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Zstd)
+            .track_stats(false)
+            .build()
+            .expect("Failed to create compressor");
+
+        // This should not panic even when stats tracking is disabled
+        compressor.reset_stats();
+
+        let stats = compressor.stats();
+        assert_eq!(stats.total_compressions, 0);
+    }
+
+    #[test]
+    fn test_lz4_compressor_stats() {
+        // Test stats() and reset_stats() for LZ4 compressor
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Lz4)
+            .track_stats(true)
+            .build()
+            .expect("Failed to create LZ4 compressor");
+
+        // Test stats without tracking
+        let stats_initial = compressor.stats();
+        assert_eq!(stats_initial.total_compressions, 0);
+
+        // Perform compression
+        let compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+        let stats_after_compression = compressor.stats();
+        assert_eq!(stats_after_compression.total_compressions, 1);
+
+        // Test reset
+        compressor.reset_stats();
+        let stats_after_reset = compressor.stats();
+        assert_eq!(stats_after_reset.total_compressions, 0);
+
+        // Test decompression
+        let _decompressed = compressor
+            .decompress(&compressed)
+            .expect("Decompression failed");
+        let stats_after_decompression = compressor.stats();
+        assert_eq!(stats_after_decompression.total_decompressions, 1);
+    }
+
+    #[test]
+    fn test_lz4_compressor_stats_without_tracking() {
+        // Test LZ4 compressor stats() when tracking is disabled
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Lz4)
+            .track_stats(false)
+            .build()
+            .expect("Failed to create LZ4 compressor");
+
+        let _compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+
+        let stats = compressor.stats();
+        assert_eq!(stats.total_compressions, 0);
+
+        // Reset should not panic
+        compressor.reset_stats();
+    }
+
+    #[test]
+    fn test_snappy_compressor_stats() {
+        // Test stats() and reset_stats() for Snappy compressor
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Snappy)
+            .track_stats(true)
+            .build()
+            .expect("Failed to create Snappy compressor");
+
+        let stats_initial = compressor.stats();
+        assert_eq!(stats_initial.total_compressions, 0);
+
+        // Perform compression
+        let compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+        let stats_after_compression = compressor.stats();
+        assert_eq!(stats_after_compression.total_compressions, 1);
+
+        // Test reset
+        compressor.reset_stats();
+        let stats_after_reset = compressor.stats();
+        assert_eq!(stats_after_reset.total_compressions, 0);
+
+        // Test decompression
+        let _decompressed = compressor
+            .decompress(&compressed)
+            .expect("Decompression failed");
+        let stats_after_decompression = compressor.stats();
+        assert_eq!(stats_after_decompression.total_decompressions, 1);
+    }
+
+    #[test]
+    fn test_snappy_compressor_stats_without_tracking() {
+        // Test Snappy compressor stats() when tracking is disabled
+        let compressor = CompressionBuilder::with_algorithm(CompressionAlgorithm::Snappy)
+            .track_stats(false)
+            .build()
+            .expect("Failed to create Snappy compressor");
+
+        let _compressed = compressor.compress(TEST_DATA).expect("Compression failed");
+
+        let stats = compressor.stats();
+        assert_eq!(stats.total_compressions, 0);
+
+        // Reset should not panic
+        compressor.reset_stats();
+    }
 }
