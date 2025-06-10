@@ -106,6 +106,12 @@ impl From<barks_core::traits::RddError> for SqlError {
             barks_core::traits::RddError::TaskCreationError(msg) => {
                 SqlError::DistributedExecution(format!("Task creation error: {}", msg))
             }
+            barks_core::traits::RddError::CheckpointError(msg) => {
+                SqlError::RddIntegration(format!("Checkpoint error: {}", msg))
+            }
+            barks_core::traits::RddError::NotImplemented(msg) => {
+                SqlError::QueryExecution(format!("Not implemented: {}", msg))
+            }
         }
     }
 }

@@ -91,9 +91,9 @@ async fn basic_sql_task_example() -> Result<(), Box<dyn std::error::Error>> {
     // Deserialize and display results
     if !result_bytes.is_empty() {
         let cursor = std::io::Cursor::new(result_bytes);
-        let mut reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)?;
+        let reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)?;
 
-        while let Some(batch_result) = reader.next() {
+        for batch_result in reader {
             let batch = batch_result?;
             println!(
                 "Result batch: {} rows, {} columns",

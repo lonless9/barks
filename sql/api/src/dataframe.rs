@@ -209,7 +209,7 @@ impl DistributedDataFrame {
                 let mut all_batches = Vec::new();
                 if !task_result.is_empty() {
                     let cursor = std::io::Cursor::new(task_result);
-                    let mut reader =
+                    let reader =
                         datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
                             .map_err(|e| {
                                 SqlError::Serialization(format!(
@@ -218,7 +218,7 @@ impl DistributedDataFrame {
                                 ))
                             })?;
 
-                    while let Some(batch_result) = reader.next() {
+                    for batch_result in reader {
                         let batch = batch_result.map_err(|e| {
                             SqlError::Serialization(format!("Failed to read result batch: {}", e))
                         })?;
@@ -300,11 +300,10 @@ impl Task for SqlTask {
             let mut reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
                 .map_err(|e| format!("Failed to create IPC reader: {}", e))?;
 
-            let batch = reader
+            reader
                 .next()
                 .ok_or_else(|| "No RecordBatch found in input data".to_string())?
-                .map_err(|e| format!("Failed to read RecordBatch: {}", e))?;
-            batch
+                .map_err(|e| format!("Failed to read RecordBatch: {}", e))?
         };
 
         // 2. Create a local SessionContext

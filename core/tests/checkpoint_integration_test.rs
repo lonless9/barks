@@ -11,7 +11,6 @@ use barks_core::rdd::{CheckpointedRdd, DistributedRdd};
 use barks_core::traits::{IsRdd, RddBase};
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio;
 
 #[tokio::test]
 async fn test_basic_checkpointing() {
