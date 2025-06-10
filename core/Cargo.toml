@@ -24,14 +24,9 @@ typetag.workspace = true
 async-trait.workspace = true
 dyn-clone = "1.0"
 num_cpus.workspace = true
-# barks-kvstore = { path = "../common/kvstore" }
-# barks-network-shuffle = { path = "../common/network-shuffle", features = ["server"] }
-# barks-utils = { path = "../common/utils" }
+barks-common = { path = "../common" }
 reqwest.workspace = true
 tempfile.workspace = true
-bumpalo = "3.14"
-moka.workspace = true
-rusty-leveldb.workspace = true
 datafusion.workspace = true
 
 [build-dependencies]

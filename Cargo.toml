@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3" # default in edition 2024
 members = [
-    # "common/*",
+    "common",
     "core",
     # "sql/api",
     # "sql/catalyst",
@@ -84,7 +84,13 @@ tempfile = "3.0"
 
 # persistent storage
 rusty-leveldb = "3.0.3"
+rocksdb = "0.22"
 
 # SQL query engine
 datafusion = { version = "43.0", features = ["default"] }
 arrow = "53.0"
+
+# compression
+zstd = "0.13"
+lz4_flex = "0.11"
+snap = "1.1"

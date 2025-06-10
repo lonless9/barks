@@ -1,0 +1,46 @@
+[package]
+name = "barks-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
+# serialization
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+
+# error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# caching
+moka.workspace = true
+
+# persistent storage
+rusty-leveldb.workspace = true
+rocksdb.workspace = true
+
+# memory allocation
+bumpalo = "3.14.0"
+
+# compression
+zstd.workspace = true
+lz4_flex.workspace = true
+snap.workspace = true
+
+# For blocking operations in async context
+tokio-util.workspace = true
+
+# logging
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-test = "0.4"
