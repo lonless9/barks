@@ -57,7 +57,7 @@ where
     T: Clone,
 {
     let data_len = data.len();
-    let partition_size = (data_len + num_partitions - 1) / num_partitions;
+    let partition_size = data_len.div_ceil(num_partitions);
     let start = partition_index * partition_size;
     let end = std::cmp::min(start + partition_size, data_len);
     if start >= data_len {

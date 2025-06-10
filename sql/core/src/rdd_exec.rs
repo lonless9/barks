@@ -64,9 +64,9 @@ fn compute_rdd_partition_to_record_batch(
         return <(String, String) as ToRecordBatch>::to_record_batch(data);
     }
 
-    Err(SqlError::RddIntegration(format!(
-        "Unsupported RDD type for SQL execution. Supported types: i32, String, (String, i32), (i32, String), (String, String)"
-    )))
+    Err(SqlError::RddIntegration(
+        "Unsupported RDD type for SQL execution. Supported types: i32, String, (String, i32), (i32, String), (String, String)".to_string()
+    ))
 }
 
 /// The RddExec execution plan reads data from an RDD partition.

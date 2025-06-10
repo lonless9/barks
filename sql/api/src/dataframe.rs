@@ -235,7 +235,7 @@ impl DistributedDataFrame {
         let mut task_futures = Vec::new();
         for i in 0..source_rdd.num_partitions() {
             let task = source_rdd.create_sql_task(i, sql_query.clone(), table_name.clone())?;
-            let task_id = format!("sql-task-{}-{}", uuid::Uuid::new_v4().to_string(), i);
+            let task_id = format!("sql-task-{}-{}", uuid::Uuid::new_v4(), i);
             let future = dist_ctx
                 .submit_task(
                     task_id,
@@ -255,10 +255,10 @@ impl DistributedDataFrame {
                 Ok((barks_core::distributed::driver::TaskResult::Success(bytes), _)) => {
                     if !bytes.is_empty() {
                         let cursor = std::io::Cursor::new(bytes);
-                        let mut reader =
+                        let reader =
                             datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
                                 .map_err(|e| SqlError::Serialization(e.to_string()))?;
-                        while let Some(batch_result) = reader.next() {
+                        for batch_result in reader {
                             let batch =
                                 batch_result.map_err(|e| SqlError::Serialization(e.to_string()))?;
                             all_batches.push(batch);
@@ -281,7 +281,7 @@ async fn find_rdd_in_plan(
 ) -> SqlResult<(String, Arc<dyn SqlTaskCreator>)> {
     for input in plan.inputs() {
         if let LogicalPlan::TableScan(ts) = input {
-            if let Some(provider) = ctx.table_provider(ts.table_name.clone()).await.ok() {
+            if let Ok(provider) = ctx.table_provider(ts.table_name.clone()).await {
                 if let Some(rdd_provider) = provider
                     .as_any()
                     .downcast_ref::<barks_sql_core::datasources::RddTableProvider>(

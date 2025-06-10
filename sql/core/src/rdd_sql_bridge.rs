@@ -170,7 +170,7 @@ pub async fn register_rdd_type_safe(
         return register_rdd_with_trait(ctx, name, rdd_tuple).await;
     }
 
-    Err(crate::traits::SqlError::RddIntegration(format!(
-        "Unsupported RDD type for SQL registration. Supported types: i32, String, (String, i32), (i32, String), (String, String)"
-    )))
+    Err(crate::traits::SqlError::RddIntegration(
+        "Unsupported RDD type for SQL registration. Supported types: i32, String, (String, i32), (i32, String), (String, String)".to_string()
+    ))
 }

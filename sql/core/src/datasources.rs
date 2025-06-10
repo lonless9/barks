@@ -41,9 +41,9 @@ impl SqlTaskCreator for RddSqlTaskCreator {
 
     fn create_sql_task(
         &self,
-        partition_index: usize,
-        sql_query: String,
-        table_name: String,
+        _partition_index: usize,
+        _sql_query: String,
+        _table_name: String,
     ) -> SqlResult<Box<dyn barks_core::distributed::task::Task>> {
         // This is a simplified implementation that creates a basic SQL task
         // In a real implementation, we would need to handle different RDD types
@@ -245,11 +245,11 @@ pub mod utils {
     }
 
     /// Register a CSV file as a table with custom options
-    pub async fn register_csv_table_with_options<'a>(
+    pub async fn register_csv_table_with_options(
         ctx: &datafusion::execution::context::SessionContext,
         name: &str,
         path: &str,
-        options: CsvReadOptions<'a>,
+        options: CsvReadOptions<'_>,
     ) -> SqlResult<()> {
         ctx.register_csv(name, path, options).await.map_err(|e| {
             SqlError::DataSource(format!("Failed to register CSV table '{}': {}", name, e))
@@ -273,11 +273,11 @@ pub mod utils {
     }
 
     /// Register a Parquet file as a table with custom options
-    pub async fn register_parquet_table_with_options<'a>(
+    pub async fn register_parquet_table_with_options(
         ctx: &datafusion::execution::context::SessionContext,
         name: &str,
         path: &str,
-        options: ParquetReadOptions<'a>,
+        options: ParquetReadOptions<'_>,
     ) -> SqlResult<()> {
         ctx.register_parquet(name, path, options)
             .await

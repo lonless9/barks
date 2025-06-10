@@ -341,6 +341,7 @@ impl DriverServiceImpl {
 
     /// Finds executors that have capacity to run more tasks with resource-aware filtering.
     /// It filters executors that are not failed, have capacity, and are not overloaded.
+    #[allow(dead_code)]
     async fn find_available_executors(&self) -> Vec<RegisteredExecutor> {
         let executors = self.executors.lock().await;
         let mut available_executors: Vec<RegisteredExecutor> = executors
