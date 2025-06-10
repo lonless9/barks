@@ -85,6 +85,47 @@ pub struct ExecutorMetrics {
     pub max_memory_bytes: u64,
     pub memory_used_bytes: u64,
     pub active_tasks: u32,
+    // Resource utilization metrics for scheduling decisions
+    pub cpu_load_percentage: f64, // Current CPU load (0.0 - 100.0)
+    pub memory_utilization_percentage: f64, // Memory usage percentage (0.0 - 100.0)
+    pub available_memory_bytes: u64, // Available memory for new tasks
+    pub cpu_cores_available: u32, // Number of CPU cores available for new tasks
+    pub disk_usage_bytes: u64,    // Current disk usage
+    pub network_bytes_per_sec: u64, // Network throughput
+}
+
+impl ExecutorMetrics {
+    /// Calculate a resource score for scheduling decisions
+    /// Lower scores indicate better resource availability
+    pub fn resource_score(&self) -> f64 {
+        // Weight factors for different resources
+        const CPU_WEIGHT: f64 = 0.4;
+        const MEMORY_WEIGHT: f64 = 0.4;
+        const TASK_LOAD_WEIGHT: f64 = 0.2;
+
+        // Normalize CPU load (0-100 -> 0-1)
+        let cpu_score = self.cpu_load_percentage / 100.0;
+
+        // Normalize memory utilization (0-100 -> 0-1)
+        let memory_score = self.memory_utilization_percentage / 100.0;
+
+        // Task load score based on active tasks vs available cores
+        let task_load_score = if self.cpu_cores_available > 0 {
+            self.active_tasks as f64 / self.cpu_cores_available as f64
+        } else {
+            1.0 // Fully loaded if no cores available
+        };
+
+        // Combine scores with weights
+        CPU_WEIGHT * cpu_score + MEMORY_WEIGHT * memory_score + TASK_LOAD_WEIGHT * task_load_score
+    }
+
+    /// Check if executor is overloaded and should avoid new tasks
+    pub fn is_overloaded(&self) -> bool {
+        self.cpu_load_percentage > 90.0
+            || self.memory_utilization_percentage > 85.0
+            || self.active_tasks >= self.cpu_cores_available
+    }
 }
 
 /// Serialization utilities for distributed tasks

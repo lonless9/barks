@@ -282,6 +282,8 @@ impl TaskRunner {
 pub struct TaskScheduler {
     /// Available executors
     executors: Arc<tokio::sync::Mutex<HashMap<ExecutorId, ExecutorInfo>>>,
+    /// Executor resource metrics for scheduling decisions
+    executor_metrics: Arc<tokio::sync::Mutex<HashMap<ExecutorId, ExecutorMetrics>>>,
     /// Pending tasks queue (FIFO)
     // Using VecDeque for more efficient queue operations (pop_front)
     pending_tasks: Arc<tokio::sync::Mutex<std::collections::VecDeque<PendingTask>>>,
@@ -311,6 +313,7 @@ impl TaskScheduler {
     pub fn new() -> Self {
         Self {
             executors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            executor_metrics: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pending_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
             running_task_times: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             speculative_execution_enabled: true,
@@ -322,6 +325,7 @@ impl TaskScheduler {
     pub fn with_speculative_execution(enabled: bool, threshold_secs: u64) -> Self {
         Self {
             executors: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            executor_metrics: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             pending_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
             running_task_times: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             speculative_execution_enabled: enabled,
@@ -339,9 +343,22 @@ impl TaskScheduler {
     /// Unregister an executor
     pub async fn unregister_executor(&self, executor_id: &ExecutorId) {
         let mut executors = self.executors.lock().await;
+        let mut metrics = self.executor_metrics.lock().await;
         if executors.remove(executor_id).is_some() {
+            metrics.remove(executor_id);
             info!("Unregistered executor: {}", executor_id);
         }
+    }
+
+    /// Update executor metrics for resource-aware scheduling
+    pub async fn update_executor_metrics(
+        &self,
+        executor_id: &ExecutorId,
+        metrics: ExecutorMetrics,
+    ) {
+        let mut executor_metrics = self.executor_metrics.lock().await;
+        executor_metrics.insert(executor_id.clone(), metrics);
+        debug!("Updated metrics for executor: {}", executor_id);
     }
 
     /// Submit a task for scheduling
@@ -361,8 +378,8 @@ impl TaskScheduler {
         pending_tasks.pop_front()
     }
 
-    /// Get the next task from the queue for an executor
-    /// It prioritizes tasks that have a preference for the given executor.
+    /// Get the next task from the queue for an executor with resource-aware scheduling
+    /// It prioritizes tasks that have a preference for the given executor and considers resource utilization.
     pub async fn get_next_task_for_executor(
         &self,
         executor_id: &ExecutorId,
@@ -371,6 +388,22 @@ impl TaskScheduler {
         if pending_tasks.is_empty() {
             return None;
         }
+
+        // Check if executor is overloaded - if so, avoid scheduling new tasks
+        let metrics_guard = self.executor_metrics.lock().await;
+        if let Some(metrics) = metrics_guard.get(executor_id) {
+            if metrics.is_overloaded() {
+                debug!(
+                    "Executor {} is overloaded (CPU: {:.1}%, Memory: {:.1}%, Active tasks: {}), skipping task assignment",
+                    executor_id,
+                    metrics.cpu_load_percentage,
+                    metrics.memory_utilization_percentage,
+                    metrics.active_tasks
+                );
+                return None;
+            }
+        }
+        drop(metrics_guard); // Release metrics lock early
 
         let executors_guard = self.executors.lock().await;
         let host = executors_guard
@@ -496,6 +529,49 @@ impl TaskScheduler {
     /// Check if speculative execution is enabled
     pub fn is_speculative_execution_enabled(&self) -> bool {
         self.speculative_execution_enabled
+    }
+
+    /// Get the best executor for a task based on resource utilization and locality
+    /// Returns a list of executor IDs sorted by preference (best first)
+    pub async fn get_best_executors_for_task(&self, task: &PendingTask) -> Vec<ExecutorId> {
+        let executors_guard = self.executors.lock().await;
+        let metrics_guard = self.executor_metrics.lock().await;
+
+        let mut executor_scores: Vec<(ExecutorId, f64)> = Vec::new();
+
+        for (executor_id, executor_info) in executors_guard.iter() {
+            // Skip overloaded executors
+            if let Some(metrics) = metrics_guard.get(executor_id) {
+                if metrics.is_overloaded() {
+                    continue;
+                }
+
+                let mut score = metrics.resource_score();
+
+                // Apply locality bonuses (lower scores are better)
+                if task.preferred_locations.contains(executor_id) {
+                    score -= 1.0; // Strong preference for process-local
+                } else if !task.preferred_locations.is_empty() {
+                    // Check for node-local preference
+                    let is_node_local = task.preferred_locations.iter().any(|pref_exec_id| {
+                        executors_guard
+                            .get(pref_exec_id)
+                            .map(|pref_info| pref_info.host == executor_info.host)
+                            .unwrap_or(false)
+                    });
+                    if is_node_local {
+                        score -= 0.5; // Moderate preference for node-local
+                    }
+                }
+
+                executor_scores.push((executor_id.clone(), score));
+            }
+        }
+
+        // Sort by score (lower is better)
+        executor_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        executor_scores.into_iter().map(|(id, _)| id).collect()
     }
 }
 
@@ -797,6 +873,238 @@ mod tests {
         // Should no longer be in slow tasks
         let slow_tasks = scheduler.get_slow_tasks().await;
         assert!(slow_tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resource_aware_scheduling() {
+        let scheduler = TaskScheduler::new();
+
+        // Register executors with different resource profiles
+        let executor1 = ExecutorInfo::new(
+            "executor-1".to_string(),
+            "host-1".to_string(),
+            8080,
+            8081,
+            4,    // 4 cores
+            2048, // 2GB memory
+        );
+        let executor2 = ExecutorInfo::new(
+            "executor-2".to_string(),
+            "host-2".to_string(),
+            8080,
+            8081,
+            2,    // 2 cores
+            1024, // 1GB memory
+        );
+
+        scheduler.register_executor(executor1).await;
+        scheduler.register_executor(executor2).await;
+
+        // Set up different resource utilization scenarios
+        let low_load_metrics = ExecutorMetrics {
+            active_tasks: 1,
+            cpu_load_percentage: 30.0,
+            memory_utilization_percentage: 40.0,
+            available_memory_bytes: 1024 * 1024 * 1024, // 1GB available
+            cpu_cores_available: 3,
+            ..Default::default()
+        };
+
+        let high_load_metrics = ExecutorMetrics {
+            active_tasks: 2,
+            cpu_load_percentage: 95.0,                 // Overloaded
+            memory_utilization_percentage: 90.0,       // Overloaded
+            available_memory_bytes: 100 * 1024 * 1024, // Only 100MB available
+            cpu_cores_available: 0,
+            ..Default::default()
+        };
+
+        // Update metrics
+        scheduler
+            .update_executor_metrics(&"executor-1".to_string(), low_load_metrics)
+            .await;
+        scheduler
+            .update_executor_metrics(&"executor-2".to_string(), high_load_metrics)
+            .await;
+
+        // Create a task with no locality preference
+        let task = PendingTask {
+            task_id: "task-1".to_string(),
+            stage_id: "stage-1".to_string(),
+            partition_index: 0,
+            serialized_task: vec![],
+            preferred_locations: vec![],
+            retries: 0,
+            attempt: 0,
+        };
+
+        scheduler.submit_pending_task(task).await;
+
+        // executor-1 should get the task (low load)
+        let task_for_executor1 = scheduler
+            .get_next_task_for_executor(&"executor-1".to_string())
+            .await;
+        assert!(task_for_executor1.is_some());
+        assert_eq!(task_for_executor1.unwrap().task_id, "task-1");
+
+        // executor-2 should not get any task (overloaded)
+        let task_for_executor2 = scheduler
+            .get_next_task_for_executor(&"executor-2".to_string())
+            .await;
+        assert!(task_for_executor2.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resource_score_calculation() {
+        let metrics = ExecutorMetrics {
+            active_tasks: 2,
+            cpu_load_percentage: 50.0,
+            memory_utilization_percentage: 60.0,
+            cpu_cores_available: 2,
+            ..Default::default()
+        };
+
+        let score = metrics.resource_score();
+
+        // Score should be a weighted combination
+        // CPU: 50% -> 0.5, Memory: 60% -> 0.6, Task load: 2/2 -> 1.0
+        // Expected: 0.4 * 0.5 + 0.4 * 0.6 + 0.2 * 1.0 = 0.2 + 0.24 + 0.2 = 0.64
+        assert!((score - 0.64).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_overload_detection() {
+        // Test CPU overload
+        let cpu_overload = ExecutorMetrics {
+            cpu_load_percentage: 95.0,
+            memory_utilization_percentage: 50.0,
+            active_tasks: 2,
+            cpu_cores_available: 2,
+            ..Default::default()
+        };
+        assert!(cpu_overload.is_overloaded());
+
+        // Test memory overload
+        let memory_overload = ExecutorMetrics {
+            cpu_load_percentage: 50.0,
+            memory_utilization_percentage: 90.0,
+            active_tasks: 2,
+            cpu_cores_available: 2,
+            ..Default::default()
+        };
+        assert!(memory_overload.is_overloaded());
+
+        // Test task overload
+        let task_overload = ExecutorMetrics {
+            cpu_load_percentage: 50.0,
+            memory_utilization_percentage: 50.0,
+            active_tasks: 4,
+            cpu_cores_available: 4,
+            ..Default::default()
+        };
+        assert!(task_overload.is_overloaded());
+
+        // Test normal load
+        let normal_load = ExecutorMetrics {
+            cpu_load_percentage: 50.0,
+            memory_utilization_percentage: 50.0,
+            active_tasks: 2,
+            cpu_cores_available: 4,
+            ..Default::default()
+        };
+        assert!(!normal_load.is_overloaded());
+    }
+
+    #[tokio::test]
+    async fn test_best_executors_for_task() {
+        let scheduler = TaskScheduler::new();
+
+        // Register three executors
+        let executor1 = ExecutorInfo::new(
+            "executor-1".to_string(),
+            "host-1".to_string(),
+            8080,
+            8081,
+            4,
+            2048,
+        );
+        let executor2 = ExecutorInfo::new(
+            "executor-2".to_string(),
+            "host-2".to_string(),
+            8080,
+            8081,
+            4,
+            2048,
+        );
+        let executor3 = ExecutorInfo::new(
+            "executor-3".to_string(),
+            "host-1".to_string(),
+            8082,
+            8083,
+            4,
+            2048,
+        );
+
+        scheduler.register_executor(executor1).await;
+        scheduler.register_executor(executor2).await;
+        scheduler.register_executor(executor3).await;
+
+        // Set different resource utilization levels
+        let best_metrics = ExecutorMetrics {
+            active_tasks: 1,
+            cpu_load_percentage: 20.0,
+            memory_utilization_percentage: 30.0,
+            cpu_cores_available: 3,
+            ..Default::default()
+        };
+
+        let medium_metrics = ExecutorMetrics {
+            active_tasks: 2,
+            cpu_load_percentage: 50.0,
+            memory_utilization_percentage: 60.0,
+            cpu_cores_available: 3, // More cores available than active tasks
+            ..Default::default()
+        };
+
+        let worst_metrics = ExecutorMetrics {
+            active_tasks: 3,
+            cpu_load_percentage: 80.0,
+            memory_utilization_percentage: 80.0, // Not overloaded (< 85%)
+            cpu_cores_available: 4,              // More cores available than active tasks
+            ..Default::default()
+        };
+
+        scheduler
+            .update_executor_metrics(&"executor-1".to_string(), worst_metrics)
+            .await;
+        scheduler
+            .update_executor_metrics(&"executor-2".to_string(), best_metrics)
+            .await;
+        scheduler
+            .update_executor_metrics(&"executor-3".to_string(), medium_metrics)
+            .await;
+
+        // Create a task with preference for executor-1 (but it has worst resources)
+        let task = PendingTask {
+            task_id: "task-1".to_string(),
+            stage_id: "stage-1".to_string(),
+            partition_index: 0,
+            serialized_task: vec![],
+            preferred_locations: vec!["executor-1".to_string()],
+            retries: 0,
+            attempt: 0,
+        };
+
+        let best_executors = scheduler.get_best_executors_for_task(&task).await;
+
+        // Should return executors sorted by preference:
+        // 1. executor-1 (process-local preference despite worse resources)
+        // 2. executor-3 (medium resources)
+        // 3. executor-2 (best resources but no locality bonus)
+        assert_eq!(best_executors.len(), 3);
+        assert_eq!(best_executors[0], "executor-1"); // Process-local wins
+        assert_eq!(best_executors[1], "executor-3"); // Medium resources + no locality penalty
+        assert_eq!(best_executors[2], "executor-2"); // Best resources but no locality bonus
     }
 }
 

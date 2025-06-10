@@ -143,8 +143,15 @@ impl DriverServiceImpl {
             .await;
         });
         let accumulator_manager_clone = self.accumulator_manager.clone();
+        let task_scheduler_clone = self.task_scheduler.clone();
         tokio::spawn(async move {
-            Self::heartbeat_monitor(heartbeat_receiver, executors, accumulator_manager_clone).await;
+            Self::heartbeat_monitor(
+                heartbeat_receiver,
+                executors,
+                accumulator_manager_clone,
+                task_scheduler_clone,
+            )
+            .await;
         });
 
         // Start background task scheduler
@@ -331,18 +338,29 @@ impl DriverServiceImpl {
         }
     }
 
-    /// Finds executors that have capacity to run more tasks.
-    /// It filters executors that are not failed and have fewer active tasks than their maximum capacity.
+    /// Finds executors that have capacity to run more tasks with resource-aware filtering.
+    /// It filters executors that are not failed, have capacity, and are not overloaded.
     async fn find_available_executors(&self) -> Vec<RegisteredExecutor> {
         let executors = self.executors.lock().await;
-        executors
+        let mut available_executors: Vec<RegisteredExecutor> = executors
             .values()
             .filter(|e| {
                 e.status != ExecutorStatus::Failed
                     && e.metrics.active_tasks < e.info.max_concurrent_tasks
+                    && !e.metrics.is_overloaded()
             })
             .cloned()
-            .collect()
+            .collect();
+
+        // Sort by resource score (best resources first)
+        available_executors.sort_by(|a, b| {
+            a.metrics
+                .resource_score()
+                .partial_cmp(&b.metrics.resource_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        available_executors
     }
 
     async fn launch_task_on_executor(
@@ -406,6 +424,7 @@ impl DriverServiceImpl {
         heartbeat_receiver: Arc<Mutex<mpsc::UnboundedReceiver<HeartbeatInfo>>>,
         executors: Arc<Mutex<HashMap<ExecutorId, RegisteredExecutor>>>,
         accumulator_manager: Arc<AccumulatorManager>,
+        task_scheduler: Arc<TaskScheduler>,
     ) {
         let mut receiver = heartbeat_receiver.lock().await;
 
@@ -415,9 +434,14 @@ impl DriverServiceImpl {
             if let Some(executor) = executors.get_mut(&heartbeat.executor_id) {
                 executor.last_heartbeat = heartbeat.timestamp;
                 executor.status = heartbeat.status;
-                executor.metrics = heartbeat.metrics;
+                executor.metrics = heartbeat.metrics.clone();
 
                 debug!("Updated heartbeat for executor: {}", heartbeat.executor_id);
+
+                // Update TaskScheduler with latest metrics for resource-aware scheduling
+                task_scheduler
+                    .update_executor_metrics(&heartbeat.executor_id, heartbeat.metrics)
+                    .await;
             } else {
                 warn!(
                     "Received heartbeat from unknown executor: {}",
@@ -759,6 +783,12 @@ impl DriverService for DriverServiceImpl {
                 max_memory_bytes: proto_metrics.max_memory_bytes,
                 memory_used_bytes: proto_metrics.memory_used_bytes,
                 active_tasks: proto_metrics.active_tasks,
+                cpu_load_percentage: proto_metrics.cpu_load_percentage,
+                memory_utilization_percentage: proto_metrics.memory_utilization_percentage,
+                available_memory_bytes: proto_metrics.available_memory_bytes,
+                cpu_cores_available: proto_metrics.cpu_cores_available,
+                disk_usage_bytes: proto_metrics.disk_usage_bytes,
+                network_bytes_per_sec: proto_metrics.network_bytes_per_sec,
             }
         } else {
             ExecutorMetrics::default()

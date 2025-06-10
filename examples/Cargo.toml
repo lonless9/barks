@@ -42,6 +42,10 @@ path = "string_tuple_demo.rs"
 name = "distributed_sql_example"
 path = "distributed_sql_example.rs"
 
+[[bin]]
+name = "resource_aware_scheduling_demo"
+path = "resource_aware_scheduling_demo.rs"
+
 # Disabled until shuffle functionality is implemented
 # [[bin]]
 # name = "shuffle_api"

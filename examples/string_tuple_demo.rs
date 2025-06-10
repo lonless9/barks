@@ -67,8 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 4: FlatMap operation
     println!("🌟 Test 4: FlatMap Operation (split and combine)");
     let test_data = vec![("hello world".to_string(), "foo bar".to_string())];
-    let flatmap_rdd: DistributedRdd<(String, String)> =
-        DistributedRdd::from_vec(test_data);
+    let flatmap_rdd: DistributedRdd<(String, String)> = DistributedRdd::from_vec(test_data);
     let flatmapped_rdd = flatmap_rdd.flat_map(Box::new(SplitAndCombineOperation));
     let flatmap_result = flatmapped_rdd.collect()?;
     println!("  Input: (\"hello world\", \"foo bar\")");

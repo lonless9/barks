@@ -575,6 +575,7 @@ impl Executor {
         if self.service.driver_client.lock().await.is_some() {
             let driver_client_arc = Arc::clone(&self.service.driver_client);
             let executor_id = self.service.executor_info.executor_id.clone();
+            let executor_info = self.service.executor_info.clone();
             let status = Arc::clone(&self.service.status);
             let metrics = Arc::clone(&self.service.metrics);
             let running_tasks = Arc::clone(&self.service.running_tasks);
@@ -589,7 +590,18 @@ impl Executor {
 
                     let active_tasks_count = running_tasks.lock().await.len() as u32;
                     let current_status = *status.lock().await;
-                    let current_metrics = metrics.lock().await.clone();
+                    let mut current_metrics = metrics.lock().await.clone();
+
+                    // Update active tasks count in metrics
+                    current_metrics.active_tasks = active_tasks_count;
+
+                    // Collect system resource metrics
+                    let (
+                        cpu_load_percentage,
+                        memory_utilization_percentage,
+                        available_memory_bytes,
+                        cpu_cores_available,
+                    ) = Executor::collect_system_metrics(&executor_info, &current_metrics);
 
                     let heartbeat_request = HeartbeatRequest {
                         executor_id: executor_id.clone(),
@@ -608,6 +620,12 @@ impl Executor {
                             max_memory_bytes: current_metrics.max_memory_bytes,
                             memory_used_bytes: current_metrics.memory_used_bytes,
                             active_tasks: active_tasks_count,
+                            cpu_load_percentage,
+                            memory_utilization_percentage,
+                            available_memory_bytes,
+                            cpu_cores_available,
+                            disk_usage_bytes: 0, // TODO: Implement disk usage tracking
+                            network_bytes_per_sec: 0, // TODO: Implement network tracking
                         }),
                     };
 
@@ -646,5 +664,47 @@ impl Executor {
     // Helper for getting current timestamp, moved from service to be accessible here
     fn current_timestamp() -> u64 {
         current_timestamp_secs()
+    }
+
+    /// Collect system resource metrics for resource-aware scheduling
+    fn collect_system_metrics(
+        executor_info: &ExecutorInfo,
+        current_metrics: &ExecutorMetrics,
+    ) -> (f64, f64, u64, u32) {
+        // For now, we'll use simple heuristics. In a real implementation,
+        // you'd use system APIs to get actual CPU/memory usage
+
+        // Estimate CPU load based on active tasks vs available cores
+        let cpu_load_percentage = if executor_info.cores > 0 {
+            (current_metrics.active_tasks as f64 / executor_info.cores as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+
+        // Estimate memory utilization percentage
+        let memory_utilization_percentage = if executor_info.memory_mb > 0 {
+            (current_metrics.memory_used_bytes as f64
+                / (executor_info.memory_mb * 1024 * 1024) as f64
+                * 100.0)
+                .min(100.0)
+        } else {
+            0.0
+        };
+
+        // Calculate available memory
+        let available_memory_bytes = (executor_info.memory_mb * 1024 * 1024)
+            .saturating_sub(current_metrics.memory_used_bytes);
+
+        // Calculate available CPU cores (simplified)
+        let cpu_cores_available = executor_info
+            .cores
+            .saturating_sub(current_metrics.active_tasks);
+
+        (
+            cpu_load_percentage,
+            memory_utilization_percentage,
+            available_memory_bytes,
+            cpu_cores_available,
+        )
     }
 }
