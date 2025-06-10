@@ -176,8 +176,8 @@ where
             .and_then(|sa| sa.serialize())
             .unwrap_or_default();
 
-        // Try to create tasks for supported type combinations
-        self.create_typed_tasks(self.id as u32, &map_locations, &aggregator_data)
+        // Create tasks directly using the generic types K, V, C
+        self.create_shuffle_reduce_tasks(self.id as u32, &map_locations, &aggregator_data)
     }
 
     fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {
@@ -189,9 +189,9 @@ impl<K: Data, V: Data, C: Data> ShuffledRdd<K, V, C>
 where
     K: std::hash::Hash + Eq,
 {
-    /// Helper method to create tasks for supported type combinations
-    /// This reduces downcasting to a single location and makes it easier to add new types
-    fn create_typed_tasks(
+    /// Create shuffle reduce tasks using a type-safe approach
+    /// This method uses the TypeId to determine the concrete types and create appropriate tasks
+    fn create_shuffle_reduce_tasks(
         &self,
         shuffle_id: u32,
         map_locations: &[(String, u32)],
@@ -199,16 +199,24 @@ where
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
         use crate::distributed::task::ShuffleReduceTask;
         use crate::shuffle::ReduceAggregator;
+        use std::any::TypeId;
 
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
-        // Check for String -> i32 -> i32 (most common case)
-        if self
-            .as_any()
-            .downcast_ref::<ShuffledRdd<String, i32, i32>>()
-            .is_some()
+        // Use TypeId to determine the concrete types at runtime
+        let k_type = TypeId::of::<K>();
+        let v_type = TypeId::of::<V>();
+        let c_type = TypeId::of::<C>();
+
+        // Handle String -> i32 -> i32
+        if k_type == TypeId::of::<String>()
+            && v_type == TypeId::of::<i32>()
+            && c_type == TypeId::of::<i32>()
         {
-            for i in 0..self.num_partitions() {
+            // We know the types are correct, so we can safely cast
+            let self_typed =
+                unsafe { &*(self as *const Self as *const ShuffledRdd<String, i32, i32>) };
+            for i in 0..self_typed.num_partitions() {
                 let task = ShuffleReduceTask::<String, i32, i32, ReduceAggregator<i32>>::new(
                     shuffle_id,
                     i as u32,
@@ -220,13 +228,14 @@ where
             return Ok(tasks);
         }
 
-        // Check for i32 -> String -> String
-        if self
-            .as_any()
-            .downcast_ref::<ShuffledRdd<i32, String, String>>()
-            .is_some()
+        // Handle i32 -> String -> String
+        if k_type == TypeId::of::<i32>()
+            && v_type == TypeId::of::<String>()
+            && c_type == TypeId::of::<String>()
         {
-            for i in 0..self.num_partitions() {
+            let self_typed =
+                unsafe { &*(self as *const Self as *const ShuffledRdd<i32, String, String>) };
+            for i in 0..self_typed.num_partitions() {
                 let task = ShuffleReduceTask::<i32, String, String, ReduceAggregator<String>>::new(
                     shuffle_id,
                     i as u32,
@@ -238,11 +247,33 @@ where
             return Ok(tasks);
         }
 
+        // Handle String -> String -> String
+        if k_type == TypeId::of::<String>()
+            && v_type == TypeId::of::<String>()
+            && c_type == TypeId::of::<String>()
+        {
+            let self_typed =
+                unsafe { &*(self as *const Self as *const ShuffledRdd<String, String, String>) };
+            for i in 0..self_typed.num_partitions() {
+                let task =
+                    ShuffleReduceTask::<String, String, String, ReduceAggregator<String>>::new(
+                        shuffle_id,
+                        i as u32,
+                        map_locations.to_vec(),
+                        aggregator_data.to_vec(),
+                    );
+                tasks.push(Box::new(task));
+            }
+            return Ok(tasks);
+        }
+
         // If no supported type combination is found, return an error
         Err(RddError::ContextError(format!(
-            "Task creation for ShuffledRdd with item type {:?} is not supported yet. \
-            Supported combinations: (String, i32, i32), (i32, String, String)",
-            std::any::type_name::<<Self as crate::traits::RddBase>::Item>()
+            "ShuffleReduceTask creation for ShuffledRdd<{}, {}, {}> is not supported yet. \
+            Supported combinations: (String, i32, i32), (i32, String, String), (String, String, String)",
+            std::any::type_name::<K>(),
+            std::any::type_name::<V>(),
+            std::any::type_name::<C>()
         )))
     }
 }

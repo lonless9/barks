@@ -1389,6 +1389,28 @@ impl_shuffle_reduce_task!(
     }
 );
 
+impl_shuffle_reduce_task!(
+    String,
+    String,
+    String,
+    crate::shuffle::ReduceAggregator<String>,
+    "ShuffleReduceTaskStringString",
+    crate::shuffle::ReduceAggregator::new(|a: String, b: String| format!("{},{}", a, b)),
+    |sa| -> Result<crate::shuffle::ReduceAggregator<String>, String> {
+        match sa {
+            crate::shuffle::SerializableAggregator::ConcatString => {
+                Ok(crate::shuffle::SerializableAggregator::create_concat_string_aggregator())
+            }
+            _ => {
+                // Fallback to default
+                Ok(crate::shuffle::ReduceAggregator::new(
+                    |a: String, b: String| format!("{},{}", a, b),
+                ))
+            }
+        }
+    }
+);
+
 // Macro for implementing CoGroupTask for specific types
 macro_rules! impl_cogroup_task {
     ($key:ty, $value:ty, $combiner:ty, $aggregator:ty, $name:literal, $default_aggregator:expr, $deserialize_aggregator:expr) => {

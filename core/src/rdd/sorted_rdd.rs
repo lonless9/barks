@@ -203,12 +203,13 @@ where
 
         let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
 
-        // Check for String -> i32 (most common case)
-        if self
-            .as_any()
-            .downcast_ref::<SortedRdd<String, i32>>()
-            .is_some()
-        {
+        // Use TypeId to determine the concrete types at runtime
+        use std::any::TypeId;
+        let k_type = TypeId::of::<K>();
+        let v_type = TypeId::of::<V>();
+
+        // Handle String -> i32 (most common case)
+        if k_type == TypeId::of::<String>() && v_type == TypeId::of::<i32>() {
             for i in 0..self.num_partitions() {
                 let task = SortTask::<String, i32>::new(
                     shuffle_id,
@@ -221,12 +222,8 @@ where
             return Ok(tasks);
         }
 
-        // Check for i32 -> String
-        if self
-            .as_any()
-            .downcast_ref::<SortedRdd<i32, String>>()
-            .is_some()
-        {
+        // Handle i32 -> String
+        if k_type == TypeId::of::<i32>() && v_type == TypeId::of::<String>() {
             for i in 0..self.num_partitions() {
                 let task = SortTask::<i32, String>::new(
                     shuffle_id,
@@ -241,9 +238,10 @@ where
 
         // If no supported type combination is found, return an error
         Err(crate::traits::RddError::ContextError(format!(
-            "Task creation for SortedRdd with item type {:?} is not supported yet. \
+            "Task creation for SortedRdd<{}, {}> is not supported yet. \
             Supported combinations: (String, i32), (i32, String)",
-            std::any::type_name::<<Self as crate::traits::RddBase>::Item>()
+            std::any::type_name::<K>(),
+            std::any::type_name::<V>()
         )))
     }
 }
