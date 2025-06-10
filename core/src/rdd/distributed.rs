@@ -47,6 +47,26 @@ pub enum DistributedRdd<T: RddDataType> {
     },
 }
 
+/// Helper function to extract partition data from base data
+pub(crate) fn get_partition_data<T>(
+    data: &Arc<Vec<T>>,
+    partition_index: usize,
+    num_partitions: usize,
+) -> Vec<T>
+where
+    T: Clone,
+{
+    let data_len = data.len();
+    let partition_size = (data_len + num_partitions - 1) / num_partitions;
+    let start = partition_index * partition_size;
+    let end = std::cmp::min(start + partition_size, data_len);
+    if start >= data_len {
+        Vec::new()
+    } else {
+        data[start..end].to_vec()
+    }
+}
+
 impl<T: RddDataType> DistributedRdd<T> {
     /// Create a new RDD from a vector of data
     pub fn from_vec(data: Vec<T>) -> Self {
@@ -604,53 +624,24 @@ impl<T: RddDataType> crate::traits::RddBase for DistributedRdd<T> {
             )>],
         >,
     ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        use crate::rdd::transformations::PairRdd;
         if let Some(shuffle) = shuffle_info {
-            // This is a map stage for a shuffle.
-            // We need to create ShuffleMapTasks, which requires this RDD to be a PairRdd.
-            // We perform safe downcasts to check for specific pair types.
-            let any_self = self as &dyn std::any::Any;
-            if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(String, i32)>>() {
-                return pair_rdd
-                    .create_shuffle_map_tasks(shuffle.shuffle_id as u32, shuffle.num_partitions);
-            } else if let Some(pair_rdd) = any_self.downcast_ref::<DistributedRdd<(i32, String)>>()
-            {
-                return pair_rdd
-                    .create_shuffle_map_tasks(shuffle.shuffle_id as u32, shuffle.num_partitions);
-            } else {
-                // This is a programmer error: a shuffle dependency was created on a non-pair RDD.
-                return Err(crate::traits::RddError::TaskCreationError(format!(
-                    "Shuffle dependency created on a non-pair RDD with type {:?}",
-                    std::any::type_name::<T>()
-                )));
-            }
+            return T::create_shuffle_map_tasks(
+                self,
+                shuffle.shuffle_id as u32,
+                shuffle.num_partitions,
+            );
         }
-        // This is a narrow dependency stage. Create ChainedTasks.
+
         let (base_data, num_partitions, operations) = self.clone().analyze_lineage();
-        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
-
-        for partition_index in 0..num_partitions {
-            let data_len = base_data.len();
-            let partition_size = data_len.div_ceil(num_partitions);
-            let start = partition_index * partition_size;
-            let end = std::cmp::min(start + partition_size, data_len);
-
-            let partition_data = if start >= data_len {
-                Vec::new()
-            } else {
-                base_data[start..end].to_vec()
-            };
-
-            let serialized_partition_data =
-                bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-            tasks.push(T::create_chained_task(
-                serialized_partition_data,
-                operations.clone(),
-            )?);
-        }
-
-        Ok(tasks)
+        (0..num_partitions)
+            .map(|i| {
+                let partition_data = get_partition_data(&base_data, i, num_partitions);
+                let serialized_partition_data =
+                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
+                T::create_chained_task(serialized_partition_data, operations.clone())
+            })
+            .collect()
     }
 
     fn as_is_rdd(self: std::sync::Arc<Self>) -> std::sync::Arc<dyn crate::traits::IsRdd> {

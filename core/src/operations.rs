@@ -59,7 +59,20 @@ pub trait RddDataType:
 
     /// Compute distinct elements from the given data
     /// This method handles the deduplication logic for types that support it
-    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>>;
+    /// Default implementation returns all elements (no deduplication)
+    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
+        // Default implementation: no deduplication
+        // Types that support Eq + Hash should override this method
+        Ok(data)
+    }
+
+    /// Create shuffle map tasks for this data type
+    /// This method allows each data type to define how it should be shuffled
+    fn create_shuffle_map_tasks(
+        rdd: &crate::rdd::DistributedRdd<Self>,
+        shuffle_id: u32,
+        num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
 }
 
 /// Trait for serializable operations on i32 values
@@ -207,15 +220,22 @@ impl RddDataType for i32 {
     fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
-        let mut result = Vec::new();
+        Ok(data.into_iter().filter(|item| seen.insert(*item)).collect())
+    }
 
-        for item in data {
-            if seen.insert(item) {
-                result.push(item);
-            }
-        }
-
-        Ok(result)
+    fn create_shuffle_map_tasks(
+        _rdd: &crate::rdd::DistributedRdd<Self>,
+        _shuffle_id: u32,
+        _num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        // This implementation is for non-pair types used in shuffles like `distinct`.
+        // The actual logic should be handled by a specific ShuffleMapTask for non-pair data,
+        // which is not yet implemented. For now, we return an error.
+        // A full implementation would map `T` to `(T, ())` and use a ShuffleMapTask.
+        Err(crate::traits::RddError::TaskCreationError(format!(
+            "Shuffle on non-pair RDD type {:?} is not fully supported yet.",
+            std::any::type_name::<Self>()
+        )))
     }
 }
 
@@ -265,15 +285,21 @@ impl RddDataType for String {
     fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
-        let mut result = Vec::new();
+        Ok(data
+            .into_iter()
+            .filter(|item| seen.insert(item.clone()))
+            .collect())
+    }
 
-        for item in data {
-            if seen.insert(item.clone()) {
-                result.push(item);
-            }
-        }
-
-        Ok(result)
+    fn create_shuffle_map_tasks(
+        _rdd: &crate::rdd::DistributedRdd<Self>,
+        _shuffle_id: u32,
+        _num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        Err(crate::traits::RddError::TaskCreationError(format!(
+            "Shuffle on non-pair RDD type {:?} is not fully supported yet.",
+            std::any::type_name::<Self>()
+        )))
     }
 }
 
@@ -523,18 +549,31 @@ impl RddDataType for (String, i32) {
         )))
     }
 
-    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
+    fn create_shuffle_map_tasks(
+        rdd: &crate::rdd::DistributedRdd<Self>,
+        shuffle_id: u32,
+        num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        let (base_data, num_base_partitions, operations) = rdd.clone().analyze_lineage();
 
-        for item in data {
-            if seen.insert(item.clone()) {
-                result.push(item);
-            }
-        }
+        (0..num_base_partitions)
+            .map(|i| {
+                let partition_data =
+                    crate::rdd::distributed::get_partition_data(&base_data, i, num_base_partitions);
+                let serialized_partition_data =
+                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
 
-        Ok(result)
+                let task = crate::distributed::task::ShuffleMapTask::<(String, i32)>::new(
+                    serialized_partition_data,
+                    operations.clone(),
+                    shuffle_id,
+                    num_partitions,
+                    Default::default(),
+                );
+                Ok(Box::new(task) as Box<dyn crate::distributed::task::Task>)
+            })
+            .collect()
     }
 }
 
@@ -629,18 +668,31 @@ impl RddDataType for (i32, String) {
         )))
     }
 
-    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
+    fn create_shuffle_map_tasks(
+        rdd: &crate::rdd::DistributedRdd<Self>,
+        shuffle_id: u32,
+        num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        let (base_data, num_base_partitions, operations) = rdd.clone().analyze_lineage();
 
-        for item in data {
-            if seen.insert(item.clone()) {
-                result.push(item);
-            }
-        }
+        (0..num_base_partitions)
+            .map(|i| {
+                let partition_data =
+                    crate::rdd::distributed::get_partition_data(&base_data, i, num_base_partitions);
+                let serialized_partition_data =
+                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
 
-        Ok(result)
+                let task = crate::distributed::task::ShuffleMapTask::<(i32, String)>::new(
+                    serialized_partition_data,
+                    operations.clone(),
+                    shuffle_id,
+                    num_partitions,
+                    Default::default(),
+                );
+                Ok(Box::new(task) as Box<dyn crate::distributed::task::Task>)
+            })
+            .collect()
     }
 }
 
@@ -786,18 +838,31 @@ impl RddDataType for (String, String) {
         )))
     }
 
-    fn compute_distinct(data: Vec<Self>) -> crate::traits::RddResult<Vec<Self>> {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
+    fn create_shuffle_map_tasks(
+        rdd: &crate::rdd::DistributedRdd<Self>,
+        shuffle_id: u32,
+        num_partitions: u32,
+    ) -> crate::traits::RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
+        let (base_data, num_base_partitions, operations) = rdd.clone().analyze_lineage();
 
-        for item in data {
-            if seen.insert(item.clone()) {
-                result.push(item);
-            }
-        }
+        (0..num_base_partitions)
+            .map(|i| {
+                let partition_data =
+                    crate::rdd::distributed::get_partition_data(&base_data, i, num_base_partitions);
+                let serialized_partition_data =
+                    bincode::encode_to_vec(&partition_data, bincode::config::standard())
+                        .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
 
-        Ok(result)
+                let task = crate::distributed::task::ShuffleMapTask::<(String, String)>::new(
+                    serialized_partition_data,
+                    operations.clone(),
+                    shuffle_id,
+                    num_partitions,
+                    Default::default(),
+                );
+                Ok(Box::new(task) as Box<dyn crate::distributed::task::Task>)
+            })
+            .collect()
     }
 }
 

@@ -1338,6 +1338,12 @@ macro_rules! impl_shuffle_reduce_task {
 // Implement the macros for specific types
 impl_shuffle_map_task!((String, i32), String, i32, "ShuffleMapTaskStringI32");
 impl_shuffle_map_task!((i32, String), i32, String, "ShuffleMapTaskI32String");
+impl_shuffle_map_task!(
+    (String, String),
+    String,
+    String,
+    "ShuffleMapTaskStringString"
+);
 
 impl_shuffle_reduce_task!(
     String,

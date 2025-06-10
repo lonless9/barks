@@ -2,7 +2,7 @@
 
 use crate::rdd::{CogroupedRdd, JoinedRdd, ShuffledRdd, SortedRdd};
 use crate::shuffle::{Aggregator, Partitioner, ReduceAggregator};
-use crate::traits::{Data, IsRdd, Pair, RddBase, RddResult};
+use crate::traits::{Data, IsRdd, Pair, RddBase};
 use std::sync::Arc;
 
 /// Type aliases for complex return types to satisfy clippy's type complexity requirements
@@ -75,14 +75,6 @@ where
         aggregator: Arc<dyn Aggregator<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, C>>,
         partitioner: Arc<dyn Partitioner<<Self::Item as Pair>::Key>>,
     ) -> ShuffledRddCombined<<Self::Item as Pair>::Key, <Self::Item as Pair>::Value, C>;
-
-    /// The safe, internal method for creating shuffle map tasks.
-    /// This is the key to removing `unsafe`.
-    fn create_shuffle_map_tasks(
-        &self,
-        shuffle_id: u32,
-        num_partitions: u32,
-    ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>>;
 }
 
 impl PairRdd for crate::rdd::DistributedRdd<(String, i32)> {
@@ -150,45 +142,6 @@ impl PairRdd for crate::rdd::DistributedRdd<(String, i32)> {
         let new_rdd_id = self.id().saturating_add(3);
         Arc::new(ShuffledRdd::new(new_rdd_id, self, aggregator, partitioner))
     }
-
-    /// This is the safe implementation for creating ShuffleMapTasks.
-    /// It is only callable on a DistributedRdd<(K, V)>, so K and V are known at compile time.
-    fn create_shuffle_map_tasks(
-        &self,
-        shuffle_id: u32,
-        num_partitions: u32,
-    ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        let (base_data, num_base_partitions, operations) = self.clone().analyze_lineage();
-
-        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
-        for partition_index in 0..num_base_partitions {
-            let data_len = base_data.len();
-            let partition_size = data_len.div_ceil(num_base_partitions);
-            let start = partition_index * partition_size;
-            let end = std::cmp::min(start + partition_size, data_len);
-
-            let partition_data = if start >= data_len {
-                Vec::new()
-            } else {
-                base_data[start..end].to_vec()
-            };
-
-            let serialized_partition_data =
-                bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            // Create the task safely, without transmute!
-            let task = crate::distributed::task::ShuffleMapTask::<(String, i32)>::new(
-                serialized_partition_data,
-                operations.clone(),
-                shuffle_id,
-                num_partitions,
-                Default::default(),
-            );
-            tasks.push(Box::new(task));
-        }
-        Ok(tasks)
-    }
 }
 
 impl PairRdd for crate::rdd::DistributedRdd<(i32, String)> {
@@ -252,42 +205,6 @@ impl PairRdd for crate::rdd::DistributedRdd<(i32, String)> {
     ) -> Arc<ShuffledRdd<i32, String, C>> {
         let new_rdd_id = self.id().saturating_add(3);
         Arc::new(ShuffledRdd::new(new_rdd_id, self, aggregator, partitioner))
-    }
-
-    fn create_shuffle_map_tasks(
-        &self,
-        shuffle_id: u32,
-        num_partitions: u32,
-    ) -> RddResult<Vec<Box<dyn crate::distributed::task::Task>>> {
-        let (base_data, num_base_partitions, operations) = self.clone().analyze_lineage();
-
-        let mut tasks: Vec<Box<dyn crate::distributed::task::Task>> = Vec::new();
-        for partition_index in 0..num_base_partitions {
-            let data_len = base_data.len();
-            let partition_size = data_len.div_ceil(num_base_partitions);
-            let start = partition_index * partition_size;
-            let end = std::cmp::min(start + partition_size, data_len);
-
-            let partition_data = if start >= data_len {
-                Vec::new()
-            } else {
-                base_data[start..end].to_vec()
-            };
-
-            let serialized_partition_data =
-                bincode::encode_to_vec(&partition_data, bincode::config::standard())
-                    .map_err(|e| crate::traits::RddError::SerializationError(e.to_string()))?;
-
-            let task = crate::distributed::task::ShuffleMapTask::<(i32, String)>::new(
-                serialized_partition_data,
-                operations.clone(),
-                shuffle_id,
-                num_partitions,
-                Default::default(),
-            );
-            tasks.push(Box::new(task));
-        }
-        Ok(tasks)
     }
 }
 
