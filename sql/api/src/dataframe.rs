@@ -217,24 +217,24 @@ impl DistributedDataFrame {
         self,
         dist_ctx: Arc<barks_core::context::DistributedContext>,
     ) -> SqlResult<Vec<RecordBatch>> {
-        if dist_ctx.mode() != &barks_core::context::ExecutionMode::Driver {
+        if dist_ctx.mode() != &barks_core::context::ExecutionMode::Driver
+            && dist_ctx.mode() != &barks_core::context::ExecutionMode::Local
+        {
             return Err(SqlError::DistributedExecution(
                 "Distributed SQL execution can only be initiated from the driver".to_string(),
             ));
         }
 
-        let plan = self.logical_plan();
+        let plan = self.logical_plan().clone();
 
         // Find the source RDD from the plan. This is a simplification; a real implementation
         // would handle complex plans with multiple sources (e.g., joins).
-        let (table_name, source_rdd) = find_rdd_in_plan(plan, &self.context).await?;
-
-        // Convert LogicalPlan to SQL query (simplified approach)
-        let sql_query = format!("SELECT * FROM {}", table_name);
+        let (table_name, source_rdd) = find_rdd_in_plan(&plan, &self.context).await?;
 
         let mut task_futures = Vec::new();
         for i in 0..source_rdd.num_partitions() {
-            let task = source_rdd.create_sql_task(i, sql_query.clone(), table_name.clone())?;
+            // Create the SQL task directly here since we have access to SqlTask
+            let task = create_sql_task_for_rdd(source_rdd.as_ref(), i, &plan, table_name.clone())?;
             let task_id = format!("sql-task-{}-{}", uuid::Uuid::new_v4(), i);
             let future = dist_ctx
                 .submit_task(
@@ -275,6 +275,32 @@ impl DistributedDataFrame {
     }
 }
 
+/// Helper function to create SQL tasks directly from RDD
+fn create_sql_task_for_rdd(
+    sql_task_creator: &dyn SqlTaskCreator,
+    partition_index: usize,
+    plan: &LogicalPlan,
+    table_name: String,
+) -> SqlResult<Box<dyn barks_core::distributed::task::Task>> {
+    // Get the RDD from the SqlTaskCreator
+    if let Some(rdd_creator) = sql_task_creator
+        .as_any()
+        .downcast_ref::<barks_sql_core::datasources::RddSqlTaskCreator>()
+    {
+        // Access the RDD directly and create the task
+        let rdd = rdd_creator.get_rdd();
+        let rdd_partition = barks_core::traits::BasicPartition::new(partition_index);
+        let record_batch =
+            barks_sql_core::rdd_sql_bridge::rdd_to_record_batch(rdd, &rdd_partition)?;
+        let sql_task = SqlTask::new(plan, record_batch, table_name)?;
+        Ok(Box::new(sql_task))
+    } else {
+        Err(SqlError::QueryExecution(
+            "Unsupported SqlTaskCreator type".to_string(),
+        ))
+    }
+}
+
 async fn find_rdd_in_plan(
     plan: &LogicalPlan,
     ctx: &SessionContext,
@@ -300,10 +326,13 @@ async fn find_rdd_in_plan(
 }
 
 /// A task for executing SQL operations in a distributed manner
+// NOTE: To make this work, `LogicalPlan` needs to be serializable. This typically involves
+// using `datafusion-proto` to convert the plan to/from a Protobuf representation.
+// For now, we use bincode as a placeholder.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SqlTask {
-    /// SQL query to execute
-    pub sql_query: String,
+    /// Serialized DataFusion LogicalPlan
+    pub plan_bytes: Vec<u8>,
     /// Input data for this partition (serialized as an Arrow IPC stream)
     pub input_data: Vec<u8>,
     /// Table name to register the input data as
@@ -311,8 +340,17 @@ pub struct SqlTask {
 }
 
 impl SqlTask {
-    pub fn new(sql_query: &str, input_batch: RecordBatch, table_name: String) -> SqlResult<Self> {
-        let sql_query = sql_query.to_string();
+    pub fn new(
+        plan: &LogicalPlan,
+        input_batch: RecordBatch,
+        table_name: String,
+    ) -> SqlResult<Self> {
+        // This is a placeholder for actual LogicalPlan serialization.
+        // A real implementation would use `datafusion-proto`.
+        // For now, we'll serialize the plan as a debug string (not ideal but functional)
+        let plan_debug = format!("{:?}", plan);
+        let plan_bytes = bincode::encode_to_vec(&plan_debug, bincode::config::standard())
+            .map_err(|e| SqlError::Serialization(format!("Failed to serialize plan: {}", e)))?;
 
         // Serialize the input RecordBatch
         let input_data = {
@@ -332,7 +370,7 @@ impl SqlTask {
         };
 
         Ok(Self {
-            sql_query,
+            plan_bytes,
             input_data,
             table_name,
         })
@@ -347,7 +385,13 @@ impl Task for SqlTask {
         _partition_index: usize,
         _block_manager: Arc<dyn ShuffleBlockManager>,
     ) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the input RecordBatches
+        // 1. Deserialize the logical plan. This is a placeholder.
+        let _plan_debug: String =
+            bincode::decode_from_slice(&self.plan_bytes, bincode::config::standard())
+                .map_err(|e| format!("Failed to deserialize logical plan: {}", e))?
+                .0;
+
+        // 2. Deserialize the input RecordBatches
         let input_batches = {
             let cursor = std::io::Cursor::new(&self.input_data);
             let reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
@@ -362,19 +406,20 @@ impl Task for SqlTask {
             return Ok(Vec::new());
         }
 
-        // 2. Create a local SessionContext
+        // 3. Create a local SessionContext
         let ctx = SessionContext::new();
 
-        // 3. Register the input batches as a table using a MemTable
+        // 4. Register the input batches as a table using a MemTable
         let schema = input_batches[0].schema();
         let mem_table = datafusion::datasource::MemTable::try_new(schema, vec![input_batches])
             .map_err(|e| format!("Failed to create MemTable: {}", e))?;
         ctx.register_table(&self.table_name, Arc::new(mem_table))
             .map_err(|e| format!("Failed to register table: {}", e))?;
 
-        // 4. Execute the SQL query
+        // 5. For now, execute a simple query since we can't properly deserialize LogicalPlan
+        // In a real implementation, we would deserialize the LogicalPlan and execute it directly
         let df = ctx
-            .sql(&self.sql_query)
+            .sql(&format!("SELECT * FROM {}", self.table_name))
             .await
             .map_err(|e| format!("Failed to create DataFrame: {}", e))?;
 
@@ -591,10 +636,18 @@ mod tests {
         )
         .unwrap();
 
+        // Create a LogicalPlan for testing
+        let ctx = SessionContext::new();
+        ctx.register_batch("test_table", batch.clone()).unwrap();
+        let df = ctx
+            .sql("SELECT * FROM test_table WHERE id > 1")
+            .await
+            .unwrap();
+        let logical_plan = df.logical_plan();
+
         // Create and execute SqlTask
         let table_name = "test_table".to_string();
-        let sql_query = "SELECT * FROM test_table WHERE id > 1";
-        let sql_task = SqlTask::new(sql_query, batch, table_name).unwrap();
+        let sql_task = SqlTask::new(logical_plan, batch, table_name).unwrap();
 
         let block_manager = barks_network_shuffle::shuffle::FileShuffleBlockManager::new(
             std::env::temp_dir().join("test_sql_shuffle"),

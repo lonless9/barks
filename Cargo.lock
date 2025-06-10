@@ -620,6 +620,7 @@ dependencies = [
  "barks-network-shuffle",
  "barks-sql-core",
  "barks-utils",
+ "bincode",
  "datafusion",
  "num_cpus",
  "serde",

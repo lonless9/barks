@@ -24,14 +24,22 @@ pub trait SqlTaskCreator: Send + Sync {
     fn create_sql_task(
         &self,
         partition_index: usize,
-        sql_query: String,
+        plan: &datafusion::logical_expr::LogicalPlan,
         table_name: String,
     ) -> SqlResult<Box<dyn barks_core::distributed::task::Task>>;
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Wrapper that implements SqlTaskCreator for any RDD
 pub struct RddSqlTaskCreator {
     rdd: Arc<dyn IsRdd>,
+}
+
+impl RddSqlTaskCreator {
+    /// Get the underlying RDD
+    pub fn get_rdd(&self) -> Arc<dyn IsRdd> {
+        self.rdd.clone()
+    }
 }
 
 impl SqlTaskCreator for RddSqlTaskCreator {
@@ -41,19 +49,26 @@ impl SqlTaskCreator for RddSqlTaskCreator {
 
     fn create_sql_task(
         &self,
-        _partition_index: usize,
-        _sql_query: String,
-        _table_name: String,
+        partition_index: usize,
+        _plan: &datafusion::logical_expr::LogicalPlan,
+        table_name: String,
     ) -> SqlResult<Box<dyn barks_core::distributed::task::Task>> {
-        // This is a simplified implementation that creates a basic SQL task
-        // In a real implementation, we would need to handle different RDD types
-        // and convert their data to RecordBatch format
+        // 1. Compute the RDD partition to get the raw data.
+        let rdd_partition = barks_core::traits::BasicPartition::new(partition_index);
+        // 2. Convert the raw data to a RecordBatch. This requires knowing the RDD's item type.
+        let _record_batch =
+            crate::rdd_sql_bridge::rdd_to_record_batch(self.rdd.clone(), &rdd_partition)?;
+        // 3. Create the SqlTask with the logical plan and the RecordBatch data.
+        // Since we can't access barks_sql_api from here, we'll return an error for now
+        // The actual implementation will be done in the api layer
+        Err(SqlError::QueryExecution(format!(
+            "SQL task creation needs to be implemented in the API layer for partition {} with table {}",
+            partition_index, table_name
+        )))
+    }
 
-        // For now, we'll create a placeholder task that returns an error
-        // This needs to be implemented properly based on the RDD's data type
-        Err(SqlError::QueryExecution(
-            "SQL task creation from RDD not yet fully implemented".to_string(),
-        ))
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

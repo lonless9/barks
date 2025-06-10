@@ -1,17 +1,44 @@
 //! Bridge implementations for RDD-to-SQL conversion
 //!
-//! This module provides implementations of the RddToSql trait for specific RDD types,
+//! This module provides implementations of the `RddToSql` trait for specific RDD types,
 //! eliminating the need for downcast_ref in SQL integration.
 
 use crate::columnar::ToRecordBatch;
 use crate::datasources::RddTableProvider;
-use crate::traits::{RddToSql, SqlResult};
+use crate::traits::{RddToSql, SqlError, SqlResult};
 use barks_core::rdd::DistributedRdd;
 use barks_core::traits::{IsRdd, Partition};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use std::sync::Arc;
+
+/// Computes an RDD partition and converts it to a RecordBatch using the `RddToSql` trait.
+pub fn rdd_to_record_batch(
+    rdd: Arc<dyn IsRdd>,
+    partition: &dyn Partition,
+) -> SqlResult<RecordBatch> {
+    let rdd_any = rdd.as_any();
+    // This function encapsulates the downcasting logic.
+    if let Some(rdd_i32) = rdd_any.downcast_ref::<DistributedRdd<i32>>() {
+        return rdd_i32.compute_partition_to_record_batch(partition);
+    }
+    if let Some(rdd_string) = rdd_any.downcast_ref::<DistributedRdd<String>>() {
+        return rdd_string.compute_partition_to_record_batch(partition);
+    }
+    if let Some(rdd_tuple) = rdd_any.downcast_ref::<DistributedRdd<(String, i32)>>() {
+        return rdd_tuple.compute_partition_to_record_batch(partition);
+    }
+    if let Some(rdd_tuple) = rdd_any.downcast_ref::<DistributedRdd<(i32, String)>>() {
+        return rdd_tuple.compute_partition_to_record_batch(partition);
+    }
+    if let Some(rdd_tuple) = rdd_any.downcast_ref::<DistributedRdd<(String, String)>>() {
+        return rdd_tuple.compute_partition_to_record_batch(partition);
+    }
+    Err(SqlError::RddIntegration(
+        "Unsupported RDD type for RecordBatch conversion".to_string(),
+    ))
+}
 
 /// Implementation of RddToSql for DistributedRdd<i32>
 impl RddToSql for DistributedRdd<i32> {
