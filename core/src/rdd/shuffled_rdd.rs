@@ -213,10 +213,7 @@ where
             && v_type == TypeId::of::<i32>()
             && c_type == TypeId::of::<i32>()
         {
-            // We know the types are correct, so we can safely cast
-            let self_typed =
-                unsafe { &*(self as *const Self as *const ShuffledRdd<String, i32, i32>) };
-            for i in 0..self_typed.num_partitions() {
+            for i in 0..self.num_partitions() {
                 let task = ShuffleReduceTask::<String, i32, i32, ReduceAggregator<i32>>::new(
                     shuffle_id,
                     i as u32,
@@ -233,9 +230,7 @@ where
             && v_type == TypeId::of::<String>()
             && c_type == TypeId::of::<String>()
         {
-            let self_typed =
-                unsafe { &*(self as *const Self as *const ShuffledRdd<i32, String, String>) };
-            for i in 0..self_typed.num_partitions() {
+            for i in 0..self.num_partitions() {
                 let task = ShuffleReduceTask::<i32, String, String, ReduceAggregator<String>>::new(
                     shuffle_id,
                     i as u32,
@@ -252,9 +247,7 @@ where
             && v_type == TypeId::of::<String>()
             && c_type == TypeId::of::<String>()
         {
-            let self_typed =
-                unsafe { &*(self as *const Self as *const ShuffledRdd<String, String, String>) };
-            for i in 0..self_typed.num_partitions() {
+            for i in 0..self.num_partitions() {
                 let task =
                     ShuffleReduceTask::<String, String, String, ReduceAggregator<String>>::new(
                         shuffle_id,

@@ -304,10 +304,8 @@ async fn find_rdd_in_plan(
 pub struct SqlTask {
     /// SQL query to execute
     pub sql_query: String,
-    /// Input data for this partition (serialized RecordBatch)
+    /// Input data for this partition (serialized as an Arrow IPC stream)
     pub input_data: Vec<u8>,
-    /// Schema of the input data (serialized as JSON)
-    pub input_schema_json: String,
     /// Table name to register the input data as
     pub table_name: String,
 }
@@ -333,13 +331,9 @@ impl SqlTask {
             buffer
         };
 
-        // Serialize schema to JSON using Arrow's built-in JSON representation
-        let input_schema_json = format!("{:?}", input_batch.schema());
-
         Ok(Self {
             sql_query,
             input_data,
-            input_schema_json,
             table_name,
         })
     }
@@ -353,23 +347,29 @@ impl Task for SqlTask {
         _partition_index: usize,
         _block_manager: Arc<dyn ShuffleBlockManager>,
     ) -> Result<Vec<u8>, String> {
-        // 1. Deserialize the input RecordBatch
-        let input_batch = {
+        // 1. Deserialize the input RecordBatches
+        let input_batches = {
             let cursor = std::io::Cursor::new(&self.input_data);
-            let mut reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
+            let reader = datafusion::arrow::ipc::reader::StreamReader::try_new(cursor, None)
                 .map_err(|e| format!("Failed to create IPC reader: {}", e))?;
 
             reader
-                .next()
-                .ok_or_else(|| "No RecordBatch found in input data".to_string())?
-                .map_err(|e| format!("Failed to read RecordBatch: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read RecordBatches: {}", e))?
         };
+
+        if input_batches.is_empty() {
+            return Ok(Vec::new());
+        }
 
         // 2. Create a local SessionContext
         let ctx = SessionContext::new();
 
-        // 3. Register the input batch as a table
-        ctx.register_batch(&self.table_name, input_batch)
+        // 3. Register the input batches as a table using a MemTable
+        let schema = input_batches[0].schema();
+        let mem_table = datafusion::datasource::MemTable::try_new(schema, vec![input_batches])
+            .map_err(|e| format!("Failed to create MemTable: {}", e))?;
+        ctx.register_table(&self.table_name, Arc::new(mem_table))
             .map_err(|e| format!("Failed to register table: {}", e))?;
 
         // 4. Execute the SQL query

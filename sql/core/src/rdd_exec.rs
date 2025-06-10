@@ -2,7 +2,6 @@
 //!
 //! This is a simplified implementation that provides basic RDD-to-SQL integration.
 
-use crate::columnar::ToRecordBatch;
 use crate::traits::SqlError;
 use async_trait::async_trait;
 use barks_core::traits::IsRdd;
@@ -20,48 +19,44 @@ use std::any::Any;
 use std::sync::Arc;
 
 /// Type-safe function to compute RDD partition data and convert to RecordBatch
-/// This eliminates the need for downcast_ref in RDD execution
+/// This uses the RddToSql trait to eliminate repetitive downcast_ref logic
 fn compute_rdd_partition_to_record_batch(
     rdd: Arc<dyn IsRdd>,
     partition: usize,
 ) -> Result<RecordBatch, SqlError> {
+    use crate::traits::RddToSql;
     let rdd_any = rdd.as_any();
     let rdd_partition = barks_core::traits::BasicPartition::new(partition);
 
     // Handle i32 RDDs
     if let Some(rdd_i32) = rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<i32>>() {
-        let data = rdd_i32.compute(&rdd_partition).map_err(SqlError::from)?;
-        return <i32 as ToRecordBatch>::to_record_batch(data);
+        return rdd_i32.compute_partition_to_record_batch(&rdd_partition);
     }
 
     // Handle String RDDs
     if let Some(rdd_string) = rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<String>>() {
-        let data = rdd_string.compute(&rdd_partition).map_err(SqlError::from)?;
-        return <String as ToRecordBatch>::to_record_batch(data);
+        return rdd_string.compute_partition_to_record_batch(&rdd_partition);
     }
 
     // Handle (String, i32) RDDs
     if let Some(rdd_tuple) =
         rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(String, i32)>>()
     {
-        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
-        return <(String, i32) as ToRecordBatch>::to_record_batch(data);
+        return rdd_tuple.compute_partition_to_record_batch(&rdd_partition);
     }
 
     // Handle (i32, String) RDDs
     if let Some(rdd_tuple) =
         rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(i32, String)>>()
     {
-        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
-        return <(i32, String) as ToRecordBatch>::to_record_batch(data);
+        return rdd_tuple.compute_partition_to_record_batch(&rdd_partition);
     }
 
     // Handle (String, String) RDDs
     if let Some(rdd_tuple) =
         rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(String, String)>>()
     {
-        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
-        return <(String, String) as ToRecordBatch>::to_record_batch(data);
+        return rdd_tuple.compute_partition_to_record_batch(&rdd_partition);
     }
 
     Err(SqlError::RddIntegration(
