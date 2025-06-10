@@ -445,8 +445,8 @@ impl Executor {
             tempfile::tempdir().expect("Failed to create temporary directory for shuffle files"),
         );
         let block_manager: Arc<dyn barks_network_shuffle::traits::ShuffleBlockManager> = Arc::new(
-            barks_network_shuffle::FileShuffleBlockManager::new(shuffle_dir.path())
-                .expect("Failed to create FileShuffleBlockManager"),
+            barks_network_shuffle::LevelDBShuffleBlockManager::new(shuffle_dir.path())
+                .expect("Failed to create LevelDBShuffleBlockManager"),
         );
 
         let driver_client = Arc::new(Mutex::new(None));
