@@ -4,6 +4,7 @@
 //! for the Barks framework.
 
 pub mod cached_rdd;
+pub mod checkpointed_rdd;
 pub mod distinct_rdd;
 pub mod distributed;
 pub mod joined_rdd;
@@ -16,6 +17,7 @@ pub mod transformations;
 mod shuffle_tests;
 
 pub use cached_rdd::*;
+pub use checkpointed_rdd::*;
 pub use distinct_rdd::*;
 pub use distributed::*;
 pub use joined_rdd::*;

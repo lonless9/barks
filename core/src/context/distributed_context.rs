@@ -9,13 +9,14 @@ use crate::distributed::driver::Driver;
 use crate::distributed::executor::Executor;
 use crate::distributed::stage::{DAGScheduler, Stage};
 use crate::distributed::types::*;
-use crate::rdd::DistributedRdd;
-use crate::traits::{Data, RddError, RddResult};
+use crate::rdd::{CheckpointedRdd, DistributedRdd};
+use crate::traits::{Data, RddBase, RddError, RddResult};
 use barks_network_shuffle::traits::MapStatus;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
@@ -39,6 +40,10 @@ pub struct DistributedContext {
     dag_scheduler: Arc<DAGScheduler>,
     /// Configuration
     config: DistributedConfig,
+    /// Checkpoint directory for storing checkpointed RDD data
+    checkpoint_dir: Option<PathBuf>,
+    /// Next checkpoint ID generator
+    next_checkpoint_id: Arc<AtomicUsize>,
 }
 
 /// Execution mode for the context
@@ -129,6 +134,8 @@ impl DistributedContext {
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             dag_scheduler: Arc::new(DAGScheduler::new()),
             config,
+            checkpoint_dir: None,
+            next_checkpoint_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -165,6 +172,8 @@ impl DistributedContext {
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             dag_scheduler: Arc::new(DAGScheduler::new()),
             config,
+            checkpoint_dir: None,
+            next_checkpoint_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -178,6 +187,8 @@ impl DistributedContext {
             next_shuffle_id: Arc::new(AtomicUsize::new(0)),
             dag_scheduler: Arc::new(DAGScheduler::new()),
             config: DistributedConfig::default(),
+            checkpoint_dir: None,
+            next_checkpoint_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -336,6 +347,50 @@ impl DistributedContext {
     pub async fn count_accumulator(&self, name: String) -> Result<Arc<Accumulator<u64>>, RddError> {
         let op = Arc::new(CountAccumulator);
         self.accumulator(name, op).await
+    }
+
+    /// Set the checkpoint directory for this context
+    pub fn set_checkpoint_dir<P: Into<PathBuf>>(&mut self, path: P) {
+        self.checkpoint_dir = Some(path.into());
+    }
+
+    /// Get the checkpoint directory
+    pub fn checkpoint_dir(&self) -> Option<&PathBuf> {
+        self.checkpoint_dir.as_ref()
+    }
+
+    /// Generate a new checkpoint ID
+    fn new_checkpoint_id(&self) -> String {
+        let id = self.next_checkpoint_id.fetch_add(1, Ordering::SeqCst);
+        format!("checkpoint_{}", id)
+    }
+
+    /// Checkpoint an RDD to persistent storage
+    pub async fn checkpoint_rdd<T: Data>(
+        &self,
+        rdd: Arc<dyn RddBase<Item = T>>,
+    ) -> RddResult<Arc<CheckpointedRdd<T>>> {
+        let checkpoint_dir = self.checkpoint_dir.as_ref().ok_or_else(|| {
+            RddError::CheckpointError(
+                "Checkpoint directory not set. Call set_checkpoint_dir() first.".to_string(),
+            )
+        })?;
+
+        let checkpoint_id = self.new_checkpoint_id();
+        let storage_path = checkpoint_dir.join(&checkpoint_id);
+
+        let checkpointed_rdd = CheckpointedRdd::new(
+            rdd.id() + 1000000, // Simple ID generation for checkpointed RDD
+            checkpoint_id,
+            rdd.num_partitions(),
+            storage_path,
+            Some(rdd),
+        )?;
+
+        // Materialize the checkpoint
+        checkpointed_rdd.materialize().await?;
+
+        Ok(Arc::new(checkpointed_rdd))
     }
 
     /// Run an RDD computation and collect results
@@ -724,6 +779,23 @@ impl DistributedContext {
         info!("Shuffle cleanup completed for job {}", job_id);
     }
 }
+
+/// Extension trait to add checkpointing methods to RDDs when used with DistributedContext
+pub trait CheckpointableRdd<T: Data>: RddBase<Item = T> {
+    /// Checkpoint this RDD using the provided context
+    fn checkpoint_with_context(
+        self: Arc<Self>,
+        context: &DistributedContext,
+    ) -> impl std::future::Future<Output = RddResult<Arc<CheckpointedRdd<T>>>> + Send
+    where
+        Self: 'static + Sized,
+    {
+        async move { context.checkpoint_rdd(self).await }
+    }
+}
+
+// Implement CheckpointableRdd for all RDDs
+impl<T: Data, R: RddBase<Item = T>> CheckpointableRdd<T> for R {}
 
 /// Driver statistics
 #[derive(Debug, Clone)]

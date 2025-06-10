@@ -29,6 +29,12 @@ pub enum RddError {
 
     #[error("Task creation error: {0}")]
     TaskCreationError(String),
+
+    #[error("Checkpoint error: {0}")]
+    CheckpointError(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 /// Result type for RDD operations
@@ -129,6 +135,18 @@ pub trait RddBase: IsRdd {
     /// Helper method to get an Arc<dyn IsRdd> from an Arc<dyn RddBase>
     /// This works around the lack of trait upcasting coercion in Rust
     fn as_is_rdd(self: Arc<Self>) -> Arc<dyn IsRdd>;
+
+    /// Checkpoint this RDD to persistent storage
+    /// This truncates the lineage and improves fault tolerance
+    fn checkpoint(self: Arc<Self>) -> RddResult<Arc<crate::rdd::CheckpointedRdd<Self::Item>>>
+    where
+        Self: 'static + Sized,
+    {
+        // Default implementation - will be overridden by contexts that support checkpointing
+        Err(RddError::NotImplemented(
+            "Checkpointing not supported in this context".to_string(),
+        ))
+    }
 }
 
 /// A data type that can be used in an RDD.
