@@ -95,42 +95,14 @@ impl DataFusionQueryEngine {
         Ok(())
     }
 
-    /// A generic method to register any RDD by downcasting.
-    /// This is less type-safe but more flexible.
+    /// A generic method to register any RDD using the type-safe RddToSql trait.
+    /// This eliminates the need for downcast_ref and is more extensible.
     pub async fn register_rdd_any(
         &self,
         name: &str,
         rdd: Arc<dyn barks_core::traits::IsRdd>,
     ) -> SqlResult<()> {
-        // Try to downcast and register. Support common types.
-        if rdd.as_any().is::<barks_core::rdd::DistributedRdd<i32>>() {
-            let schema = <i32 as crate::columnar::ToRecordBatch>::to_schema()?;
-            let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
-            self.context
-                .register_table(name, provider)
-                .map_err(SqlError::from)?;
-            return Ok(());
-        }
-        if rdd.as_any().is::<barks_core::rdd::DistributedRdd<String>>() {
-            let schema = <String as crate::columnar::ToRecordBatch>::to_schema()?;
-            let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
-            self.context
-                .register_table(name, provider)
-                .map_err(SqlError::from)?;
-            return Ok(());
-        }
-        if rdd
-            .as_any()
-            .is::<barks_core::rdd::DistributedRdd<(String, i32)>>()
-        {
-            let schema = <(String, i32) as crate::columnar::ToRecordBatch>::to_schema()?;
-            let provider = Arc::new(crate::datasources::RddTableProvider::new(rdd, schema));
-            self.context
-                .register_table(name, provider)
-                .map_err(SqlError::from)?;
-            return Ok(());
-        }
-        Err(SqlError::RddIntegration("Unsupported RDD type".to_string()))
+        crate::rdd_sql_bridge::register_rdd_type_safe(&self.context, name, rdd).await
     }
 }
 

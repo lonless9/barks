@@ -173,6 +173,19 @@ impl ToRecordBatch for (i32, String) {
     }
 }
 
+impl ToRecordBatch for (String, String) {
+    fn to_record_batch(data: Vec<Self>) -> SqlResult<RecordBatch> {
+        conversion::tuples_to_record_batch(data, "c0", "c1")
+    }
+
+    fn to_schema() -> SqlResult<SchemaRef> {
+        Ok(Arc::new(Schema::new(vec![
+            Field::new("c0", String::arrow_data_type(), true),
+            Field::new("c1", String::arrow_data_type(), true),
+        ])))
+    }
+}
+
 /// Trait for converting from Arrow arrays back to Rust types
 pub trait FromArrowArray: Sized {
     /// Convert an Arrow array to a vector of values

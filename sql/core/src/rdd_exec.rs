@@ -19,6 +19,56 @@ use futures::stream;
 use std::any::Any;
 use std::sync::Arc;
 
+/// Type-safe function to compute RDD partition data and convert to RecordBatch
+/// This eliminates the need for downcast_ref in RDD execution
+fn compute_rdd_partition_to_record_batch(
+    rdd: Arc<dyn IsRdd>,
+    partition: usize,
+) -> Result<RecordBatch, SqlError> {
+    let rdd_any = rdd.as_any();
+    let rdd_partition = barks_core::traits::BasicPartition::new(partition);
+
+    // Handle i32 RDDs
+    if let Some(rdd_i32) = rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<i32>>() {
+        let data = rdd_i32.compute(&rdd_partition).map_err(SqlError::from)?;
+        return <i32 as ToRecordBatch>::to_record_batch(data);
+    }
+
+    // Handle String RDDs
+    if let Some(rdd_string) = rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<String>>() {
+        let data = rdd_string.compute(&rdd_partition).map_err(SqlError::from)?;
+        return <String as ToRecordBatch>::to_record_batch(data);
+    }
+
+    // Handle (String, i32) RDDs
+    if let Some(rdd_tuple) =
+        rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(String, i32)>>()
+    {
+        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
+        return <(String, i32) as ToRecordBatch>::to_record_batch(data);
+    }
+
+    // Handle (i32, String) RDDs
+    if let Some(rdd_tuple) =
+        rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(i32, String)>>()
+    {
+        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
+        return <(i32, String) as ToRecordBatch>::to_record_batch(data);
+    }
+
+    // Handle (String, String) RDDs
+    if let Some(rdd_tuple) =
+        rdd_any.downcast_ref::<barks_core::rdd::DistributedRdd<(String, String)>>()
+    {
+        let data = rdd_tuple.compute(&rdd_partition).map_err(SqlError::from)?;
+        return <(String, String) as ToRecordBatch>::to_record_batch(data);
+    }
+
+    Err(SqlError::RddIntegration(format!(
+        "Unsupported RDD type for SQL execution. Supported types: i32, String, (String, i32), (i32, String), (String, String)"
+    )))
+}
+
 /// The RddExec execution plan reads data from an RDD partition.
 #[derive(Debug)]
 pub struct RddExec {
@@ -91,44 +141,8 @@ impl ExecutionPlan for RddExec {
 
         let schema = self.schema();
         let stream = stream::once(async move {
-            let result_batch: Result<RecordBatch, SqlError> = if let Some(rdd_i32) =
-                rdd.as_any()
-                    .downcast_ref::<barks_core::rdd::DistributedRdd<i32>>()
-            {
-                let rdd_partition = barks_core::traits::BasicPartition::new(partition);
-                let data = rdd_i32.compute(&rdd_partition).map_err(SqlError::from)?;
-                <i32 as ToRecordBatch>::to_record_batch(data)
-            } else if let Some(rdd_string) = rdd
-                .as_any()
-                .downcast_ref::<barks_core::rdd::DistributedRdd<String>>()
-            {
-                let rdd_partition = barks_core::traits::BasicPartition::new(partition);
-                let data = rdd_string.compute(&rdd_partition).map_err(SqlError::from)?;
-                <String as ToRecordBatch>::to_record_batch(data)
-            } else if let Some(rdd_string_i32) = rdd
-                .as_any()
-                .downcast_ref::<barks_core::rdd::DistributedRdd<(String, i32)>>()
-            {
-                let rdd_partition = barks_core::traits::BasicPartition::new(partition);
-                let data = rdd_string_i32
-                    .compute(&rdd_partition)
-                    .map_err(SqlError::from)?;
-                <(String, i32) as ToRecordBatch>::to_record_batch(data)
-            } else if let Some(rdd_i32_string) = rdd
-                .as_any()
-                .downcast_ref::<barks_core::rdd::DistributedRdd<(i32, String)>>()
-            {
-                let rdd_partition = barks_core::traits::BasicPartition::new(partition);
-                let data = rdd_i32_string
-                    .compute(&rdd_partition)
-                    .map_err(SqlError::from)?;
-                <(i32, String) as ToRecordBatch>::to_record_batch(data)
-            } else {
-                return Err(DataFusionError::NotImplemented(format!(
-                    "Unsupported RDD type for SQL execution: {:?}",
-                    rdd
-                )));
-            };
+            let result_batch: Result<RecordBatch, SqlError> =
+                compute_rdd_partition_to_record_batch(rdd, partition);
 
             let batch = result_batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
 

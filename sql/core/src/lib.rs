@@ -7,6 +7,7 @@ pub mod columnar;
 pub mod datasources;
 pub mod execution;
 pub mod rdd_exec;
+pub mod rdd_sql_bridge;
 pub mod traits;
 
 #[cfg(test)]

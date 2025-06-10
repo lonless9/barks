@@ -185,6 +185,22 @@ pub trait RddDataFusionBridge<T> {
     ) -> SqlResult<Arc<dyn barks_core::traits::RddBase<Item = T>>>;
 }
 
+/// Trait for RDD types that can be converted to SQL tables
+/// This eliminates the need for downcast_ref in SQL integration
+pub trait RddToSql: Send + Sync {
+    /// Get the Arrow schema for this RDD type
+    fn get_schema(&self) -> SqlResult<datafusion::arrow::datatypes::SchemaRef>;
+
+    /// Create a table provider for this RDD
+    fn create_table_provider(&self) -> SqlResult<Arc<dyn datafusion::datasource::TableProvider>>;
+
+    /// Compute partition data and convert to RecordBatch
+    fn compute_partition_to_record_batch(
+        &self,
+        partition: &dyn barks_core::traits::Partition,
+    ) -> SqlResult<RecordBatch>;
+}
+
 /// Trait for distributed SQL execution
 #[async_trait]
 pub trait DistributedSqlExecutor: Send + Sync {
