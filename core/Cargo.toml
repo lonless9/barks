@@ -22,13 +22,14 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 typetag.workspace = true
 async-trait.workspace = true
-dyn-clone = "1.0"
+half = { version = "2.6", features = ["serde"] }
 num_cpus.workspace = true
 num_enum = "0.7"
 barks-common = { path = "../common" }
 reqwest.workspace = true
 tempfile.workspace = true
 datafusion.workspace = true
+arrow.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

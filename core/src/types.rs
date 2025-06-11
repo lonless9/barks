@@ -145,6 +145,8 @@ pub enum DataTypeKind<M: DataTypeMetadata = NoMetadata> {
     },
     /// User-defined type with language bindings
     UserDefined {
+        /// e.g. "udt"
+        name: String,
         jvm_class: Option<String>,
         python_class: Option<String>,
         serialized_python_class: Option<String>,
@@ -310,7 +312,11 @@ pub mod serializable {
         /// Duration type
         Duration { time_unit: TimeUnit },
         /// Interval type
-        Interval { interval_unit: IntervalUnit },
+        Interval {
+            interval_unit: IntervalUnit,
+            start_field: Option<IntervalFieldType>,
+            end_field: Option<IntervalFieldType>,
+        },
         /// Binary data with fixed size
         FixedSizeBinary { size: i32 },
         /// Variable-length list
@@ -352,8 +358,8 @@ pub mod serializable {
             value_type_nullable: bool,
             keys_sorted: bool,
         },
-        /// Extension type with custom metadata
-        Extension {
+        /// User-defined type with language bindings
+        UserDefined {
             name: String,
             jvm_class: Option<String>,
             python_class: Option<String>,
@@ -385,21 +391,12 @@ pub mod serializable {
         pub fn new(fields: Vec<Field>) -> Self {
             Self(fields)
         }
-
-        pub fn len(&self) -> usize {
-            self.0.len()
-        }
-
-        pub fn is_empty(&self) -> bool {
-            self.0.is_empty()
-        }
     }
 
-    impl std::ops::Index<usize> for Fields {
-        type Output = Field;
-
-        fn index(&self, index: usize) -> &Self::Output {
-            &self.0[index]
+    impl std::ops::Deref for Fields {
+        type Target = [Field];
+        fn deref(&self) -> &Self::Target {
+            &self.0
         }
     }
 
@@ -407,6 +404,19 @@ pub mod serializable {
     #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
     #[serde(transparent)]
     pub struct UnionFields(Vec<(i8, Field)>);
+
+    impl UnionFields {
+        pub fn new(fields: Vec<(i8, Field)>) -> Self {
+            Self(fields)
+        }
+    }
+
+    impl std::ops::Deref for UnionFields {
+        type Target = [(i8, Field)];
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
 
     /// Serializable version of Schema with NoMetadata
     #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1006,5 +1016,249 @@ mod tests {
         assert_eq!(deserialized.fields.len(), 2);
         assert_eq!(deserialized.fields[0].name, "id");
         assert_eq!(deserialized.fields[1].name, "name");
+    }
+
+    #[test]
+    fn test_data_type_conversion() {
+        // Test basic primitive type conversion
+        let data_type = DataType {
+            kind: DataTypeKind::Primitive(PrimitiveType::Int32),
+            metadata: NoMetadata,
+        };
+
+        let serializable_type: serializable::DataType = data_type.into();
+        match serializable_type.kind {
+            serializable::DataTypeKind::Primitive(PrimitiveType::Int32) => {}
+            _ => panic!("Expected primitive type conversion to work"),
+        }
+    }
+
+    #[test]
+    fn test_complex_data_type_conversion() {
+        // Test list type conversion
+        let element_type = DataType {
+            kind: DataTypeKind::Primitive(PrimitiveType::Utf8),
+            metadata: NoMetadata,
+        };
+
+        let list_type = DataType {
+            kind: DataTypeKind::List {
+                data_type: Box::new(element_type),
+                nullable: true,
+            },
+            metadata: NoMetadata,
+        };
+
+        let serializable_type: serializable::DataType = list_type.into();
+        match serializable_type.kind {
+            serializable::DataTypeKind::List {
+                data_type,
+                nullable,
+            } => {
+                assert!(nullable);
+                match data_type.kind {
+                    serializable::DataTypeKind::Primitive(PrimitiveType::Utf8) => {}
+                    _ => panic!("Expected nested type conversion to work"),
+                }
+            }
+            _ => panic!("Expected list type conversion to work"),
+        }
+    }
+
+    #[test]
+    fn test_schema_conversion() {
+        let field1 = Field {
+            name: "id".to_string(),
+            data_type: DataType {
+                kind: DataTypeKind::Primitive(PrimitiveType::Int64),
+                metadata: NoMetadata,
+            },
+            nullable: false,
+            metadata: vec![],
+        };
+
+        let field2 = Field {
+            name: "name".to_string(),
+            data_type: DataType {
+                kind: DataTypeKind::Primitive(PrimitiveType::Utf8),
+                metadata: NoMetadata,
+            },
+            nullable: true,
+            metadata: vec![],
+        };
+
+        let schema = Schema {
+            fields: Fields::from(vec![field1, field2]),
+        };
+
+        let serializable_schema: serializable::Schema = schema.into();
+        assert_eq!(serializable_schema.fields.len(), 2);
+        assert_eq!(serializable_schema.fields[0].name, "id");
+        assert_eq!(serializable_schema.fields[1].name, "name");
+        assert!(!serializable_schema.fields[0].nullable);
+        assert!(serializable_schema.fields[1].nullable);
+    }
+}
+
+// --- Conversion Implementations ---
+
+/// Conversion from generic DataType<M> to serializable DataType
+impl<M: DataTypeMetadata> From<DataType<M>> for serializable::DataType {
+    fn from(data_type: DataType<M>) -> Self {
+        Self {
+            kind: data_type.kind.into(),
+            metadata: NoMetadata,
+        }
+    }
+}
+
+/// Conversion from generic DataTypeKind<M> to serializable DataTypeKind
+impl<M: DataTypeMetadata> From<DataTypeKind<M>> for serializable::DataTypeKind {
+    fn from(kind: DataTypeKind<M>) -> Self {
+        match kind {
+            DataTypeKind::Primitive(p) => serializable::DataTypeKind::Primitive(p),
+            DataTypeKind::Timestamp {
+                time_unit,
+                timestamp_type,
+            } => serializable::DataTypeKind::Timestamp {
+                time_unit,
+                timestamp_type,
+            },
+            DataTypeKind::Time32 { time_unit } => serializable::DataTypeKind::Time32 { time_unit },
+            DataTypeKind::Time64 { time_unit } => serializable::DataTypeKind::Time64 { time_unit },
+            DataTypeKind::Duration { time_unit } => {
+                serializable::DataTypeKind::Duration { time_unit }
+            }
+            DataTypeKind::Interval {
+                interval_unit,
+                start_field,
+                end_field,
+            } => serializable::DataTypeKind::Interval {
+                interval_unit,
+                start_field,
+                end_field,
+            },
+            DataTypeKind::FixedSizeBinary { size } => {
+                serializable::DataTypeKind::FixedSizeBinary { size }
+            }
+            DataTypeKind::List {
+                data_type,
+                nullable,
+            } => serializable::DataTypeKind::List {
+                data_type: Box::new((*data_type).into()),
+                nullable,
+            },
+            DataTypeKind::FixedSizeList {
+                data_type,
+                nullable,
+                length,
+            } => serializable::DataTypeKind::FixedSizeList {
+                data_type: Box::new((*data_type).into()),
+                nullable,
+                length,
+            },
+            DataTypeKind::LargeList {
+                data_type,
+                nullable,
+            } => serializable::DataTypeKind::LargeList {
+                data_type: Box::new((*data_type).into()),
+                nullable,
+            },
+            DataTypeKind::Struct { fields } => serializable::DataTypeKind::Struct {
+                fields: fields.into(),
+            },
+            DataTypeKind::Union {
+                union_fields,
+                union_mode,
+            } => serializable::DataTypeKind::Union {
+                union_fields: union_fields.into(),
+                union_mode,
+            },
+            DataTypeKind::Dictionary {
+                key_type,
+                value_type,
+            } => serializable::DataTypeKind::Dictionary {
+                key_type: Box::new((*key_type).into()),
+                value_type: Box::new((*value_type).into()),
+            },
+            DataTypeKind::Decimal128 { precision, scale } => {
+                serializable::DataTypeKind::Decimal128 { precision, scale }
+            }
+            DataTypeKind::Decimal256 { precision, scale } => {
+                serializable::DataTypeKind::Decimal256 { precision, scale }
+            }
+            DataTypeKind::Map {
+                key_type,
+                value_type,
+                value_type_nullable,
+                keys_sorted,
+            } => serializable::DataTypeKind::Map {
+                key_type: Box::new((*key_type).into()),
+                value_type: Box::new((*value_type).into()),
+                value_type_nullable,
+                keys_sorted,
+            },
+            DataTypeKind::UserDefined {
+                name,
+                jvm_class,
+                python_class,
+                serialized_python_class,
+                sql_type,
+            } => serializable::DataTypeKind::UserDefined {
+                name,
+                jvm_class,
+                python_class,
+                serialized_python_class,
+                sql_type: Box::new((*sql_type).into()),
+            },
+            DataTypeKind::ConfiguredUtf8 { utf8_type } => {
+                serializable::DataTypeKind::ConfiguredUtf8 { utf8_type }
+            }
+        }
+    }
+}
+
+/// Conversion from generic Field<M> to serializable Field
+impl<M: DataTypeMetadata> From<Field<M>> for serializable::Field {
+    fn from(field: Field<M>) -> Self {
+        Self {
+            name: field.name,
+            data_type: field.data_type.into(),
+            nullable: field.nullable,
+            metadata: field.metadata,
+        }
+    }
+}
+
+/// Conversion from generic Fields<M> to serializable Fields
+impl<M: DataTypeMetadata> From<Fields<M>> for serializable::Fields {
+    fn from(fields: Fields<M>) -> Self {
+        let converted_fields: Vec<serializable::Field> = fields
+            .iter()
+            .map(|field_ref| (**field_ref).clone().into())
+            .collect();
+        serializable::Fields::new(converted_fields)
+    }
+}
+
+/// Conversion from generic UnionFields<M> to serializable UnionFields
+impl<M: DataTypeMetadata> From<UnionFields<M>> for serializable::UnionFields {
+    fn from(union_fields: UnionFields<M>) -> Self {
+        let converted_fields: Vec<(i8, serializable::Field)> = union_fields
+            .0
+            .as_ref()
+            .iter()
+            .map(|(id, field_ref)| (*id, (**field_ref).clone().into()))
+            .collect();
+        serializable::UnionFields::new(converted_fields)
+    }
+}
+
+/// Conversion from generic Schema<M> to serializable Schema
+impl<M: DataTypeMetadata> From<Schema<M>> for serializable::Schema {
+    fn from(schema: Schema<M>) -> Self {
+        Self {
+            fields: schema.fields.into(),
+        }
     }
 }
