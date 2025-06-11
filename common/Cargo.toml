@@ -6,10 +6,17 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+aws = ["object_store/aws"]
+azure = ["object_store/azure"]
+gcp = ["object_store/gcp"]
+
 [dependencies]
 # async runtime
 tokio.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 
 # serialization
 serde.workspace = true
@@ -19,13 +26,18 @@ bincode.workspace = true
 # error handling
 thiserror.workspace = true
 anyhow.workspace = true
+
+# SQL query engine
 datafusion.workspace = true
 
 # caching
 moka.workspace = true
 
-# persistent storage
-rocksdb.workspace = true
+# object storage
+object_store.workspace = true
+
+# hex encoding for keys
+hex = "0.4"
 
 # memory allocation
 bumpalo = "3.14.0"

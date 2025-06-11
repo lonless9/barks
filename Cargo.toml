@@ -82,12 +82,12 @@ num_cpus = "1.0"
 # temporary files
 tempfile = "3.0"
 
-# persistent storage
-rocksdb = "0.22"
+# object storage
+object_store = { version = "0.12", features = ["aws", "azure", "gcp", "http"] }
 
 # SQL query engine
-datafusion = { version = "43.0", features = ["default"] }
-arrow = "53.0"
+datafusion = { version = "47.0", features = ["default"] }
+arrow = "55.1.0"
 
 # compression
 zstd = "0.13"
