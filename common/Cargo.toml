@@ -19,12 +19,12 @@ bincode.workspace = true
 # error handling
 thiserror.workspace = true
 anyhow.workspace = true
+datafusion.workspace = true
 
 # caching
 moka.workspace = true
 
 # persistent storage
-rusty-leveldb.workspace = true
 rocksdb.workspace = true
 
 # memory allocation

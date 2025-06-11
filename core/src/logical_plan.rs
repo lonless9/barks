@@ -2140,6 +2140,7 @@ mod tests {
 
 // --- Conversion Implementations ---
 
+#[allow(clippy::items_after_test_module)]
 /// Conversion from generic Plan<M> to serializable Plan
 impl<M: DataTypeMetadata> From<Plan<M>> for serializable::Plan {
     fn from(plan: Plan<M>) -> Self {

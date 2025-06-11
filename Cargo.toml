@@ -83,7 +83,6 @@ num_cpus = "1.0"
 tempfile = "3.0"
 
 # persistent storage
-rusty-leveldb = "3.0.3"
 rocksdb = "0.22"
 
 # SQL query engine

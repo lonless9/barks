@@ -419,13 +419,13 @@ mod tests {
         };
 
         let f16_lit = Literal::Float16 {
-            value: Some(f16::from_f32(3.14)),
+            value: Some(f16::from_f32(std::f32::consts::PI)),
         };
         let f32_lit = Literal::Float32 {
-            value: Some(3.14159),
+            value: Some(std::f32::consts::PI),
         };
         let f64_lit = Literal::Float64 {
-            value: Some(3.141592653589793),
+            value: Some(std::f64::consts::PI),
         };
 
         // Verify they can be pattern matched
@@ -483,18 +483,20 @@ mod tests {
 
         // Test floating point types
         match f16_lit {
-            Literal::Float16 { value: Some(v) } if (v.to_f32() - 3.14).abs() < 0.01 => {}
+            Literal::Float16 { value: Some(v) }
+                if (v.to_f32() - std::f32::consts::PI).abs() < 0.01 => {}
             _ => panic!("Expected f16 literal"),
         }
 
         match f32_lit {
-            Literal::Float32 { value: Some(v) } if (v - 3.14159).abs() < f32::EPSILON => {}
+            Literal::Float32 { value: Some(v) }
+                if (v - std::f32::consts::PI).abs() < f32::EPSILON => {}
             _ => panic!("Expected f32 literal"),
         }
 
         match f64_lit {
-            Literal::Float64 { value: Some(v) } if (v - 3.141592653589793).abs() < f64::EPSILON => {
-            }
+            Literal::Float64 { value: Some(v) }
+                if (v - std::f64::consts::PI).abs() < f64::EPSILON => {}
             _ => panic!("Expected f64 literal"),
         }
     }

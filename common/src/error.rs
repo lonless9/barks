@@ -1,6 +1,30 @@
-//! Error handling for the barks-common crate.
+//! Error types for the barks-core crate.
 
+use datafusion::error::DataFusionError;
 use thiserror::Error;
+
+/// The error type for operations within the Barks core.
+#[derive(Error, Debug)]
+pub enum BarksError {
+    /// Error originating from the DataFusion query engine.
+    #[error("DataFusion error: {0}")]
+    DataFusion(#[from] DataFusionError),
+
+    /// Error during the execution of a distributed plan.
+    #[error("Execution error: {0}")]
+    Execution(String),
+
+    /// Error related to configuration.
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+
+    /// An internal error, indicating a bug.
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+/// Result type alias for BarksError operations.
+pub type BarksResult<T> = std::result::Result<T, BarksError>;
 
 /// Common error type that abstracts over underlying library errors.
 ///
@@ -109,6 +133,12 @@ pub enum CommonError {
 
 /// Result type alias for common operations.
 pub type Result<T> = std::result::Result<T, CommonError>;
+
+impl From<DataFusionError> for CommonError {
+    fn from(error: DataFusionError) -> Self {
+        CommonError::internal_error_with_source("DataFusion error", error)
+    }
+}
 
 /// Error severity levels for categorizing errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

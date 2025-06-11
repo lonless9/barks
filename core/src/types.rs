@@ -1102,6 +1102,7 @@ mod tests {
 
 // --- Conversion Implementations ---
 
+#[allow(clippy::items_after_test_module)]
 /// Conversion from generic DataType<M> to serializable DataType
 impl<M: DataTypeMetadata> From<DataType<M>> for serializable::DataType {
     fn from(data_type: DataType<M>) -> Self {
