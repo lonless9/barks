@@ -7,6 +7,7 @@ pub mod context;
 pub mod expression;
 pub mod literal;
 pub mod logical_plan;
+pub mod planner;
 pub mod rdd;
 pub mod storage;
 pub mod types;

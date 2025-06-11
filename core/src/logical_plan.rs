@@ -3,12 +3,9 @@
 //! Generic plan system supporting metadata attachment.
 //! Based on Sail "https://github.com/lakehq/sail"
 
-use std::str::FromStr;
-
-use barks_common::error::CommonError;
-
 use crate::expression::{CommonInlineUserDefinedFunction, Expr, Identifier, ObjectName, SortOrder};
 use crate::literal::Literal;
+use crate::storage::StorageLevel;
 use crate::types::{DataTypeMetadata, NoMetadata, Schema};
 
 // --- Generic Plan Representation ---
@@ -265,7 +262,7 @@ pub struct Join<M: DataTypeMetadata = NoMetadata> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinCriteria<M: DataTypeMetadata = NoMetadata> {
     Natural,
-    On(Expr<M>),
+    On(Box<Expr<M>>),
     Using(Vec<Identifier>),
 }
 
@@ -792,119 +789,6 @@ pub enum TableConstraint {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct StorageLevel {
-    pub use_disk: bool,
-    pub use_memory: bool,
-    pub use_off_heap: bool,
-    pub deserialized: bool,
-    pub replication: usize,
-}
-
-impl FromStr for StorageLevel {
-    type Err = CommonError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_uppercase().as_str() {
-            "NONE" => Ok(Self {
-                use_disk: false,
-                use_memory: false,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 1,
-            }),
-            "DISK_ONLY" => Ok(Self {
-                use_disk: true,
-                use_memory: false,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 1,
-            }),
-            "DISK_ONLY_2" => Ok(Self {
-                use_disk: true,
-                use_memory: false,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 2,
-            }),
-            "DISK_ONLY_3" => Ok(Self {
-                use_disk: true,
-                use_memory: false,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 3,
-            }),
-            "MEMORY_ONLY" => Ok(Self {
-                use_disk: false,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: true,
-                replication: 1,
-            }),
-            "MEMORY_ONLY_2" => Ok(Self {
-                use_disk: false,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: true,
-                replication: 2,
-            }),
-            "MEMORY_ONLY_SER" => Ok(Self {
-                use_disk: false,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 1,
-            }),
-            "MEMORY_ONLY_SER_2" => Ok(Self {
-                use_disk: false,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 2,
-            }),
-            "MEMORY_AND_DISK" => Ok(Self {
-                use_disk: true,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: true,
-                replication: 1,
-            }),
-            "MEMORY_AND_DISK_2" => Ok(Self {
-                use_disk: true,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: true,
-                replication: 2,
-            }),
-            "MEMORY_AND_DISK_SER" => Ok(Self {
-                use_disk: true,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 1,
-            }),
-            "MEMORY_AND_DISK_SER_2" => Ok(Self {
-                use_disk: true,
-                use_memory: true,
-                use_off_heap: false,
-                deserialized: false,
-                replication: 2,
-            }),
-            "OFF_HEAP" => Ok(Self {
-                use_disk: false,
-                use_memory: true,
-                use_off_heap: true,
-                deserialized: false,
-                replication: 1,
-            }),
-            _ => Err(CommonError::invalid(format!(
-                "invalid storage level: {}",
-                s
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AlterTableOperation {
     Unknown,
     // TODO: add all the alter table operations
@@ -1163,7 +1047,7 @@ pub mod serializable {
     #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
     pub enum JoinCriteria {
         Natural,
-        On(Expr),
+        On(Box<Expr>),
         Using(Vec<Identifier>),
     }
 
@@ -1523,6 +1407,7 @@ mod tests {
     use crate::expression::{Expr, ExprKind, NullOrdering, SortDirection, SortOrder};
     use crate::literal::Literal;
     use crate::types::NoMetadata;
+    use std::str::FromStr;
 
     // --- Core Plan Tests ---
 
@@ -1663,9 +1548,9 @@ mod tests {
             left: Box::new(left_plan),
             right: Box::new(right_plan),
             join_type: JoinType::Inner,
-            join_criteria: Some(JoinCriteria::On(Expr::new(ExprKind::Literal(
+            join_criteria: Some(JoinCriteria::On(Box::new(Expr::new(ExprKind::Literal(
                 Literal::Boolean { value: Some(true) },
-            )))),
+            ))))),
             join_data_type: Some(JoinDataType {
                 is_asof_join: false,
                 using_columns: vec!["id".to_string()],
@@ -1850,9 +1735,9 @@ mod tests {
     fn test_join_criteria_variants() {
         let natural_criteria: JoinCriteria<NoMetadata> = JoinCriteria::Natural;
         let on_criteria: JoinCriteria<NoMetadata> =
-            JoinCriteria::On(Expr::new(ExprKind::Literal(Literal::Boolean {
+            JoinCriteria::On(Box::new(Expr::new(ExprKind::Literal(Literal::Boolean {
                 value: Some(true),
-            })));
+            }))));
         let using_criteria: JoinCriteria<NoMetadata> = JoinCriteria::Using(vec![
             crate::expression::Identifier::from("id"),
             crate::expression::Identifier::from("name"),
@@ -2216,7 +2101,7 @@ impl<M: DataTypeMetadata> From<JoinCriteria<M>> for serializable::JoinCriteria {
     fn from(criteria: JoinCriteria<M>) -> Self {
         match criteria {
             JoinCriteria::Natural => serializable::JoinCriteria::Natural,
-            JoinCriteria::On(expr) => serializable::JoinCriteria::On(expr.into()),
+            JoinCriteria::On(expr) => serializable::JoinCriteria::On(Box::new((*expr).into())),
             JoinCriteria::Using(ids) => serializable::JoinCriteria::Using(ids),
         }
     }
