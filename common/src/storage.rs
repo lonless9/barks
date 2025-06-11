@@ -112,7 +112,7 @@ impl Default for StorageBackend {
 }
 
 /// Configuration for storage creation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StorageConfig {
     /// Storage backend to use.
     pub backend: StorageBackend,
@@ -120,16 +120,6 @@ pub struct StorageConfig {
     pub key_prefix: Option<String>,
     /// Enable compression for stored values.
     pub compression: bool,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            backend: StorageBackend::default(),
-            key_prefix: None,
-            compression: false,
-        }
-    }
 }
 
 /// Builder for creating storage instances.
@@ -714,9 +704,7 @@ mod tests {
 
         let mut found_values = Vec::new();
         for (key, value) in pairs {
-            if key == b"prefix1_key1" {
-                found_values.push(value);
-            } else if key == b"prefix1_key2" {
+            if key == b"prefix1_key1" || key == b"prefix1_key2" {
                 found_values.push(value);
             }
         }
